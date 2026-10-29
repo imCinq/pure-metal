@@ -83,18 +83,18 @@ public final class VanillaEmitter implements CoarseMesher.Emitter, CoarseMesher.
         float v1 = sprite.getV1();
         float top = y + height;
         // Corner index is 2 * east + south. Front face as in FluidRenderer, then the back face seen from below.
-        vertex(builder, x, top, z, colors[0], u0, v0, lights[0]);
-        vertex(builder, x, top, z + 2, colors[1], u0, v1, lights[1]);
-        vertex(builder, x + 2, top, z + 2, colors[3], u1, v1, lights[3]);
-        vertex(builder, x + 2, top, z, colors[2], u1, v0, lights[2]);
-        vertex(builder, x, top, z, colors[0], u0, v0, lights[0]);
-        vertex(builder, x + 2, top, z, colors[2], u1, v0, lights[2]);
-        vertex(builder, x + 2, top, z + 2, colors[3], u1, v1, lights[3]);
-        vertex(builder, x, top, z + 2, colors[1], u0, v1, lights[1]);
+        vertex(builder, x, top, z, colors[0], u0, v0, lights[0], 1.0F);
+        vertex(builder, x, top, z + 2, colors[1], u0, v1, lights[1], 1.0F);
+        vertex(builder, x + 2, top, z + 2, colors[3], u1, v1, lights[3], 1.0F);
+        vertex(builder, x + 2, top, z, colors[2], u1, v0, lights[2], 1.0F);
+        vertex(builder, x, top, z, colors[0], u0, v0, lights[0], -1.0F);
+        vertex(builder, x + 2, top, z, colors[2], u1, v0, lights[2], -1.0F);
+        vertex(builder, x + 2, top, z + 2, colors[3], u1, v1, lights[3], -1.0F);
+        vertex(builder, x, top, z + 2, colors[1], u0, v1, lights[1], -1.0F);
     }
 
-    private static void vertex(final VertexConsumer builder, final float x, final float y, final float z, final int color, final float u, final float v, final int light) {
-        builder.addVertex(x, y, z, color, u, v, OverlayTexture.NO_OVERLAY, light, 0.0F, 1.0F, 0.0F);
+    private static void vertex(final VertexConsumer builder, final float x, final float y, final float z, final int color, final float u, final float v, final int light, final float ny) {
+        builder.addVertex(x, y, z, color, u, v, OverlayTexture.NO_OVERLAY, light, 0.0F, ny, 0.0F);
     }
 
     private static Vector3f doubled(final Vector3fc p) {

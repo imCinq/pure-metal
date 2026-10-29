@@ -46,7 +46,7 @@ public final class DebugLine implements DebugScreenEntry {
         }
         String name = MetalInfo.gpuName();
         int percent = ScaleConfig.scale();
-        boolean autoScale = ScaleConfig.autoScale();
+        boolean autoScale = ScaleConfig.autoActive();
         ScaleConfig.Upscaler kind = RenderScale.lastUsedUpscaler();
         if (!now.equals(this.backend) || !name.equals(this.gpu) || percent != this.scale || autoScale != this.auto || kind != this.upscaler) {
             this.backend = now;

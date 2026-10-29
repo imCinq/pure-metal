@@ -19,7 +19,7 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import org.jspecify.annotations.Nullable;
 
-/** Names, tooltips and the vanilla Video Settings entries for render scale and the upscaler (Sodium's page reuses the text). */
+/** Names, tooltips and the vanilla Pure Metal screen entries for render scale and the upscaler (Sodium's page reuses the text). */
 public final class ScaleOptions {
     private static OptionInstance<?> @Nullable [] vanilla;
     private static @Nullable OptionInstance<Boolean> vanillaMetal4;
@@ -94,7 +94,7 @@ public final class ScaleOptions {
         Component text = Component.empty()
             .append(scaleReadout(percent)).append("\n")
             .append(Lang.text("puremetal.options.renderScale.tooltip"));
-        if (ScaleConfig.autoScale()) {
+        if (ScaleConfig.autoActive()) {
             text = Component.empty().append(text).append("\n").append(Lang.text("puremetal.options.renderScale.auto", ScaleConfig.scale() + "%"));
         }
         return withInactiveNote(text);
@@ -209,7 +209,7 @@ public final class ScaleOptions {
         static void refresh() {
             AbstractWidget widget = slider.get();
             if (widget != null) {
-                widget.active = !ScaleConfig.autoScale();
+                widget.active = !ScaleConfig.autoActive();
             }
         }
 

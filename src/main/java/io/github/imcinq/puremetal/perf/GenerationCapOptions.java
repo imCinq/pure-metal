@@ -7,7 +7,7 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import org.jspecify.annotations.Nullable;
 
-/** Name, tooltip and the vanilla Video Settings entry for the world-generation frame cap (Sodium's page reuses the text). */
+/** Name, tooltip and the vanilla Pure Metal screen entry for the world-generation frame cap (Sodium's page reuses the text). */
 public final class GenerationCapOptions {
     private static @Nullable OptionInstance<Boolean> vanilla;
 

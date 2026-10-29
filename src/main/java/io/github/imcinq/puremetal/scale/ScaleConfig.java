@@ -74,7 +74,7 @@ public final class ScaleConfig {
 
     public static int scale() {
         // While the bench or the profiler blocks Auto Render Scale, the saved scale applies so measurements match the player's setting.
-        return transientScale != 0 ? transientScale : autoScale && !AutoScale.BLOCKED ? autoStep : scale;
+        return transientScale != 0 ? transientScale : autoActive() ? autoStep : scale;
     }
 
     /** The scale the player chose (what the slider shows), whatever Auto Render Scale or a benchmark uses right now. */
@@ -84,6 +84,11 @@ public final class ScaleConfig {
 
     public static boolean autoScale() {
         return autoScale;
+    }
+
+    /** Auto is on and actually drives the scale (the bench and profiler keep the saved one). */
+    public static boolean autoActive() {
+        return autoScale && !AutoScale.BLOCKED;
     }
 
     public static void setAutoScale(final boolean value) {

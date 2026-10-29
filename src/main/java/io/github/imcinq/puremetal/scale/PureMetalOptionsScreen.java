@@ -9,7 +9,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.OptionsSubScreen;
 import net.minecraft.network.chat.Component;
 
-/** Pure Metal's own screen, opened from Video Settings, with the same sections as its Sodium page. */
+/** Pure Metal's own screen, opened from Video Settings: Resolution, Terrain and Other (Sodium's page groups the same options). */
 public final class PureMetalOptionsScreen extends OptionsSubScreen {
     public PureMetalOptionsScreen(final Screen lastScreen, final Options options) {
         super(lastScreen, options, Component.literal("Pure Metal"));

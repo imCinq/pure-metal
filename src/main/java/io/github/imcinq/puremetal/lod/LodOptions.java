@@ -9,7 +9,7 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import org.jspecify.annotations.Nullable;
 
-/** Names, tooltips and the vanilla Video Settings entries for terrain LOD (Sodium's page reuses the text). */
+/** Names, tooltips and the vanilla Pure Metal screen entries for terrain LOD (Sodium's page reuses the text). */
 public final class LodOptions {
     private static OptionInstance<?> @Nullable [] vanilla;
 
@@ -44,7 +44,7 @@ public final class LodOptions {
         }
     }
 
-    /** Entries appended to Video Settings' quality section. */
+    /** Entries for the Terrain section of the Pure Metal screen. */
     public static OptionInstance<?>[] vanilla() {
         if (vanilla == null) {
             vanilla = new OptionInstance<?>[]{

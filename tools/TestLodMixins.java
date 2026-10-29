@@ -29,9 +29,20 @@ public final class TestLodMixins {
         };
         if (sodium) {
             // The water top skip only applies to a Sodium whose fluid renderer was checked; then the merge is on too.
+            // Loading the fluid renderer runs the plugin check that decides the hook, so load it before asking.
+            Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.DefaultFluidRenderer", false, loader);
             boolean waterHook = (boolean) Class.forName("io.github.imcinq.puremetal.lod.sodium.WaterTopHook", true, loader)
                 .getMethod("supported").invoke(null);
-            System.out.println("Sodium water top hook " + (waterHook ? "supported" : "not supported by this Sodium"));
+            Object fabric = Class.forName("net.fabricmc.loader.api.FabricLoader", true, loader).getMethod("getInstance").invoke(null);
+            Object mod = ((java.util.Optional<?>) Class.forName("net.fabricmc.loader.api.FabricLoader", true, loader).getMethod("getModContainer", String.class).invoke(fabric, "sodium")).orElseThrow();
+            Object meta = Class.forName("net.fabricmc.loader.api.ModContainer", true, loader).getMethod("getMetadata").invoke(mod);
+            String version = String.valueOf(Class.forName("net.fabricmc.loader.api.metadata.ModMetadata", true, loader)
+                .getMethod("getVersion").invoke(meta));
+            // 0.9.2 is the checked fluid renderer; other versions may fall back, which the hook must then report.
+            if (version.startsWith("0.9.2") && !waterHook) {
+                throw new AssertionError("Sodium " + version + " should support the water top hook");
+            }
+            System.out.println("Sodium " + version + " water top hook " + (waterHook ? "supported" : "not supported"));
             if (waterHook) {
                 targets = java.util.Arrays.copyOf(targets, targets.length + 1);
                 targets[targets.length - 1] = "net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.DefaultFluidRenderer";

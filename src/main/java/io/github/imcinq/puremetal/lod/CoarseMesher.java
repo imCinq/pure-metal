@@ -296,12 +296,12 @@ public final class CoarseMesher {
         }
         if (!coarse) {
             // No cell would merge, but plants or water tops may still differ in a coarse build.
-            if (this.scanWaterTops(false) || this.anyHiddenPlant()) {
+            if (this.anyCoarseDifference()) {
                 this.result = TerrainLod.FULL;
             }
             return;
         }
-        this.scanWaterTops(true);
+        this.scanWaterTops();
         // A coarse attempt that changed nothing equals the full mesh: NONE, so it is never rebuilt for LOD again.
         this.active = this.mergedCells > 0 || this.hiddenPlants > 0 || this.waterTopCount > 0;
         this.result = this.active ? TerrainLod.COARSE : TerrainLod.NONE;
@@ -393,12 +393,23 @@ public final class CoarseMesher {
         int z = (i >> 4) & 15;
         BlockState neighbor = this.stateAt(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ());
         BlockState self = this.states[i];
-        // Leaves never occlude, so vanilla draws both sides of a leaf-leaf border; merged leaves are opaque and the
-        // neighboring leaf draws its own side, so ours would only be overdraw.
-        if (!self.isSolidRender() && neighbor.is(BlockTags.LEAVES)) {
+        // Two merged leaf cells are both opaque, so the side between them is never seen. Against any other leaf
+        // (full detail, or in the next section) the side stays: its cutout holes would show the merged cell's inside.
+        if (!self.isSolidRender() && this.inMergedLeafCell(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ())) {
             return false;
         }
         return Block.shouldRenderFace(self, neighbor, d);
+    }
+
+    /** Is this section-relative block part of a leaf cell that merges (leaf cells merge even when hidden)? */
+    private boolean inMergedLeafCell(final int x, final int y, final int z) {
+        if ((x | y | z) < 0 || x >= 16 || y >= 16 || z >= 16) {
+            return false;
+        }
+        int cx = x & ~1;
+        int cy = y & ~1;
+        int cz = z & ~1;
+        return this.cellKind(cx, cy, cz) == LEAF_KIND && this.cellModelsEligible(cx, cy, cz);
     }
 
     private boolean cellModelsEligible(final int cx, final int cy, final int cz) {
@@ -629,13 +640,20 @@ public final class CoarseMesher {
         return plant && s.getCollisionShape(this.level, pos).isEmpty();
     }
 
-    /** Full-detail builds: reads every remaining block, but only when no cell merged and no early exit applies. */
-    private boolean anyHiddenPlant() {
+    /** Full-detail builds: one pass over the section for a hidden plant or a mergeable water top. */
+    private boolean anyCoarseDifference() {
+        boolean water = this.fluidModels != null;
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     BlockState s = this.stateAt(x, y, z);
-                    if (!s.isAir() && this.isHiddenPlant(s, this.scratch.set(this.ox + x, this.oy + y, this.oz + z))) {
+                    if (s.isAir()) {
+                        continue;
+                    }
+                    if (water && ((x | z) & 1) == 0 && s.getBlock() == Blocks.WATER && this.isWaterTopFootprint(x, y, z)) {
+                        return true;
+                    }
+                    if (this.isHiddenPlant(s, this.scratch.set(this.ox + x, this.oy + y, this.oz + z))) {
                         return true;
                     }
                 }
@@ -644,10 +662,10 @@ public final class CoarseMesher {
         return false;
     }
 
-    /** Marks (or, without mark, just finds) the water tops that a coarse build merges. Needs fluid models. */
-    private boolean scanWaterTops(final boolean mark) {
+    /** Marks the water tops that a coarse build merges. Needs fluid models. */
+    private void scanWaterTops() {
         if (this.fluidModels == null) {
-            return false;
+            return;
         }
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z += 2) {
@@ -655,16 +673,12 @@ public final class CoarseMesher {
                     if (!this.isWaterTopFootprint(x, y, z)) {
                         continue;
                     }
-                    if (!mark) {
-                        return true;
-                    }
                     int i = waterIndex(x, y, z);
                     this.waterTops[i >>> 6] |= 1L << i;
                     this.waterTopCount++;
                 }
             }
         }
-        return false;
     }
 
     /**

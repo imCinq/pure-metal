@@ -7,7 +7,7 @@ import net.minecraft.client.gui.components.OptionsList;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.narration.NarratableEntry;
 
-/** A non-interactive Video Settings row whose height follows the wrapped note text. */
+/** A non-interactive options row whose height follows the wrapped note text. */
 public final class NoteEntry extends OptionsList.AbstractEntry {
     private final FocusableTextWidget note;
 

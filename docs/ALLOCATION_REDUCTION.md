@@ -2,7 +2,7 @@
 
 Implemented and validated on 2026-10-25; not committed or published.
 
-The supported Sodium 0.9.2 and 0.9.3-beta.1 BlockRenderer creates two receiver-only method references in renderModel. Pure Metal now moves those exact factories to lazy instance getters, retaining one callback of each type per renderer. Calls, receiver binding, virtual dispatch, model arguments and culling operations are preserved. No constructor, mesh, lighting snapshot, visibility tree, fluid callback scope or worker ownership is replaced.
+The Sodium 0.9.2 and 0.9.3-beta.1 BlockRenderer creates two receiver-only method references in renderModel. Pure Metal now moves those exact factories to lazy instance getters, retaining one callback of each type per renderer. Calls, receiver binding, virtual dispatch, model arguments and culling operations are preserved. No constructor, mesh, lighting snapshot, visibility tree, fluid callback scope or worker ownership is replaced.
 
 The plugin enables the marker mixin for Sodium 0.9.2 and every later release (including prereleases of 0.9.3 and up, and build suffixes), and only when both expected factories match. Post-apply checks the shape again before changing either site. Older versions, changed factory shapes and missing Sodium retain the original path. -Dpuremetal.disableSodiumBlockCallbacks=true disables it. Names are checked for collisions and duplicate application is rejected.
 
@@ -30,7 +30,7 @@ Before artifacts: build/stutter-repro-metal3-20261025-210649/. After artifacts: 
 
 ## Sodium 0.9.3 beta support and two-run check (2026-10-26)
 
-The current published 26.3 Fabric beta is 0.9.3-beta.1. The official jar SHA-512 is 884a1ef0ce0e69d565d41a1359070a8d4f8589a086b565540defdb4741985053077dfd0f2a56898ce60510720a9f95dd8ba220a9a6340b6e0cf5cb12352e2419. BlockRenderer, AbstractBlockRenderContext and PlatformModelEmitter are byte-identical to the inspected 0.9.2 jar. That exact beta is now allowlisted; subsequent betas and the final 0.9.3 remain unverified and skip this optimization. Version-boundary tests reject beta.10, alpha builds and unknown releases. The bytecode shape check and runtime opt-out remain in force.
+The current published 26.3 Fabric beta is 0.9.3-beta.1. The official jar SHA-512 is 884a1ef0ce0e69d565d41a1359070a8d4f8589a086b565540defdb4741985053077dfd0f2a56898ce60510720a9f95dd8ba220a9a6340b6e0cf5cb12352e2419. BlockRenderer, AbstractBlockRenderContext and PlatformModelEmitter are byte-identical to the inspected 0.9.2 jar. Any Sodium from 0.9.2 on is now accepted by version; the bytecode shape check decides whether a given release is actually transformed, and a changed shape skips the optimization. Version-boundary tests reject older releases, 0.9.2 prereleases and invalid versions. The bytecode shape check and runtime opt-out remain in force.
 
 The development dependency defaults to stable 0.9.2. Use -PsodiumVersion=mc26.3-0.9.3-beta.1-fabric to test the beta; the headless harness accepts the same version via SODIUM_VERSION. The complete headless suite passed on the beta, including callback enabled/disabled and vanilla fallback; warmed callback allocation remained zero versus about 3.26 MB per 100,000 fresh callback pairs.
 

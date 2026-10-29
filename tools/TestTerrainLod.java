@@ -610,7 +610,7 @@ public final class TestTerrainLod {
     }
 
     /** Directions of a merged cell with at least one visible sub-block side, by the rules in CoarseMesher's class doc. */
-    static Set<Direction> expectedFaces(World w, int cx, int cy, int cz) {
+    static Set<Direction> expectedFaces(World w, Set<Long> covered, int cx, int cy, int cz) {
         Set<Direction> out = new HashSet<>();
         for (Direction d : DIRS) {
             for (int k = 0; k < 4; k++) {
@@ -622,7 +622,9 @@ public final class TestTerrainLod {
                 int z = cz + switch (d.getAxis()) { case Z -> layer; default -> b; };
                 BlockState self = w.at(x, y, z);
                 BlockState n = w.at(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ());
-                boolean visible = Block.shouldRenderFace(self, n, d) && (self.isSolidRender() || !n.is(BlockTags.LEAVES));
+                int nx = x + d.getStepX(), ny = y + d.getStepY(), nz = z + d.getStepZ();
+                boolean mergedLeaf = n.is(BlockTags.LEAVES) && covered.contains(BlockPos.asLong(nx, ny, nz));
+                boolean visible = Block.shouldRenderFace(self, n, d) && (self.isSolidRender() || !mergedLeaf);
                 if (visible) {
                     out.add(d);
                     break;
@@ -689,13 +691,23 @@ public final class TestTerrainLod {
                         continue;
                     }
                     Set<Direction> shown = byCell.getOrDefault(cx + "," + cy + "," + cz, Set.of());
-                    check(shown.equals(expectedFaces(ball, cx, cy, cz)), "cell " + cx + "," + cy + "," + cz + " shows " + shown);
+                    check(shown.equals(expectedFaces(ball, r.covered, cx, cy, cz)), "cell " + cx + "," + cy + "," + cz + " shows " + shown);
                 }
             }
         }
         check(!byCell.containsKey("6,6,6"), "the inner leaf cell emits nothing");
         check(byCell.get("4,4,4").size() == 3, "a corner leaf cell shows three sides");
         check(byCell.get("10,4,4").contains(Direction.WEST), "the stone cell keeps the face that touches the leaves");
+
+        // A merged leaf cell next to a leaf cell that stays detailed keeps that side: the cutout holes would show it.
+        World edge = new World();
+        fill(edge, 4, 4, 4, 7, 5, 5, oak);
+        edge.set(7, 5, 5, dirt);
+        Special er2 = buildSpecial(edge, set, colors, null);
+        check(er2.covered.contains(BlockPos.asLong(4, 4, 4)) && !er2.covered.contains(BlockPos.asLong(6, 4, 4)),
+            "only the all-leaf cell merges");
+        boolean eastSide = er2.quads.stream().anyMatch(e -> e.cx() == 4 && e.quad().direction() == Direction.EAST);
+        check(eastSide, "merged leaf cell keeps its side against detailed leaves");
 
         // Near the camera nothing changes, but the section knows a coarse build would differ.
         TerrainLod.setForTest(0, 0, 13);
