@@ -554,6 +554,9 @@ public final class CoarseMesher {
         int ri = this.subIndex[rep];
         BlockState state = this.states[ri];
         BlockPos pos = new BlockPos(this.ox + (ri & 15), this.oy + (ri >> 8), this.oz + ((ri >> 4) & 15));
+        // A leaf cell takes its tint from one fixed block, so all of its faces match across biome borders and mixed leaves.
+        BlockState tintState = leaf ? this.states[index(cx, cy, cz)] : state;
+        BlockPos tintPos = leaf ? new BlockPos(this.ox + cx, this.oy + cy, this.oz + cz) : pos;
         this.collectParts(state, pos);
         try {
             List<BlockTintSource> tints = null;
@@ -568,10 +571,10 @@ public final class CoarseMesher {
                     if (tintIndex != -1) {
                         if (tintIndex != tintIndexCached) {
                             if (tints == null) {
-                                tints = this.colors.getTintSources(state);
+                                tints = this.colors.getTintSources(tintState);
                             }
                             BlockTintSource source = tintIndex < tints.size() ? tints.get(tintIndex) : null;
-                            tintCached = source != null ? source.colorInWorld(state, this.level, pos) : -1;
+                            tintCached = source != null ? source.colorInWorld(tintState, this.level, tintPos) : -1;
                             tintIndexCached = tintIndex;
                         }
                         tint = tintCached;

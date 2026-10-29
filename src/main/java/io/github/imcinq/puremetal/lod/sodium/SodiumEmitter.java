@@ -11,7 +11,6 @@ import net.caffeinemc.mods.sodium.client.render.chunk.terrain.material.DefaultMa
 import net.caffeinemc.mods.sodium.client.render.chunk.terrain.material.Material;
 import net.caffeinemc.mods.sodium.client.render.chunk.translucent_sorting.TranslucentGeometryCollector;
 import net.caffeinemc.mods.sodium.client.render.chunk.vertex.format.ChunkVertexEncoder;
-import net.caffeinemc.mods.sodium.api.util.NormI8;
 import net.minecraft.client.model.geom.builders.UVPair;
 import net.minecraft.client.renderer.block.FluidModel;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -115,7 +114,8 @@ public final class SodiumEmitter implements CoarseMesher.Emitter, CoarseMesher.W
                 quad[(3 - i + 1) & 3] = this.vertices[i];
             }
         }
-        int normal = flip ? NormI8.flipPacked(facing.getPackedAlignedNormal()) : facing.getPackedAlignedNormal();
+        // facing is already NEG_Y for the back face, so its own normal points the right way.
+        int normal = facing.getPackedAlignedNormal();
         if (material.isTranslucent() && this.collector != null && this.collector.appendQuad(quad, facing, normal)) {
             return;
         }
