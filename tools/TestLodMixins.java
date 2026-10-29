@@ -38,8 +38,8 @@ public final class TestLodMixins {
             Object meta = Class.forName("net.fabricmc.loader.api.ModContainer", true, loader).getMethod("getMetadata").invoke(mod);
             String version = String.valueOf(Class.forName("net.fabricmc.loader.api.metadata.ModMetadata", true, loader)
                 .getMethod("getVersion").invoke(meta));
-            // 0.9.2 is the checked fluid renderer; other versions may fall back, which the hook must then report.
-            if (version.startsWith("0.9.2") && !waterHook) {
+            // 0.9.2 and 0.9.3 fluid renderers are checked; other versions may fall back, which the hook must then report.
+            if ((version.startsWith("0.9.2") || version.startsWith("0.9.3")) && !waterHook) {
                 throw new AssertionError("Sodium " + version + " should support the water top hook");
             }
             System.out.println("Sodium " + version + " water top hook " + (waterHook ? "supported" : "not supported"));

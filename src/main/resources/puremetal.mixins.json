@@ -41,6 +41,7 @@
     "lod.LodTextureShaderMixin",
     "lod.sodium.ChunkBuilderMeshingTaskMixin",
     "lod.sodium.DefaultFluidRendererMixin",
+    "lod.sodium.DefaultFluidRendererSideVisibleMixin",
     "lod.sodium.ChunkBuildOutputMixin",
     "lod.sodium.RenderSectionMixin",
     "lod.sodium.RenderSectionManagerMixin"

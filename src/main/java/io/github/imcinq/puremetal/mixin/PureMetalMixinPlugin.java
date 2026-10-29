@@ -94,11 +94,15 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return Boolean.parseBoolean(System.getProperty("puremetal.experimentalLodTextures", "true"))
                 || Boolean.parseBoolean(System.getProperty("puremetal.rgssEarlyOut", "true"));
         }
-        if (mixinClassName.endsWith(".lod.sodium.DefaultFluidRendererMixin")) {
-            // Water tops are only merged when this hook is there to skip them; other Sodium versions keep them as they are.
-            boolean supported = SODIUM && checkSodiumFluidTop(targetClassName);
-            io.github.imcinq.puremetal.lod.sodium.WaterTopHook.setSupported(supported);
-            if (SODIUM && !supported) {
+        if (mixinClassName.contains(".lod.sodium.DefaultFluidRenderer")) {
+            // Water tops are only merged when a hook is there to skip them. Sodium 0.9.2 tests the top face with
+            // isFullBlockFluidVisible, 0.9.3 with isFullBlockFluidSideVisible; each mixin hooks one, others keep the tops.
+            String top = SODIUM ? sodiumFluidTopCall(targetClassName) : null;
+            String wanted = mixinClassName.endsWith("SideVisibleMixin") ? "isFullBlockFluidSideVisible" : "isFullBlockFluidVisible";
+            boolean supported = wanted.equals(top);
+            if (supported) {
+                io.github.imcinq.puremetal.lod.sodium.WaterTopHook.setSupported(true);
+            } else if (SODIUM && top == null && mixinClassName.endsWith(".DefaultFluidRendererMixin")) {
                 LOGGER.info("Pure Metal: Terrain LOD keeps Sodium's water surfaces as they are, this Sodium version is not supported");
             }
             return supported;
@@ -207,29 +211,58 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
         }
     }
 
-    /** The hook needs render() to test the top face first: isFullBlockFluidVisible(..., Direction.UP, ...) with the expected shape. */
-    private static boolean checkSodiumFluidTop(final String targetClassName) {
+    private static String sodiumFluidTop;
+    private static boolean sodiumFluidTopChecked;
+
+    /**
+     * The visibility call render() tests the top face with: the first call of either known shape must pass Direction.UP.
+     * Returns its name, or null when the shape is unknown (then no water hook applies).
+     */
+    private static synchronized String sodiumFluidTopCall(final String targetClassName) {
+        if (!sodiumFluidTopChecked) {
+            sodiumFluidTop = checkSodiumFluidTop(targetClassName);
+            sodiumFluidTopChecked = true;
+        }
+        return sodiumFluidTop;
+    }
+
+    private static String checkSodiumFluidTop(final String targetClassName) {
         try {
             final ClassNode node = MixinService.getService().getBytecodeProvider().getClassNode(targetClassName, false);
             final String visible = "(Lnet/minecraft/client/renderer/block/BlockAndTintGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/material/FluidState;)Z";
+            final String sideVisible = "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;Lnet/minecraft/world/level/material/FluidState;)Z";
             for (final org.objectweb.asm.tree.MethodNode method : node.methods) {
                 if (!"render".equals(method.name) || !method.desc.startsWith("(Lnet/caffeinemc/mods/sodium/client/world/LevelSlice;")) {
                     continue;
                 }
+                // 0.9.2 also calls isFullBlockFluidSideVisible for the sides, so only a render without the old call may use it.
+                boolean old = false;
                 for (final org.objectweb.asm.tree.AbstractInsnNode insn : method.instructions) {
-                    if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call && "isFullBlockFluidVisible".equals(call.name) && visible.equals(call.desc)) {
-                        org.objectweb.asm.tree.AbstractInsnNode previous = call.getPrevious();
-                        while (previous != null && !(previous instanceof org.objectweb.asm.tree.FieldInsnNode)) {
-                            previous = previous.getPrevious();
-                        }
-                        return previous instanceof org.objectweb.asm.tree.FieldInsnNode field
-                            && "net/minecraft/core/Direction".equals(field.owner) && "UP".equals(field.name);
+                    if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call && "isFullBlockFluidVisible".equals(call.name)) {
+                        old = true;
                     }
                 }
+                for (final org.objectweb.asm.tree.AbstractInsnNode insn : method.instructions) {
+                    if (!(insn instanceof org.objectweb.asm.tree.MethodInsnNode call)) {
+                        continue;
+                    }
+                    boolean match = old ? "isFullBlockFluidVisible".equals(call.name) && visible.equals(call.desc)
+                        : "isFullBlockFluidSideVisible".equals(call.name) && sideVisible.equals(call.desc);
+                    if (!match) {
+                        continue;
+                    }
+                    org.objectweb.asm.tree.AbstractInsnNode previous = call.getPrevious();
+                    while (previous != null && !(previous instanceof org.objectweb.asm.tree.FieldInsnNode)) {
+                        previous = previous.getPrevious();
+                    }
+                    boolean up = previous instanceof org.objectweb.asm.tree.FieldInsnNode field
+                        && "net/minecraft/core/Direction".equals(field.owner) && "UP".equals(field.name);
+                    return up ? call.name : null;
+                }
             }
-            return false;
+            return null;
         } catch (Throwable t) {
-            return false;
+            return null;
         }
     }
 
