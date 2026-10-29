@@ -24,11 +24,12 @@ public final class TestSodiumBlockCallbacks {
     }
 
     public static void main(String[] args) throws Exception {
-        for (String version : new String[]{"0.9.2", "0.9.2+mc26.3", "0.9.3-beta.1", "0.9.3-beta.1+mc26.3"}) {
-            check(SodiumBlockCallbacks.supportsVersion(version), "Verified version rejected: " + version);
+        for (String version : new String[]{"0.9.2", "0.9.2+mc26.3", "0.9.3-beta.1", "0.9.3-beta.1+mc26.3", "0.9.3",
+                "0.9.3-alpha.1", "0.9.3-beta.10", "0.9.30", "0.10.0", "1.0.0+mc27.1"}) {
+            check(SodiumBlockCallbacks.supportsVersion(version), "Supported version rejected: " + version);
         }
-        for (String version : new String[]{"0.9.3", "0.9.3-alpha.1", "0.9.3-beta.10", "0.9.30", "0.10.0"}) {
-            check(!SodiumBlockCallbacks.supportsVersion(version), "Unverified version accepted: " + version);
+        for (String version : new String[]{"0.9.1", "0.9.2-beta.1", "0.8.10", "0.9", "0.9.x", "sodium"}) {
+            check(!SodiumBlockCallbacks.supportsVersion(version), "Older or invalid version accepted: " + version);
         }
         String path = "net/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/BlockRenderer.class";
         ClassNode node = new ClassNode();

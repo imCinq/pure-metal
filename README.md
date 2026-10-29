@@ -15,7 +15,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - macOS 14 or newer on Apple Silicon (tested on M2). The optional Metal 4 mode needs macOS 26.
 - Minecraft 26.3 with Fabric Loader 0.19+
 - Java 25
-- Sodium 0.9.2 or 0.9.3-beta.1 (optional)
+- Sodium (optional)
 
 Iris and other shader mods are not supported.
 

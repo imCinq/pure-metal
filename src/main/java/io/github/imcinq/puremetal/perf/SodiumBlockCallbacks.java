@@ -8,7 +8,6 @@ import org.objectweb.asm.tree.*;
 
 /** Reuses Sodium's two receiver-only method references without changing renderModel's calls or arguments. */
 public final class SodiumBlockCallbacks {
-    private static final List<String> VERIFIED_VERSIONS = List.of("0.9.2", "0.9.3-beta.1");
     private static final String TARGET = "net/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/BlockRenderer";
     private static final String CONTEXT = "net/caffeinemc/mods/sodium/client/render/model/AbstractBlockRenderContext";
     private static final String RENDER = "(Lnet/minecraft/client/renderer/block/dispatch/BlockStateModel;"
@@ -23,8 +22,26 @@ public final class SodiumBlockCallbacks {
 
     private SodiumBlockCallbacks() {}
 
+    /**
+     * Sodium 0.9.2 and every later release, prereleases of 0.9.3 and up included. The version only rules out older
+     * Sodium; whether a release really matches is decided by the bytecode check ({@link #supported}), which fails closed.
+     */
     public static boolean supportsVersion(String version) {
-        return VERIFIED_VERSIONS.stream().anyMatch(v -> version.equals(v) || version.startsWith(v + "+"));
+        int plus = version.indexOf('+');
+        String core = plus >= 0 ? version.substring(0, plus) : version;
+        int dash = core.indexOf('-');
+        boolean prerelease = dash >= 0;
+        String[] parts = (prerelease ? core.substring(0, dash) : core).split("\\.");
+        if (parts.length != 3) return false;
+        int[] numbers = new int[3];
+        try {
+            for (int i = 0; i < 3; i++) numbers[i] = Integer.parseInt(parts[i]);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        int order = java.util.Arrays.compare(numbers, new int[]{0, 9, 2});
+        // A prerelease comes before its release, so 0.9.2-beta.1 is older than 0.9.2.
+        return order > 0 || order == 0 && !prerelease;
     }
 
     /** Fail closed if another Sodium version/mod changed either factory, or our names already exist. */

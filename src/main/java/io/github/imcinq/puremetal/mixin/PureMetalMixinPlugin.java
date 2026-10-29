@@ -61,7 +61,7 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
         }
         if (mixinClassName.endsWith(".perf.sodium.BlockRendererCallbacksMixin")) {
             if (!SODIUM || Boolean.getBoolean("puremetal.disableSodiumBlockCallbacks")) return false;
-            // Only inspected releases apply; the bytecode check below remains mandatory for each one.
+            // Sodium 0.9.2 and later; the bytecode check below decides whether this release really matches.
             boolean version = FabricLoader.getInstance().getModContainer("sodium")
                 .map(c -> c.getMetadata().getVersion().getFriendlyString())
                 .filter(io.github.imcinq.puremetal.perf.SodiumBlockCallbacks::supportsVersion).isPresent();
