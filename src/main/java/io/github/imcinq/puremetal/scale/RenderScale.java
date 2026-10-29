@@ -77,6 +77,7 @@ public final class RenderScale {
         if (ScaleConfig.refreshEffective()) {
             dirty = true; // the upscaler that really runs (or the Temporal output size) changed under the same settings
         }
+        AutoScale.frame(hasLevel);
         if (!hasLevel) {
             if (world != null || hadLevel) {
                 releaseWorld(main);

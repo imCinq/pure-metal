@@ -146,6 +146,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             long gpu = MetalNative.takeGpuNs(this.handle());
             long gpuFrames = MetalNative.takeGpuFrames(this.handle());
             long uploadGpu = MetalNative.takeUploadGpuNs(this.handle());
+            io.github.imcinq.puremetal.scale.AutoScale.addGpuNs(gpu + uploadGpu);
             long uploads = MetalNative.takeUploadGpuCommands(this.handle());
             // The pass-timing bins are taken once and used by both consumers: the JFR event and the bench line.
             long p0 = MetalNative.takeProfileStat(this.handle(), 0), p1 = MetalNative.takeProfileStat(this.handle(), 1);
@@ -186,6 +187,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                     }
                 }
             }
+        } else if (io.github.imcinq.puremetal.scale.AutoScale.sampling()) {
+            // Early uploads commit on their own and count separately; they share the GPU with the frame, so they count toward its budget.
+            io.github.imcinq.puremetal.scale.AutoScale.addGpuNs(MetalNative.takeGpuNs(this.handle()) + MetalNative.takeUploadGpuNs(this.handle()));
         }
         this.runCompleted();
     }

@@ -24,6 +24,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
             .addPage(builder.createOptionPage()
                 .setName(Lang.text("puremetal.options.page"))
                 .addOptionGroup(builder.createOptionGroup()
+                    .setName(Lang.text("puremetal.options.section.resolution"))
                     .addOption(builder.createIntegerOption(id("render_scale"))
                         .setName(ScaleOptions.scaleName())
                         .setTooltip(ScaleOptions::scaleTooltip)
@@ -31,9 +32,18 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setRange(ScaleConfig.MIN_SCALE, ScaleConfig.MAX_SCALE, 1)
                         .setValueFormatter(ScaleOptions::scaleValue)
                         .setDefaultValue(ScaleConfig.MAX_SCALE)
+                        .setEnabledProvider(state -> !state.readBooleanOption(id("auto_render_scale")), id("auto_render_scale"))
                         .setStorageHandler(() -> {
                         })
-                        .setBinding(ScaleConfig::setScale, ScaleConfig::scale))
+                        .setBinding(ScaleConfig::setScale, ScaleConfig::savedScale))
+                    .addOption(builder.createBooleanOption(id("auto_render_scale"))
+                        .setName(ScaleOptions.autoName())
+                        .setTooltip(ScaleOptions.autoTooltip())
+                        .setImpact(OptionImpact.HIGH)
+                        .setDefaultValue(false)
+                        .setStorageHandler(() -> {
+                        })
+                        .setBinding(ScaleConfig::setAutoScale, ScaleConfig::autoScale))
                     .addOption(builder.createEnumOption(id("upscaler"), ScaleConfig.Upscaler.class)
                         .setName(ScaleOptions.upscalerName())
                         .setTooltip(ScaleOptions::upscalerTooltip)
@@ -42,20 +52,9 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setDefaultValue(ScaleConfig.Upscaler.BILINEAR)
                         .setStorageHandler(() -> {
                         })
-                        .setBinding(ScaleConfig::setUpscaler, ScaleConfig::upscaler))
-                    .addOption(metal4Option(builder)))
+                        .setBinding(ScaleConfig::setUpscaler, ScaleConfig::upscaler)))
                 .addOptionGroup(builder.createOptionGroup()
-                    .addOption(builder.createBooleanOption(id("generation_fps_cap"))
-                        .setName(GenerationCapOptions.name())
-                        .setTooltip(GenerationCapOptions.tooltip())
-                        .setImpact(OptionImpact.LOW)
-                        .setDefaultValue(false)
-                        .setStorageHandler(() -> {
-                        })
-                        .setBinding(GenerationFpsCap::setEnabled, GenerationFpsCap::enabled))))
-            .addPage(builder.createOptionPage()
-                .setName(Lang.text("puremetal.options.lodPage"))
-                .addOptionGroup(builder.createOptionGroup()
+                    .setName(Lang.text("puremetal.options.section.terrain"))
                     .addOption(builder.createBooleanOption(id("terrain_lod"))
                         .setName(LodOptions.enabledName())
                         .setTooltip(LodOptions.enabledTooltip())
@@ -75,7 +74,20 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setDefaultValue(TerrainLodConfig.DEFAULT_RATIO)
                         .setStorageHandler(() -> {
                         })
-                        .setBinding(TerrainLodConfig::setRatioPercent, TerrainLodConfig::ratioPercent))));
+                        .setBinding(TerrainLodConfig::setRatioPercent, TerrainLodConfig::ratioPercent)))
+                .addOptionGroup(builder.createOptionGroup()
+                    .setName(Lang.text("puremetal.options.section.loading"))
+                    .addOption(builder.createBooleanOption(id("generation_fps_cap"))
+                        .setName(GenerationCapOptions.name())
+                        .setTooltip(GenerationCapOptions.tooltip())
+                        .setImpact(OptionImpact.LOW)
+                        .setDefaultValue(false)
+                        .setStorageHandler(() -> {
+                        })
+                        .setBinding(GenerationFpsCap::setEnabled, GenerationFpsCap::enabled)))
+                .addOptionGroup(builder.createOptionGroup()
+                    .setName(Lang.text("puremetal.options.section.experimental"))
+                    .addOption(metal4Option(builder))));
     }
 
     private static Identifier id(final String path) {
@@ -85,7 +97,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
     /** The Metal 4 toggle: still bound to its saved value, but greyed out where Metal 4 cannot run. */
     private static BooleanOptionBuilder metal4Option(final ConfigBuilder builder) {
         BooleanOptionBuilder option = builder.createBooleanOption(id("metal4"))
-            .setName(ScaleOptions.metal4Name())
+            .setName(Lang.text("puremetal.options.metal4.short"))
             .setTooltip(ScaleOptions.metal4Tooltip())
             .setImpact(OptionImpact.LOW)
             .setDefaultValue(false)

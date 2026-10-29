@@ -5,6 +5,7 @@ import com.mojang.serialization.Codec;
 import io.github.imcinq.puremetal.Lang;
 import io.github.imcinq.puremetal.backend.Metal4Config;
 import io.github.imcinq.puremetal.backend.MetalUpscaler;
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -21,12 +22,21 @@ import org.jspecify.annotations.Nullable;
 /** Names, tooltips and the vanilla Video Settings entries for render scale and the upscaler (Sodium's page reuses the text). */
 public final class ScaleOptions {
     private static OptionInstance<?> @Nullable [] vanilla;
+    private static @Nullable OptionInstance<Boolean> vanillaMetal4;
 
     private ScaleOptions() {
     }
 
     public static Component scaleName() {
         return Lang.text("puremetal.options.renderScale");
+    }
+
+    public static Component autoName() {
+        return Lang.text("puremetal.options.autoRenderScale");
+    }
+
+    public static Component autoTooltip() {
+        return Lang.text("puremetal.options.autoRenderScale.tooltip");
     }
 
     public static Component metal4Name() {
@@ -81,9 +91,13 @@ public final class ScaleOptions {
     }
 
     public static Component scaleTooltip(final int percent) {
-        return withInactiveNote(Component.empty()
+        Component text = Component.empty()
             .append(scaleReadout(percent)).append("\n")
-            .append(Lang.text("puremetal.options.renderScale.tooltip")));
+            .append(Lang.text("puremetal.options.renderScale.tooltip"));
+        if (ScaleConfig.autoScale()) {
+            text = Component.empty().append(text).append("\n").append(Lang.text("puremetal.options.renderScale.auto", ScaleConfig.scale() + "%"));
+        }
+        return withInactiveNote(text);
     }
 
     /** The upscaler's description; when it is Temporal and unavailable, also why Bilinear is used instead. */
@@ -103,18 +117,28 @@ public final class ScaleOptions {
         return MetalUpscaler.active() ? text : Component.empty().append(text).append("\n").append(Lang.text("puremetal.options.inactive"));
     }
 
-    /** Entries appended to Video Settings' quality section. */
-    public static OptionInstance<?>[] vanilla() {
+    /** The Resolution section of Pure Metal's vanilla settings screen. */
+    public static OptionInstance<?>[] vanillaResolution() {
         if (vanilla == null) {
             vanilla = new OptionInstance<?>[]{
                 new OptionInstance<>(
                     "puremetal.options.renderScale",
                     value -> Tooltip.create(scaleTooltip(value)),
                     (caption, value) -> Options.genericValueLabel(scaleName(), scaleLabel(value)),
-                    new OptionInstance.IntRange(ScaleConfig.MIN_SCALE, ScaleConfig.MAX_SCALE, false),
-                    ScaleConfig.scale(),
+                    new AutoLockedValues<>(new OptionInstance.IntRange(ScaleConfig.MIN_SCALE, ScaleConfig.MAX_SCALE, false)),
+                    ScaleConfig.savedScale(),
                     ScaleConfig::setScale
                 ),
+                Lang.withCaption(OptionInstance.createBoolean(
+                    "puremetal.options.autoRenderScale",
+                    value -> Tooltip.create(autoTooltip()),
+                    (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
+                    ScaleConfig.autoScale(),
+                    value -> {
+                        ScaleConfig.setAutoScale(value);
+                        AutoLockedValues.refresh();
+                    }
+                ), autoName()),
                 Lang.withCaption(new OptionInstance<>(
                     "puremetal.options.upscaler",
                     value -> Tooltip.create(upscalerTooltip(value)),
@@ -125,18 +149,24 @@ public final class ScaleOptions {
                     ),
                     ScaleConfig.upscaler(),
                     ScaleConfig::setUpscaler
-                ), upscalerName()),
-                Lang.withCaption(new OptionInstance<>(
-                    "puremetal.options.metal4",
-                    value -> Tooltip.create(metal4Tooltip()),
-                    (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
-                    Metal4Config.supported() ? OptionInstance.BOOLEAN_VALUES : new LockedBooleanValues(),
-                    Metal4Config.enabled(),
-                    Metal4Config::setEnabled
-                ), metal4Name())
+                ), upscalerName())
             };
         }
         return vanilla;
+    }
+
+    public static OptionInstance<Boolean> vanillaMetal4() {
+        if (vanillaMetal4 == null) {
+            vanillaMetal4 = Lang.withCaption(new OptionInstance<>(
+                "puremetal.options.metal4",
+                value -> Tooltip.create(metal4Tooltip()),
+                (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
+                Metal4Config.supported() ? OptionInstance.BOOLEAN_VALUES : new LockedBooleanValues(),
+                Metal4Config.enabled(),
+                Metal4Config::setEnabled
+            ), metal4Name());
+        }
+        return vanillaMetal4;
     }
 
     /**
@@ -168,6 +198,42 @@ public final class ScaleOptions {
 
         @Override
         public Codec<Boolean> codec() {
+            return values.codec();
+        }
+    }
+
+    /** The Render Scale slider, greyed out while Auto Render Scale picks the scale (it keeps showing the saved value). */
+    private record AutoLockedValues<T>(OptionInstance.ValueSet<T> values) implements OptionInstance.ValueSet<T> {
+        private static WeakReference<AbstractWidget> slider = new WeakReference<>(null);
+
+        static void refresh() {
+            AbstractWidget widget = slider.get();
+            if (widget != null) {
+                widget.active = !ScaleConfig.autoScale();
+            }
+        }
+
+        @Override
+        public Function<OptionInstance<T>, AbstractWidget> createButton(
+            final OptionInstance.TooltipSupplier<T> tooltip, final Options options, final int x, final int y, final int width,
+            final OptionInstance.ValueUpdateListener<? super T> onValueUpdate
+        ) {
+            final Function<OptionInstance<T>, AbstractWidget> create = values.createButton(tooltip, options, x, y, width, onValueUpdate);
+            return option -> {
+                AbstractWidget widget = create.apply(option);
+                slider = new WeakReference<>(widget);
+                refresh();
+                return widget;
+            };
+        }
+
+        @Override
+        public Optional<T> validateValue(final T value) {
+            return values.validateValue(value);
+        }
+
+        @Override
+        public Codec<T> codec() {
             return values.codec();
         }
     }

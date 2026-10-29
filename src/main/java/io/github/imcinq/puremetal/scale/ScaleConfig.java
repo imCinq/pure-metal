@@ -46,6 +46,10 @@ public final class ScaleConfig {
     private static int scale = MAX_SCALE;
     /** Session-only scale (benchmarks); never saved. 0 = none. */
     private static int transientScale;
+    /** Auto Render Scale (saved as renderScaleAuto): {@link AutoScale} picks the scale, the saved one waits underneath. */
+    private static boolean autoScale;
+    /** The step Auto Render Scale picked; session-only. */
+    private static int autoStep = MAX_SCALE;
     private static Upscaler upscaler = Upscaler.BILINEAR;
     private static Sharpening sharpening = Sharpening.LOW;
     /**
@@ -69,7 +73,40 @@ public final class ScaleConfig {
     }
 
     public static int scale() {
-        return transientScale != 0 ? transientScale : scale;
+        // While the bench or the profiler blocks Auto Render Scale, the saved scale applies so measurements match the player's setting.
+        return transientScale != 0 ? transientScale : autoScale && !AutoScale.BLOCKED ? autoStep : scale;
+    }
+
+    /** The scale the player chose (what the slider shows), whatever Auto Render Scale or a benchmark uses right now. */
+    public static int savedScale() {
+        return scale;
+    }
+
+    public static boolean autoScale() {
+        return autoScale;
+    }
+
+    public static void setAutoScale(final boolean value) {
+        if (value == autoScale) {
+            return;
+        }
+        int before = scale();
+        autoScale = value;
+        autoStep = MAX_SCALE;
+        AutoScale.restart();
+        if (scale() != before) {
+            RenderScale.markDirty();
+        }
+        writeProperties(p -> p.setProperty("renderScaleAuto", Boolean.toString(value)));
+    }
+
+    /** Auto Render Scale's pick; never saved. */
+    static void setAutoStep(final int percent) {
+        int before = scale();
+        autoStep = Math.clamp(percent, MIN_SCALE, MAX_SCALE);
+        if (scale() != before) {
+            RenderScale.markDirty();
+        }
     }
 
     /** The fraction of the screen size MetalFX Temporal writes (1 = full). */
@@ -116,10 +153,15 @@ public final class ScaleConfig {
 
     public static void setScale(final int value) {
         int clamped = Math.clamp(value, MIN_SCALE, MAX_SCALE);
+        // Compare what is drawn, not only the saved value: clearing a benchmark's scale can change it on its own.
+        int before = scale();
         transientScale = 0;
-        if (clamped != scale) {
-            scale = clamped;
+        boolean changed = clamped != scale;
+        scale = clamped;
+        if (scale() != before) {
             RenderScale.markDirty();
+        }
+        if (changed) {
             save();
         }
     }
@@ -173,6 +215,7 @@ public final class ScaleConfig {
             }
         }
         scale = newScale;
+        autoScale = Boolean.parseBoolean(p.getProperty("renderScaleAuto", "false").trim());
         upscaler = newUpscaler;
         sharpening = newSharpening;
         temporalOutputScale = newOutputScale;
