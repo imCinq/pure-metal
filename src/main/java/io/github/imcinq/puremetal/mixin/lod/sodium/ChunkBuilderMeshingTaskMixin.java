@@ -5,17 +5,23 @@ import com.llamalad7.mixinextras.sugar.Local;
 import io.github.imcinq.puremetal.lod.CoarseMesher;
 import io.github.imcinq.puremetal.lod.LodState;
 import io.github.imcinq.puremetal.lod.sodium.SodiumEmitter;
+import io.github.imcinq.puremetal.lod.sodium.WaterTopHook;
+import net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildBuffers;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildContext;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildOutput;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.BlockRenderer;
+import net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.FluidRenderer;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.tasks.ChunkBuilderMeshingTask;
+import net.caffeinemc.mods.sodium.client.render.chunk.translucent_sorting.TranslucentGeometryCollector;
 import net.caffeinemc.mods.sodium.client.util.task.CancellationToken;
+import net.caffeinemc.mods.sodium.client.world.LevelSlice;
 import net.caffeinemc.mods.sodium.client.world.cloned.ChunkRenderContext;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -40,7 +46,8 @@ public abstract class ChunkBuilderMeshingTaskMixin {
         Minecraft mc = Minecraft.getInstance();
         CoarseMesher.begin(
             context.cache.getWorldSlice(), origin.x(), origin.y(), origin.z(),
-            mc.options.ambientOcclusion().get(), context.cache.getBlockModels(), mc.getBlockColors()
+            mc.options.ambientOcclusion().get(), context.cache.getBlockModels(), mc.getBlockColors(),
+            WaterTopHook.supported() ? mc.getModelManager().getFluidStateModelSet() : null
         );
     }
 
@@ -64,6 +71,23 @@ public abstract class ChunkBuilderMeshingTaskMixin {
             }
         }
         // Keep the original invocation and other mods' wrappers intact; no Operation.call varargs array.
+        return true;
+    }
+
+    /** Emits a merged water top next to the fluid renderer's own faces; DefaultFluidRenderer skips those tops itself. */
+    @WrapWithCondition(
+        method = EXECUTE,
+        at = @At(value = "INVOKE", target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/FluidRenderer;render(Lnet/caffeinemc/mods/sodium/client/world/LevelSlice;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/material/FluidState;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/BlockPos;Lnet/caffeinemc/mods/sodium/client/render/chunk/translucent_sorting/TranslucentGeometryCollector;Lnet/caffeinemc/mods/sodium/client/render/chunk/compile/ChunkBuildBuffers;)V"),
+        require = 1
+    )
+    private boolean puremetal$coarseWater(
+        final FluidRenderer renderer, final LevelSlice level, final BlockState state, final FluidState fluid, final BlockPos pos,
+        final BlockPos modelOffset, final TranslucentGeometryCollector collector, final ChunkBuildBuffers buffers
+    ) {
+        CoarseMesher mesher = CoarseMesher.current();
+        if (mesher != null && mesher.startsWaterTop(modelOffset.getX(), modelOffset.getY(), modelOffset.getZ())) {
+            mesher.emitWaterTop(modelOffset.getX(), modelOffset.getY(), modelOffset.getZ(), SodiumEmitter.of(buffers, collector));
+        }
         return true;
     }
 

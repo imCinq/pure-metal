@@ -27,6 +27,19 @@ public final class TestLodMixins {
             "net.minecraft.client.renderer.chunk.CompiledSectionMesh",
             "net.minecraft.client.renderer.extract.LevelExtractor"
         };
+        if (sodium) {
+            // The water top skip only applies to a Sodium whose fluid renderer was checked; then the merge is on too.
+            boolean waterHook = (boolean) Class.forName("io.github.imcinq.puremetal.lod.sodium.WaterTopHook", true, loader)
+                .getMethod("supported").invoke(null);
+            System.out.println("Sodium water top hook " + (waterHook ? "supported" : "not supported by this Sodium"));
+            if (waterHook) {
+                targets = java.util.Arrays.copyOf(targets, targets.length + 1);
+                targets[targets.length - 1] = "net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.DefaultFluidRenderer";
+            }
+        } else {
+            targets = java.util.Arrays.copyOf(targets, targets.length + 1);
+            targets[targets.length - 1] = "net.minecraft.client.renderer.block.FluidRenderer";
+        }
         for (String name : targets) {
             Class<?> target = Class.forName(name, false, loader);
             // Force verification/resolution of transformed methods without running class initializers.

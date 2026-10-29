@@ -34,11 +34,13 @@
     "perf.FramerateLimitTrackerMixin",
     "perf.TerrainGenerationMixin",
     "lod.SectionCompilerMixin",
+    "lod.FluidRendererMixin",
     "lod.SectionCompilerResultsMixin",
     "lod.CompiledSectionMeshMixin",
     "lod.LevelExtractorMixin",
     "lod.LodTextureShaderMixin",
     "lod.sodium.ChunkBuilderMeshingTaskMixin",
+    "lod.sodium.DefaultFluidRendererMixin",
     "lod.sodium.ChunkBuildOutputMixin",
     "lod.sodium.RenderSectionMixin",
     "lod.sodium.RenderSectionManagerMixin"

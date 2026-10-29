@@ -31,7 +31,7 @@
   "puremetal.options.note": "Pure Metal already boosts FPS on its own. These settings are optional extras.",
   "puremetal.options.inactive": "Inactive: Pure Metal is not running.",
   "puremetal.options.terrainLod": "Terrain LOD",
-  "puremetal.options.terrainLod.tooltip": "Simplifies far terrain at Render Distance 16+. Nearby terrain stays full detail; distant solid blocks are drawn as bigger blocks. Water, plants, leaves and glass are unchanged.",
+  "puremetal.options.terrainLod.tooltip": "Simplifies far terrain at Render Distance 16+. Nearby terrain stays full detail; distant solid blocks are drawn as bigger blocks, distant leaves are drawn solid, small plants are hidden far away and calm water surfaces are simplified. Glass is unchanged.",
   "puremetal.options.terrainLodRatio": "LOD Distance",
   "puremetal.options.terrainLodRatio.tooltip": "Share of Render Distance kept at full detail. Lower simplifies more terrain.",
   "puremetal.options.generationFpsCap": "Faster World Generation",

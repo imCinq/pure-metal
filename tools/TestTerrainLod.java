@@ -21,6 +21,8 @@ import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.client.renderer.block.BlockModelLighter;
 import net.minecraft.client.renderer.block.BlockStateModelSet;
+import net.minecraft.client.renderer.block.FluidModel;
+import net.minecraft.client.renderer.block.FluidStateModelSet;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.renderer.block.dispatch.SingleVariant;
@@ -29,17 +31,32 @@ import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.client.resources.model.sprite.Material;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.Holder;
+import net.minecraft.core.MappedRegistry;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
+import net.minecraft.tags.TagLoader;
+import net.minecraft.util.ARGB;
+import net.minecraft.util.LightCoordsUtil;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DoublePlantBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 import org.joml.Vector3f;
 import org.joml.Vector3fc;
 
@@ -501,8 +518,339 @@ public final class TestTerrainLod {
                 "vines retain detailed geometry and do not enter solid-cell LOD");
         }
 
+        // Binds the tags the new rules read; everything above ran with unbound tags, so leaves were not merged there.
+        bindTestTags();
+        leafChecks(models, colors);
+        plantChecks(models, set, colors);
+        waterChecks(set, colors);
+
         System.out.println(failures == 0 ? "ALL TERRAIN LOD CHECKS PASSED" : failures + " FAILURES");
         System.exit(failures == 0 ? 0 : 1);
+    }
+
+    // ---- leaves, small plants and still water ----
+    record WaterTop(int x, int y, int z, float height, int[] colors, int[] lights) {
+    }
+
+    static final class Special {
+        byte state;
+        int merged;
+        final Set<Long> covered = new HashSet<>();
+        final Set<Long> hidden = new HashSet<>();
+        final List<Emitted> quads = new ArrayList<>();
+        final List<WaterTop> tops = new ArrayList<>();
+    }
+
+    /** Like build(), for any block: records covered blocks, merged quads, merged water tops and hidden water tops. */
+    static Special buildSpecial(World w, BlockStateModelSet set, BlockColors colors, FluidStateModelSet fluids) {
+        Special r = new Special();
+        CoarseMesher m = CoarseMesher.begin(w, 0, 0, 0, true, set, colors, fluids);
+        VanillaEmitter emitter = VanillaEmitter.of((x, y, z, quad, inst) -> {
+            int[] c = new int[4];
+            int[] l = new int[4];
+            for (int v = 0; v < 4; v++) {
+                c[v] = inst.getColor(v);
+                l[v] = inst.getLightCoords(v);
+            }
+            r.quads.add(new Emitted((int) x, (int) y, (int) z, quad, c, l));
+        });
+        CoarseMesher.WaterEmitter water = (model, x, y, z, height, c, l) -> r.tops.add(new WaterTop(x, y, z, height, c.clone(), l.clone()));
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    if (w.at(x, y, z).isAir() || m == null) {
+                        continue;
+                    }
+                    if (m.startsWaterTop(x, y, z)) {
+                        m.emitWaterTop(x, y, z, water);
+                    }
+                    if (m.hidesWaterTop(new BlockPos(x, y, z))) {
+                        r.hidden.add(BlockPos.asLong(x, y, z));
+                    }
+                    if (m.covers(x, y, z)) {
+                        r.covered.add(BlockPos.asLong(x, y, z));
+                        m.emitIfOrigin(x, y, z, emitter);
+                    }
+                }
+            }
+        }
+        r.state = CoarseMesher.end();
+        VanillaEmitter.end();
+        r.merged = CoarseMesher.lastMergedCells();
+        return r;
+    }
+
+    static List<Holder<Block>> holders(Block... blocks) {
+        List<Holder<Block>> out = new ArrayList<>();
+        for (Block b : blocks) {
+            out.add(BuiltInRegistries.BLOCK.wrapAsHolder(b));
+        }
+        return out;
+    }
+
+    static void bindTestTags() {
+        Map<TagKey<Block>, List<Holder<Block>>> tags = new HashMap<>();
+        List<Holder<Block>> leaves = new ArrayList<>();
+        BuiltInRegistries.BLOCK.stream().filter(b -> b instanceof LeavesBlock).forEach(b -> leaves.add(BuiltInRegistries.BLOCK.wrapAsHolder(b)));
+        tags.put(BlockTags.LEAVES, leaves);
+        tags.put(BlockTags.SMALL_FLOWERS, holders(Blocks.DANDELION, Blocks.POPPY));
+        tags.put(BlockTags.SAPLINGS, holders(Blocks.OAK_SAPLING, Blocks.AZALEA));
+        // The bootstrapped registry has no datapack tags: bind the test tags the way a world load would.
+        ((MappedRegistry<Block>) BuiltInRegistries.BLOCK).prepareTagReload(new TagLoader.LoadResult<>(Registries.BLOCK, tags)).apply();
+    }
+
+    static void fill(World w, int x0, int y0, int z0, int x1, int y1, int z1, BlockState s) {
+        for (int x = x0; x <= x1; x++) {
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    w.set(x, y, z, s);
+                }
+            }
+        }
+    }
+
+    /** Directions of a merged cell with at least one visible sub-block side, by the rules in CoarseMesher's class doc. */
+    static Set<Direction> expectedFaces(World w, int cx, int cy, int cz) {
+        Set<Direction> out = new HashSet<>();
+        for (Direction d : DIRS) {
+            for (int k = 0; k < 4; k++) {
+                int layer = d.getAxisDirection() == Direction.AxisDirection.POSITIVE ? 1 : 0;
+                int a = k >> 1;
+                int b = k & 1;
+                int x = cx + switch (d.getAxis()) { case X -> layer; default -> a; };
+                int y = cy + switch (d.getAxis()) { case Y -> layer; case X -> a; case Z -> b; };
+                int z = cz + switch (d.getAxis()) { case Z -> layer; default -> b; };
+                BlockState self = w.at(x, y, z);
+                BlockState n = w.at(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ());
+                boolean visible = Block.shouldRenderFace(self, n, d) && (self.isSolidRender() || !n.is(BlockTags.LEAVES));
+                if (visible) {
+                    out.add(d);
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
+    static void leafChecks(Map<BlockState, BlockStateModel> models, BlockColors colors) {
+        BlockState oak = Blocks.OAK_LEAVES.defaultBlockState();
+        BlockState persistent = oak.setValue(LeavesBlock.PERSISTENT, true);
+        BlockState wet = oak.setValue(LeavesBlock.WATERLOGGED, true);
+        BlockState birch = Blocks.BIRCH_LEAVES.defaultBlockState();
+        BlockState stone = Blocks.STONE.defaultBlockState();
+        BlockState dirt = Blocks.DIRT.defaultBlockState();
+        Map<Direction, List<BakedQuad>> faces = new HashMap<>();
+        for (Direction d : DIRS) {
+            faces.put(d, List.of(face(d, 5, 0, ChunkSectionLayer.CUTOUT, 0)));
+        }
+        BlockStateModelPart leafPart = new Part(faces, List.of());
+        Map<BlockState, BlockStateModel> lm = new HashMap<>(models);
+        for (BlockState s : new BlockState[]{oak, persistent, wet, birch}) {
+            lm.put(s, new SingleVariant(leafPart));
+        }
+        BlockStateModelSet set = new BlockStateModelSet(lm, new SingleVariant(cube(9, 0, ChunkSectionLayer.SOLID, false)));
+        check(oak.is(BlockTags.LEAVES) && birch.is(BlockTags.LEAVES) && !stone.is(BlockTags.LEAVES), "leaf tag bound for the test");
+        check(!oak.isSolidRender() && wet.getFluidState().isSource(), "oak leaves are not solid; waterlogged ones hold water");
+        check(leafPart.getQuads(Direction.UP).getFirst().materialInfo().layer() == ChunkSectionLayer.CUTOUT, "source leaf model is cutout");
+
+        // A 6x6x6 leaf ball (mixed oak, persistent and birch) next to a 2x2x2 stone cell.
+        TerrainLod.setForTest(-14, 0, 13);
+        World ball = new World();
+        for (int x = 4; x < 10; x++) {
+            for (int y = 4; y < 10; y++) {
+                for (int z = 4; z < 10; z++) {
+                    ball.set(x, y, z, (x + y + z) % 3 == 0 ? persistent : (x + y + z) % 3 == 1 ? oak : birch);
+                }
+            }
+        }
+        fill(ball, 10, 4, 4, 11, 5, 5, stone);
+        Special r = buildSpecial(ball, set, colors, null);
+        check(r.state == TerrainLod.COARSE && r.merged == 28, "leaf ball: 27 leaf cells + 1 stone cell merge, got " + r.merged);
+        check(r.covered.size() == 224, "leaf ball: 224 blocks covered, got " + r.covered.size());
+        Map<String, Set<Direction>> byCell = new HashMap<>();
+        int leafQuads = 0;
+        for (Emitted e : r.quads) {
+            byCell.computeIfAbsent(e.cx() + "," + e.cy() + "," + e.cz(), key -> new HashSet<>()).add(e.quad().direction());
+            check(e.quad().materialInfo().layer() == ChunkSectionLayer.SOLID, "merged faces are drawn solid");
+            if (e.cx() < 10) {
+                leafQuads++;
+                check(e.quad().materialInfo().tintIndex() == 0, "merged leaf faces keep their tint index");
+                for (int v = 0; v < 4; v++) {
+                    check(((e.colors()[v] >> 8) & 0xFF) > ((e.colors()[v] >> 16) & 0xFF), "merged leaf face is foliage tinted");
+                }
+            }
+        }
+        // 6 sides x 9 cells, minus the one east cell whose side lies against the stone cell (vanilla culls it; the stone draws its own).
+        check(leafQuads == 53, "leaf ball shows only its outside, got " + leafQuads);
+        for (int cx = 4; cx <= 10; cx += 2) {
+            for (int cy = 4; cy <= 8; cy += 2) {
+                for (int cz = 4; cz <= 8; cz += 2) {
+                    if (cx == 10 && (cy != 4 || cz != 4)) {
+                        continue;
+                    }
+                    Set<Direction> shown = byCell.getOrDefault(cx + "," + cy + "," + cz, Set.of());
+                    check(shown.equals(expectedFaces(ball, cx, cy, cz)), "cell " + cx + "," + cy + "," + cz + " shows " + shown);
+                }
+            }
+        }
+        check(!byCell.containsKey("6,6,6"), "the inner leaf cell emits nothing");
+        check(byCell.get("4,4,4").size() == 3, "a corner leaf cell shows three sides");
+        check(byCell.get("10,4,4").contains(Direction.WEST), "the stone cell keeps the face that touches the leaves");
+
+        // Near the camera nothing changes, but the section knows a coarse build would differ.
+        TerrainLod.setForTest(0, 0, 13);
+        Special near = buildSpecial(ball, set, colors, null);
+        check(near.covered.isEmpty() && near.quads.isEmpty() && near.state == TerrainLod.FULL, "leaves in the full-detail radius stay detailed, state FULL");
+        World leavesOnly = new World();
+        fill(leavesOnly, 4, 4, 4, 7, 7, 7, oak);
+        Special nearLeaves = buildSpecial(leavesOnly, set, colors, null);
+        check(nearLeaves.state == TerrainLod.FULL && nearLeaves.covered.isEmpty(), "leaf-only near section requests a coarse rebuild");
+
+        // Cells that are not all plain leaves stay detailed.
+        TerrainLod.setForTest(-14, 0, 13);
+        World mixed = new World();
+        fill(mixed, 4, 4, 4, 5, 5, 5, oak);
+        mixed.set(5, 5, 5, dirt);
+        Special mx = buildSpecial(mixed, set, colors, null);
+        check(mx.covered.isEmpty() && mx.state == TerrainLod.NONE, "a cell with one dirt block among leaves is not merged");
+        World soaked = new World();
+        fill(soaked, 4, 4, 4, 5, 5, 5, oak);
+        soaked.set(4, 4, 4, wet);
+        Special sk = buildSpecial(soaked, set, colors, null);
+        check(sk.covered.isEmpty() && sk.state == TerrainLod.NONE, "a waterlogged leaf block keeps its cell detailed");
+        System.out.println("leaves: ball " + leafQuads + " leaf quads (" + r.merged + " cells), mixed and waterlogged cells stay detailed");
+    }
+
+    static void plantChecks(Map<BlockState, BlockStateModel> models, BlockStateModelSet set, BlockColors colors) {
+        TerrainLod.setForTest(-14, 0, 13);
+        BlockState lowerGrass = Blocks.TALL_GRASS.defaultBlockState();
+        BlockState upperGrass = lowerGrass.setValue(DoublePlantBlock.HALF, DoubleBlockHalf.UPPER);
+        BlockState lowerSun = Blocks.SUNFLOWER.defaultBlockState();
+        BlockState upperSun = lowerSun.setValue(DoublePlantBlock.HALF, DoubleBlockHalf.UPPER);
+        BlockState[] hiddenSingles = {
+            Blocks.SHORT_GRASS.defaultBlockState(), Blocks.FERN.defaultBlockState(), Blocks.DEAD_BUSH.defaultBlockState(),
+            Blocks.DANDELION.defaultBlockState(), Blocks.POPPY.defaultBlockState(), Blocks.OAK_SAPLING.defaultBlockState(),
+            Blocks.SEAGRASS.defaultBlockState(), Blocks.TALL_SEAGRASS.defaultBlockState(), lowerGrass, lowerSun
+        };
+        BlockState[] kept = {
+            Blocks.AZALEA.defaultBlockState(), Blocks.WHEAT.defaultBlockState(), Blocks.SUGAR_CANE.defaultBlockState(),
+            Blocks.VINE.defaultBlockState(), Blocks.KELP.defaultBlockState(), Blocks.CACTUS.defaultBlockState(),
+            Blocks.RED_MUSHROOM.defaultBlockState(), Blocks.BAMBOO.defaultBlockState(), Blocks.CORNFLOWER.defaultBlockState(),
+            Blocks.LILY_PAD.defaultBlockState()
+        };
+        World w = new World();
+        fill(w, 0, 0, 0, 15, 3, 15, Blocks.STONE.defaultBlockState());
+        for (int i = 0; i < hiddenSingles.length; i++) {
+            w.set(1 + i, 4, 1, hiddenSingles[i]);
+        }
+        w.set(1 + 8, 5, 1, upperGrass);
+        w.set(1 + 9, 5, 1, upperSun);
+        for (int i = 0; i < kept.length; i++) {
+            w.set(1 + i, 4, 4, kept[i]);
+        }
+        Special r = buildSpecial(w, set, colors, null);
+        check(r.state == TerrainLod.COARSE, "plants and terrain: state COARSE");
+        for (int i = 0; i < hiddenSingles.length; i++) {
+            check(r.covered.contains(BlockPos.asLong(1 + i, 4, 1)), hiddenSingles[i] + " is hidden in the outer band");
+        }
+        check(r.covered.contains(BlockPos.asLong(9, 5, 1)) && r.covered.contains(BlockPos.asLong(10, 5, 1)), "upper halves of tall plants are hidden too");
+        for (int i = 0; i < kept.length; i++) {
+            check(!r.covered.contains(BlockPos.asLong(1 + i, 4, 4)), kept[i] + " keeps its normal geometry");
+        }
+
+        // Plants alone: a coarse build differs, a near build knows it would; crops alone change nothing.
+        World lone = new World();
+        lone.set(3, 3, 3, Blocks.POPPY.defaultBlockState());
+        Special coarse = buildSpecial(lone, set, colors, null);
+        check(coarse.state == TerrainLod.COARSE && coarse.covered.size() == 1 && coarse.quads.isEmpty(), "a lone flower is hidden and emits nothing");
+        TerrainLod.setForTest(0, 0, 13);
+        Special near = buildSpecial(lone, set, colors, null);
+        check(near.state == TerrainLod.FULL && near.covered.isEmpty(), "a near section with a flower requests a coarse rebuild");
+        World crops = new World();
+        crops.set(3, 3, 3, Blocks.WHEAT.defaultBlockState());
+        for (int camera : new int[]{0, -14}) {
+            TerrainLod.setForTest(camera, 0, 13);
+            Special c = buildSpecial(crops, set, colors, null);
+            check(c.state == TerrainLod.NONE && c.covered.isEmpty(), "crops alone do not change the mesh, camera " + camera);
+        }
+        System.out.println("plants: " + hiddenSingles.length + " singles and 2 upper halves hidden, " + kept.length + " other plants untouched");
+    }
+
+    static void waterChecks(BlockStateModelSet set, BlockColors colors) {
+        TerrainLod.setForTest(-14, 0, 13);
+        FluidModel wm = new FluidModel(ChunkSectionLayer.TRANSLUCENT, null, null, null, null);
+        FluidStateModelSet fluids = new FluidStateModelSet(Map.of(Fluids.WATER, wm, Fluids.FLOWING_WATER, wm), wm);
+        BlockState water = Blocks.WATER.defaultBlockState();
+        BlockState stone = Blocks.STONE.defaultBlockState();
+        float height = water.getFluidState().getOwnHeight() - 0.001F;
+
+        // A basin of two source layers inside stone walls, open air above.
+        World basin = new World();
+        fill(basin, 0, 0, 0, 15, 2, 15, stone);
+        fill(basin, 1, 3, 1, 12, 4, 12, stone);
+        fill(basin, 2, 3, 2, 11, 4, 11, water);
+        Special r = buildSpecial(basin, set, colors, fluids);
+        check(r.tops.size() == 25, "basin: 5x5 footprints merge, got " + r.tops.size());
+        Set<Long> expectedHidden = new HashSet<>();
+        for (int x = 2; x <= 11; x++) {
+            for (int z = 2; z <= 11; z++) {
+                expectedHidden.add(BlockPos.asLong(x, 4, z));
+            }
+        }
+        check(r.hidden.equals(expectedHidden), "exactly the 100 top-layer water blocks hide their top, got " + r.hidden.size());
+        for (WaterTop t : r.tops) {
+            check(t.y() == 4 && t.x() % 2 == 0 && t.z() % 2 == 0 && t.x() >= 2 && t.x() <= 10 && t.z() >= 2 && t.z() <= 10, "merged top sits on an even footprint of the top layer " + t);
+            check(t.height() == height, "merged top uses the source surface height");
+            for (int k = 0; k < 4; k++) {
+                BlockPos p = new BlockPos(t.x() + (k >> 1), t.y(), t.z() + (k & 1));
+                check(t.lights()[k] == LightCoordsUtil.max(LightCoordsUtil.getLightCoords(basin, p), LightCoordsUtil.getLightCoords(basin, p.above())),
+                    "water top corner light is what vanilla uses for the block at that corner");
+                check(t.colors()[k] == ARGB.scaleRGB(-1, basin.cardinalLighting().up()), "water top color is the tint times the top shade");
+            }
+        }
+        check(!r.covered.contains(BlockPos.asLong(5, 4, 5)), "water blocks are not covered: their sides keep the normal path");
+
+        // Anything that is not four plain sources with a matching ring keeps the normal path.
+        World flowing = copy(basin);
+        flowing.set(6, 4, 6, water.setValue(LiquidBlock.LEVEL, 3));
+        Special f = buildSpecial(flowing, set, colors, fluids);
+        check(f.tops.size() == 21 && f.tops.stream().noneMatch(t -> t.x() >= 4 && t.x() <= 6 && t.z() >= 4 && t.z() <= 6),
+            "flowing water splits its footprint and the footprints that see it, got " + f.tops.size());
+        check(!f.hidden.contains(BlockPos.asLong(6, 4, 6)) && !f.hidden.contains(BlockPos.asLong(7, 4, 7)), "split footprints draw their own tops");
+        World covered = copy(basin);
+        covered.set(6, 5, 6, stone);
+        check(buildSpecial(covered, set, colors, fluids).tops.size() == 24, "a block over one source keeps that footprint detailed");
+        World logged = copy(basin);
+        logged.set(6, 4, 6, Blocks.OAK_SLAB.defaultBlockState().setValue(BlockStateProperties.WATERLOGGED, true));
+        check(buildSpecial(logged, set, colors, fluids).tops.size() == 24, "waterlogged blocks are never merged");
+        World open = copy(basin);
+        fill(open, 12, 3, 6, 12, 4, 6, Blocks.AIR.defaultBlockState());
+        Special o = buildSpecial(open, set, colors, fluids);
+        check(o.tops.size() == 23 && o.tops.stream().noneMatch(t -> t.x() == 10 && t.z() >= 4 && t.z() <= 6),
+            "a footprint beside open air keeps its edge detailed, got " + o.tops.size());
+        Special off = buildSpecial(basin, set, colors, null);
+        check(off.tops.isEmpty() && off.hidden.isEmpty(), "without fluid models nothing is merged or hidden");
+
+        // An ocean section: no solid cells, so only the water tops make the section differ.
+        World ocean = new World();
+        fill(ocean, -2, 4, -2, 17, 4, 17, water);
+        Special coarse = buildSpecial(ocean, set, colors, fluids);
+        check(coarse.state == TerrainLod.COARSE && coarse.tops.size() == 64 && coarse.merged == 0, "ocean section merges 64 tops, got " + coarse.tops.size());
+        CoarseMesher m = CoarseMesher.begin(ocean, 0, 0, 0, true, set, colors, fluids);
+        check(m != null && !m.hidesWaterTop(new BlockPos(18, 4, 2)) && !m.hidesWaterTop(new BlockPos(2, 5, 2)) && m.hidesWaterTop(new BlockPos(2, 4, 2)),
+            "hidden tops are limited to the section being built");
+        CoarseMesher.end();
+        TerrainLod.setForTest(0, 0, 13);
+        Special near = buildSpecial(ocean, set, colors, fluids);
+        check(near.state == TerrainLod.FULL && near.tops.isEmpty() && near.hidden.isEmpty(), "near ocean section requests a coarse rebuild and stays detailed");
+        check(buildSpecial(ocean, set, colors, null).state == TerrainLod.NONE, "near ocean section without fluid models has nothing to simplify");
+        System.out.println("water: basin " + r.tops.size() + " merged tops, ocean " + coarse.tops.size() + " tops");
+    }
+
+    static World copy(World source) {
+        World out = new World();
+        out.blocks.putAll(source.blocks);
+        return out;
     }
 
     static void checkLodSchedule() {

@@ -94,6 +94,15 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return Boolean.parseBoolean(System.getProperty("puremetal.experimentalLodTextures", "true"))
                 || Boolean.parseBoolean(System.getProperty("puremetal.rgssEarlyOut", "true"));
         }
+        if (mixinClassName.endsWith(".lod.sodium.DefaultFluidRendererMixin")) {
+            // Water tops are only merged when this hook is there to skip them; other Sodium versions keep them as they are.
+            boolean supported = SODIUM && checkSodiumFluidTop(targetClassName);
+            io.github.imcinq.puremetal.lod.sodium.WaterTopHook.setSupported(supported);
+            if (SODIUM && !supported) {
+                LOGGER.info("Pure Metal: Terrain LOD keeps Sodium's water surfaces as they are, this Sodium version is not supported");
+            }
+            return supported;
+        }
         if (mixinClassName.contains(".lod.sodium.")) {
             return SODIUM;
         }
@@ -195,6 +204,32 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             final ClassNode node = new ClassNode();
             new org.objectweb.asm.ClassReader(in).accept(node, flags);
             return node;
+        }
+    }
+
+    /** The hook needs render() to test the top face first: isFullBlockFluidVisible(..., Direction.UP, ...) with the expected shape. */
+    private static boolean checkSodiumFluidTop(final String targetClassName) {
+        try {
+            final ClassNode node = MixinService.getService().getBytecodeProvider().getClassNode(targetClassName, false);
+            final String visible = "(Lnet/minecraft/client/renderer/block/BlockAndTintGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/material/FluidState;)Z";
+            for (final org.objectweb.asm.tree.MethodNode method : node.methods) {
+                if (!"render".equals(method.name) || !method.desc.startsWith("(Lnet/caffeinemc/mods/sodium/client/world/LevelSlice;")) {
+                    continue;
+                }
+                for (final org.objectweb.asm.tree.AbstractInsnNode insn : method.instructions) {
+                    if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call && "isFullBlockFluidVisible".equals(call.name) && visible.equals(call.desc)) {
+                        org.objectweb.asm.tree.AbstractInsnNode previous = call.getPrevious();
+                        while (previous != null && !(previous instanceof org.objectweb.asm.tree.FieldInsnNode)) {
+                            previous = previous.getPrevious();
+                        }
+                        return previous instanceof org.objectweb.asm.tree.FieldInsnNode field
+                            && "net/minecraft/core/Direction".equals(field.owner) && "UP".equals(field.name);
+                    }
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
