@@ -87,7 +87,15 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setBinding(GenerationFpsCap::setEnabled, GenerationFpsCap::enabled)))
                 .addOptionGroup(builder.createOptionGroup()
                     .setName(Lang.text("puremetal.options.section.experimental"))
-                    .addOption(metal4Option(builder))));
+                    .addOption(metal4Option(builder))
+                    .addOption(builder.createBooleanOption(id("smooth_frame_pacing"))
+                        .setName(io.github.imcinq.puremetal.perf.FramePacingOptions.name())
+                        .setTooltip(io.github.imcinq.puremetal.perf.FramePacingOptions.tooltip())
+                        .setImpact(OptionImpact.LOW)
+                        .setDefaultValue(false)
+                        .setStorageHandler(() -> {
+                        })
+                        .setBinding(io.github.imcinq.puremetal.perf.FramePacing::setEnabled, io.github.imcinq.puremetal.perf.FramePacing::enabled))));
     }
 
     private static Identifier id(final String path) {

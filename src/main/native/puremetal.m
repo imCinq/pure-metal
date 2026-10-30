@@ -4360,8 +4360,18 @@ typedef struct PMSurface {
     // Dev stats, read and reset by pm_surface_take_stats: [0] skipped (a newer frame was ready), [1] dropped (no free
     // slot), [2] presented, [3] shown on screen, [4] submit-to-shown sum in us.
     // [5] GPU time of the present command buffers in us, [6] their count (pm_surface_take_present_gpu).
-    atomic_uint_fast64_t stats[7];
+    // [7] shown frames that followed the previous one by more than 1.5 refreshes (a refresh repeated a frame), [8] shown
+    // frames compared (both need the refresh rate from pm_surface_set_pacing).
+    atomic_uint_fast64_t stats[9];
     atomic_int statsEnabled;
+    // Smooth frame pacing (pm_surface_set_pacing): with vsync, each present is scheduled one refresh after the previous
+    // frame's, anchored to the last time macOS reported a frame on screen.
+    atomic_int pacing;                // option on and vsync on
+    _Atomic uint64_t refreshNs;       // display refresh interval, 0 if unknown
+    _Atomic uint64_t anchorNs;        // presentedTime of the last frame shown, in ns of CACurrentMediaTime()
+    _Atomic uint64_t anchorSeq;       // that frame's present sequence number
+    _Atomic uint64_t lastShownNs;     // presentedTime of the previous shown frame, for stats[7..8]
+    uint64_t presentSeq;              // present dispatch queue only
 } PMSurface;
 
 static NSString *const PRESENT_SHADER =
@@ -5322,7 +5332,21 @@ static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, 
 
 // Presents `drawable` after `pcb`; finished(start, end, failure) runs when the GPU is done with it. Metal 4 orders the drawable with
 // queue waits and signals around the commit instead of a present call on the command buffer.
-static void present_commit(PMSurface *s, id<MTLCommandBuffer> pcb, id<CAMetalDrawable> drawable,
+// When the frame with this present sequence number should reach the screen (CACurrentMediaTime() seconds), or 0 for
+// as soon as possible: one refresh per frame after the last frame macOS reported on screen, a quarter refresh early so
+// the present lands on the intended refresh and not the one after. A frame that is already late goes out at once.
+static double pacing_target(PMSurface *s, uint64_t seq) {
+    if (!atomic_load(&s->pacing)) return 0;
+    uint64_t refresh = atomic_load(&s->refreshNs), anchorNs = atomic_load(&s->anchorNs), anchorSeq = atomic_load(&s->anchorSeq);
+    if (!refresh || !anchorNs || seq <= anchorSeq || seq - anchorSeq > 4) return 0;
+    double now = CACurrentMediaTime();
+    double anchor = anchorNs / 1e9, interval = refresh / 1e9;
+    if (now - anchor > 0.25) return 0;
+    double target = anchor + (double)(seq - anchorSeq) * interval - interval * 0.25;
+    return target > now + 0.0005 && target < now + 4 * interval ? target : 0;
+}
+
+static void present_commit(PMSurface *s, id<MTLCommandBuffer> pcb, id<CAMetalDrawable> drawable, double presentAt,
                            void (^finished)(CFTimeInterval, CFTimeInterval, NSString *)) {
     PM_IF_M4(s->device) {
         id<MTL4CommandQueue> queue = PM_OBJ(id<MTL4CommandQueue>, s->device->m4PresentQueue);
@@ -5339,10 +5363,10 @@ static void present_commit(PMSurface *s, id<MTLCommandBuffer> pcb, id<CAMetalDra
         id<MTL4CommandBuffer> list[1] = { cb };
         [queue commit:list count:1 options:options];
         [queue signalDrawable:drawable];
-        [drawable present];
+        if (presentAt > 0) [drawable presentAtTime:presentAt]; else [drawable present];
         return;
     }
-    [pcb presentDrawable:drawable];
+    if (presentAt > 0) [pcb presentDrawable:drawable atTime:presentAt]; else [pcb presentDrawable:drawable];
     [pcb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         @autoreleasepool {
             finished(done.GPUStartTime, done.GPUEndTime,
@@ -5405,10 +5429,23 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [e endEncoding];
         double submitted = s->slotTime[slot];
+        uint64_t seq = ++s->presentSeq;
+        double presentAt = pacing_target(s, seq);
         atomic_fetch_add(&s->onScreenPending, 1);
         [drawable addPresentedHandler:^(id<MTLDrawable> done) {
             @autoreleasepool {
                 trace_ev(9, (int64_t)pm_sec_ns(done.presentedTime), 0, 0);
+                if (done.presentedTime > 0) {
+                    uint64_t shownNs = (uint64_t)(done.presentedTime * 1e9);
+                    atomic_store(&s->anchorSeq, seq);
+                    atomic_store(&s->anchorNs, shownNs);
+                    uint64_t previous = atomic_exchange(&s->lastShownNs, shownNs);
+                    uint64_t refresh = atomic_load(&s->refreshNs);
+                    if (atomic_load(&s->statsEnabled) && refresh && previous && shownNs > previous && shownNs - previous < 250000000ULL) {
+                        atomic_fetch_add(&s->stats[8], 1);
+                        if (shownNs - previous > refresh + refresh / 2) atomic_fetch_add(&s->stats[7], 1);
+                    }
+                }
                 if (done.presentedTime > 0 && atomic_load(&s->statsEnabled)) {
                     atomic_fetch_add(&s->stats[3], 1);
                     atomic_fetch_add(&s->stats[4], (uint64_t)((done.presentedTime - submitted) * 1e6));
@@ -5424,7 +5461,7 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
         s->lastPresent = CACurrentMediaTime();
         atomic_fetch_add(&s->presentsPending, 1);
         atomic_fetch_add(&s->device->handlers, 1);
-        present_commit(s, pcb, drawable, ^(CFTimeInterval start, CFTimeInterval end, NSString *failure) {
+        present_commit(s, pcb, drawable, presentAt, ^(CFTimeInterval start, CFTimeInterval end, NSString *failure) {
             // Read before s can be freed: the surface's destroy waits on presentsPending, which drops below.
             PMDevice *dev = s->device;
             trace_ev(6, slot, (int64_t)pm_sec_ns(start), (int64_t)pm_sec_ns(end));
@@ -5574,6 +5611,14 @@ PM_EXPORT int pm_surface_blit(PMDevice *d, PMSurface *s, void *texture, char *er
 PM_EXPORT void pm_surface_take_stats(PMSurface *s, uint64_t *out) {
     atomic_store(&s->statsEnabled, 1);
     for (int i = 0; i < 5; i++) out[i] = atomic_exchange(&s->stats[i], 0);
+    out[5] = atomic_exchange(&s->stats[7], 0);
+    out[6] = atomic_exchange(&s->stats[8], 0);
+}
+
+// Display refresh interval (0 if unknown) and whether presents are paced: the option is on and vsync is on.
+PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacing) {
+    atomic_store(&s->refreshNs, refreshNs);
+    atomic_store(&s->pacing, pacing && refreshNs ? 1 : 0);
 }
 
 // True while a present slot still references this texture (presented without a copy and not yet done with it).

@@ -78,6 +78,10 @@ final class MetalSurface implements GpuSurfaceBackend {
         if (NO_PRESENT) {
             return;
         }
+        if (io.github.imcinq.puremetal.perf.FramePacing.update(this.configuredVsync)) {
+            MetalNative.surfaceSetPacing(this.surface, io.github.imcinq.puremetal.perf.FramePacing.refreshNs(),
+                io.github.imcinq.puremetal.perf.FramePacing.pacing());
+        }
         if (PRESENT_STATS) {
             this.logPresentStats();
         }
@@ -104,7 +108,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            java.nio.LongBuffer st = stack.mallocLong(5);
+            java.nio.LongBuffer st = stack.mallocLong(7);
             MetalNative.surfaceTakeStats(this.surface, MemoryUtil.memAddress(st));
             double secs = (now - this.statsStart) / 1e9;
             long shown = st.get(3);
@@ -131,10 +135,13 @@ final class MetalSurface implements GpuSurfaceBackend {
                 }
             }
             org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
-                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={}",
+                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={}",
                 Math.round(this.statsFrames / secs), Math.round(st.get(2) / secs), Math.round(shown / secs),
-                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format("%.1f", st.get(4) / 1000.0 / shown)
+                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format("%.1f", st.get(4) / 1000.0 / shown),
+                st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1
             );
+            io.github.imcinq.puremetal.bench.Bench.hitches += st.get(5);
+            io.github.imcinq.puremetal.bench.Bench.shownCompared += st.get(6);
             if (FrameTrace.ENABLED) {
                 org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
                     "PRESENT-TIMING drawableWaitMaxMs={} layerConfigureMaxMs={} size={}x{} vsync={}",

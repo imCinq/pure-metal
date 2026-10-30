@@ -51,7 +51,7 @@ public final class MetalNative {
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
     // Surface.
-    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy;
+    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing;
     private static MethodHandle H_upscale, H_upscaleReset, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
 
     private MetalNative() {
@@ -175,6 +175,7 @@ public final class MetalNative {
 
         H_surfaceCreate = fn("pm_surface_create", false, L, L, L);
         H_surfaceConfigure = fn("pm_surface_configure", false, null, L, I, I, I, I);
+        H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I);
         H_surfaceBlit = fn("pm_surface_blit", false, I, L, L, L, L, I, I);
         H_surfaceTextureBusy = fn("pm_surface_texture_busy", false, I, L, L);
         H_surfaceDestroy = fn("pm_surface_destroy", false, null, L);
@@ -616,6 +617,14 @@ public final class MetalNative {
     static void surfaceConfigure(final long a0, final int a1, final int a2, final int a3, final int a4) {
         try {
             H_surfaceConfigure.invokeExact(a0, a1, a2, a3, a4);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void surfaceSetPacing(final long a0, final long a1, final int a2) {
+        try {
+            H_surfaceSetPacing.invokeExact(a0, a1, a2);
         } catch (Throwable t) {
             throw rethrow(t);
         }

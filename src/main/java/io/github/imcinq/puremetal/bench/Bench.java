@@ -82,6 +82,8 @@ public final class Bench {
     public static long gpuFrames;
     /** GPU time and count of the present command buffers (separate queue, completes asynchronously). */
     public static long presentGpuNs, presentGpuCount;
+    /** Shown frames that followed the previous one by more than 1.5 refreshes, out of shown frames compared (MetalSurface). */
+    public static long hitches, shownCompared;
     public static long uploadGpuNs, uploadGpuCommands;
     public static long submits;
     public static long passes;
@@ -326,6 +328,7 @@ public final class Bench {
             terrainPrepareNs = terrainEncodeNs = terrainBatches = terrainDraws = 0;
             uploadGpuNs = uploadGpuCommands = 0;
             presentGpuNs = presentGpuCount = 0;
+            hitches = shownCompared = 0;
             surfaceBlockedNs = surfaceBlockedWaits = 0;
             profileSpanNs = profileFragTailNs = profileBlitNs = 0;
             profileSpanSamples = profileFragTailSamples = profileBlitSamples = profileDroppedSamples = 0;
@@ -473,6 +476,9 @@ public final class Bench {
             fmt(submitWaitNs / 1e6 / count), gpuFrames == 0 ? "n/a" : fmt(gpuNs / 1e6 / count),
             fmt((double)submits / count), fmt((double)passes / count), fmt((double)draws / count), fmt((double)metalDraws / count), directFallbacks
         );
+        if (shownCompared > 0) {
+            LOGGER.info("BENCH-PACING hitches={} shownCompared={} hitchPercent={}", hitches, shownCompared, fmt(100.0 * hitches / shownCompared));
+        }
         if (terrainBatches > 0) {
             LOGGER.info("BENCH-TERRAIN prepareMs/f={} encodeMs/f={} batches/f={} draws/f={}",
                 fmt(terrainPrepareNs / 1e6 / count), fmt(terrainEncodeNs / 1e6 / count),
