@@ -31,7 +31,7 @@ def main():
         result = subprocess.run(
             [str(root / "gradlew"), "--offline", "-q", "-I", str(init), "pmTerrainCheckClasspath",
              *(["-PsodiumVersion=" + env["SODIUM_VERSION"]] if env.get("SODIUM_VERSION") else [])],
-            cwd=root, env=env, text=True, capture_output=True, check=True,
+            cwd=root, env=env, text=True, stdout=subprocess.PIPE, check=True,
         )
         cp = next(line.removeprefix("PM_LOD_CP=") for line in result.stdout.splitlines() if line.startswith("PM_LOD_CP="))
         paths = cp.split(os.pathsep)

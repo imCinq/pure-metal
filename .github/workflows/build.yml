@@ -19,11 +19,11 @@ jobs:
           java-version: 25
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew build
-      - name: Headless terrain and hook tests
-        run: python3 tools/test_terrain_lod.py
-        env:
-          PM_SKIP_FLUID_CARRIER_COST: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: pure-metal
           path: build/libs/*.jar
+      - name: Headless terrain and hook tests
+        run: python3 tools/test_terrain_lod.py
+        env:
+          PM_SKIP_FLUID_CARRIER_COST: "1"
