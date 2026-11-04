@@ -29,7 +29,7 @@ def main():
 }
 """)
         result = subprocess.run(
-            [str(root / "gradlew"), "--offline", "-q", "-I", str(init), "pmTerrainCheckClasspath",
+            [str(root / "gradlew"), *([] if env.get("CI") else ["--offline"]), "-q", "-I", str(init), "pmTerrainCheckClasspath",
              *(["-PsodiumVersion=" + env["SODIUM_VERSION"]] if env.get("SODIUM_VERSION") else [])],
             cwd=root, env=env, text=True, stdout=subprocess.PIPE, check=True,
         )
