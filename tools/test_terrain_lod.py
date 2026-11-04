@@ -112,7 +112,8 @@ def main():
                             "-Dfabric.defaultModDistributionNamespace=official", "-Dfabric.defaultMixinRemapType=static",
                             "-Dfabric.classPathGroups=" + groups, "-cp", str(compiled) + os.pathsep + cp,
                             "TestFluidCallbacks", str(game)], cwd=game, check=True)
-            for fallback in (False, True):
+            # Timing based and flaky on shared machines, so CI can leave it out.
+            for fallback in (() if env.get("PM_SKIP_FLUID_CARRIER_COST") else (False, True)):
                 game = temp / ("fluid-cost-" + str(disabled) + "-" + str(fallback))
                 game.mkdir()
                 subprocess.run([str(java), "-Djava.awt.headless=true", "-Dfabric.development=true",

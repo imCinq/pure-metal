@@ -3,7 +3,7 @@
 A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Apple's Metal API instead of OpenGL. Works with Sodium.
 
 - Terrain LOD for extra FPS at long render distances
-- Optional Render Scale with temporal upscaling
+- Optional Render Scale with temporal upscaling and an Auto mode
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Distant Horizons support
 - A Pure Metal line on the F3 screen for bug reports
@@ -32,7 +32,7 @@ Download the jar from the releases page and put it in your `mods` folder. Leave 
 
 ## Distant Horizons
 
-**Distant Horizons** is experimental in **Pure Metal 0.4.1**. Use DH **3.3.4** and add this to your launcher's JVM arguments:
+**Distant Horizons** is experimental in **Pure Metal 0.4.2**. Use DH **3.3.4** and add this to your launcher's JVM arguments:
 
 ```
 -Dpuremetal.experimentalDistantHorizons=true

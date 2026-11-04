@@ -1,0 +1,47 @@
+#!/bin/bash
+# Blocks a push when a pushed commit contains this machine's user name, the words of the account's
+# full name, a term from ~/.config/pure-metal/private-terms (one per line) or a personal home path.
+# It checks tracked files and file names at the pushed commit, plus commit messages and author and
+# committer fields. Terms are read here at push time and only locations are printed, never a match.
+# Enable with: git config core.hooksPath .githooks
+set -u
+terms=$(mktemp) || exit 1
+trap 'rm -f "$terms"' EXIT
+{
+  printf '%s\n' "${USER:-}"
+  id -F 2>/dev/null | tr ' ' '\n'
+  cat "$HOME/.config/pure-metal/private-terms" 2>/dev/null
+} | awk 'length($0) >= 3' | sort -u > "$terms"
+home_paths='/Us''ers/[^[:space:]]|/ho''me/[^[:space:]]'
+found=0
+report() { printf 'pre-push privacy check: %s\n' "$1" >&2; found=1; }
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [[ $local_sha =~ ^0+$ ]] && continue
+  if [[ $remote_sha =~ ^0+$ ]] || ! git cat-file -e "$remote_sha" 2>/dev/null; then
+    commits=$(git rev-list "$local_sha" --not --remotes)
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha")
+  fi
+  files=$(git grep -I -l -E -e "$home_paths" "$local_sha" -- 2>/dev/null)
+  if [ -s "$terms" ]; then
+    named=$(git grep -I -l -i -w -F -f "$terms" "$local_sha" -- 2>/dev/null)
+    files=$(printf '%s\n%s\n' "$files" "$named")
+    names=$(git ls-tree -r --name-only "$local_sha" | grep -i -w -F -f "$terms")
+    if [ -n "$names" ]; then
+      while IFS= read -r path; do report "file name $path"; done <<< "$names"
+    fi
+  fi
+  while IFS= read -r hit; do
+    if [ -n "$hit" ]; then report "file ${hit#*:}"; fi
+  done <<< "$files"
+  for commit in $commits; do
+    meta=$(git log -1 --format='%an%n%ae%n%cn%n%ce%n%B' "$commit")
+    if grep -q -E -e "$home_paths" <<< "$meta" || { [ -s "$terms" ] && grep -q -i -w -F -f "$terms" <<< "$meta"; }; then
+      report "commit ${commit:0:7} message or identity"
+    fi
+  done
+done
+if [ "$found" -ne 0 ]; then
+  echo 'Push blocked: remove the personal data above and try again.' >&2
+  exit 1
+fi

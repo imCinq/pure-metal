@@ -57,7 +57,8 @@ tasks.register('checkPrivacy') {
 		~("/ho" + "me/[^\\s]"),
 		~("C:" + "\\\\Us" + "ers\\\\"),
 	]
-	if (userName && userName.length() >= 3) patterns << ~("(?i)(?<![\\p{Alnum}_])" + java.util.regex.Pattern.quote(userName) + "(?![\\p{Alnum}_])")
+	// A CI machine's user name says nothing about the author and only gives false hits; .githooks/pre-push checks names before a push.
+	if (System.getenv("CI") == null && userName && userName.length() >= 3) patterns << ~("(?i)(?<![\\p{Alnum}_])" + java.util.regex.Pattern.quote(userName) + "(?![\\p{Alnum}_])")
 	doLast {
 		def leaks = []
 		def scan = { String label, String text ->
@@ -96,6 +97,16 @@ tasks.register('checkPrivacy') {
 		if (leaks) throw new GradleException("Personal path or user name found (privacy check):\n  " + leaks.join("\n  "))
 	}
 }
+// Fails the build when the current version has no CHANGELOG.md entry.
+tasks.register('checkChangelog') {
+	def changelog = file('CHANGELOG.md')
+	def heading = "## ${project.version}".toString()
+	inputs.file(changelog)
+	doLast {
+		if (!changelog.readLines().any { it.trim() == heading }) throw new GradleException("CHANGELOG.md has no '${heading}' entry")
+	}
+}
+tasks.named('check') { dependsOn 'checkChangelog' }
 tasks.named('jar') {
 	dependsOn 'checkPrivacy'
 	from(layout.projectDirectory.files('LICENSE', 'NOTICE'))
