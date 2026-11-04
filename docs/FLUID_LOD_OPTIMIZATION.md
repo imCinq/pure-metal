@@ -1,6 +1,6 @@
 # Fluid callbacks and LOD work reduction
 
-Work for 0.4.1, 2026-10-26. Uncommitted; no publication or in-game performance claim.
+Work for 0.4.1, 2026-10-26; shipped in 0.4.1. This document makes no in-game performance claim.
 
 ## Current implementation: repaired scope-binding cache
 

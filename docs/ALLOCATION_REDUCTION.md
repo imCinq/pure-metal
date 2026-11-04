@@ -1,6 +1,6 @@
 # Sodium block callback allocation reduction
 
-Implemented and validated on 2026-10-25; not committed or published.
+Implemented and validated on 2026-10-25; shipped in 0.4.1. Since 0.4.2 it applies to every Sodium from 0.9.2 on whose code matches.
 
 The Sodium 0.9.2 and 0.9.3-beta.1 BlockRenderer creates two receiver-only method references in renderModel. Pure Metal now moves those exact factories to lazy instance getters, retaining one callback of each type per renderer. Calls, receiver binding, virtual dispatch, model arguments and culling operations are preserved. No constructor, mesh, lighting snapshot, visibility tree, fluid callback scope or worker ownership is replaced.
 

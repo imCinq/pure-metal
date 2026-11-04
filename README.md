@@ -5,6 +5,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Terrain LOD for extra FPS at long render distances
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Experimental Metal 4 mode (macOS 26+)
+- Experimental Smooth Frame Pacing with VSync
 - Experimental Distant Horizons support
 - A Pure Metal line on the F3 screen for bug reports
 

@@ -2,7 +2,9 @@
 
 Pure Metal adds a native Apple Metal backend to Minecraft 26.3 (Fabric). Render Scale and Terrain LOD trade
 distant detail or rendering resolution for performance. Terrain LOD defaults on at RD16+ with an 80% full-detail
-radius; it can be disabled.
+radius; it can be disabled. In the outer band it also merges plain leaf blocks and calm water tops and skips small
+plants; glass is unchanged. Auto Render Scale (off by default) steps the scale between 100, 85, 70 and 60% to keep up
+with the FPS target. Smooth Frame Pacing (experimental, off by default, VSync only) evens out when frames are shown.
 
 ## How it plugs in
 
@@ -14,7 +16,7 @@ Pure Metal is a third backend modelled on the vanilla Vulkan one:
 
 - **Entry point:** a mixin on `PreferredGraphicsApi.getBackendsToTry` puts Metal first. If Metal fails to start, the
   next backend in the list (vanilla) is used. Further mixins hook the vanilla or Sodium section mesher for terrain LOD,
-  the video and Sodium settings screens (Render Scale, Terrain LOD, Metal 4), startup recovery, the F3 screen and the
+  the settings screens (a Pure Metal screen opened from Video Settings, and a page in Sodium's settings), startup recovery, the F3 screen and the
   benchmark. None of them alter entities.
 - **Shaders:** the frontend's SPIR-V is translated to MSL with SPIRV-Cross (LWJGL `spvc`, already shipped with the
   game), vertex Y flipped so render targets have the same memory layout as Vulkan. The final present flips back,

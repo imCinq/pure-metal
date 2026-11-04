@@ -27,6 +27,8 @@ Environment variables:
 
 Your own vsync, fullscreen, pause-on-focus-loss and graphics API options in `run/options.txt` are restored afterwards.
 
+Auto Render Scale stays inactive during a benchmark, so runs use the saved Render Scale.
+
 ## Terrain LOD
 
 Terrain LOD is on by default at render distance 16 and above, with an 80% full-detail radius. With default settings Pure Metal therefore draws less distant terrain than OpenGL does, so the runs are not the same rendering workload. For a like-for-like comparison, turn Terrain LOD off in Pure Metal's settings, or state the setting next to any numbers you publish.
