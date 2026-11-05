@@ -55,6 +55,18 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 ![Benchmarks](docs/gallery/2-benchmarks.webp)
 
+**Pure Metal vs mcopt (1920x1080 window)**
+
+| Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
+| --- | --- | --- |
+| Pure Metal + Sodium, 50% scale | <strong>465</strong> | <strong>2.8 ms</strong> |
+| mcopt | 464 | 4.5 ms |
+| Pure Metal + Sodium | 298 | 4.2 ms |
+| Pure Metal | 247 | 4.9 ms |
+| OpenGL (no Sodium) | 91 | 20.0 ms |
+
+*Separate test from the tables above: one 20-second flight per renderer, same world and path. Pure Metal 0.4.2, Sodium 0.9.3-beta.1, mcopt 0.3.0-alpha.2.*
+
 `tools/bench.py` compares graphics APIs on your own Mac:
 
 ```
