@@ -65,7 +65,7 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 | Pure Metal | 247 | 4.9 ms |
 | OpenGL (no Sodium) | 91 | 20.0 ms |
 
-*Separate test from the tables above: one 20-second flight per renderer, same world and path. Pure Metal 0.4.2, Sodium 0.9.3-beta.1, mcopt 0.3.0-alpha.2.*
+*Separate test from the benchmark above: one 20-second flight per renderer, same world and path. Pure Metal 0.4.2, Sodium 0.9.3-beta.1, mcopt 0.3.0-alpha.2.*
 
 `tools/bench.py` compares graphics APIs on your own Mac:
 
