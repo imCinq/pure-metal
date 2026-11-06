@@ -59,9 +59,4 @@ Pure Metal is a third backend modelled on the vanilla Vulkan one:
 
 - No network access, no telemetry, no analytics.
 - The native library is extracted to the game's own directory under `.puremetal/`, named by content hash.
-- Nothing is published or pushed anywhere without the owner's say-so.
-
-## Testing rules (owner's)
-
-- Clients are launched only when a batch of patches is ready to test, never ad hoc.
-- At most one client at a time in practice (never more than two); the previous one must be closed first.
+- The mod does not publish or upload anything.

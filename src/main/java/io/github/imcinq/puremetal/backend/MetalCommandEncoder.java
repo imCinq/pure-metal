@@ -49,6 +49,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private long currentSubmitIndex = 1L;
     private @Nullable MetalRenderPass currentRenderPass;
     private boolean warnedUnalignedWrite;
+    private boolean warnedRegionClearFallback;
 
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
@@ -94,18 +95,32 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
     }
 
-    void destroy() {
-        if (this.currentRenderPass != null) {
-            this.currentRenderPass.end();
-            MetalNative.passEnd(this.handle());
-            this.currentRenderPass = null;
+    /** Thrown by destroy() when GPU work may still be running, so the device must stay alive. */
+    static final class NotDrainedException extends IllegalStateException {
+        NotDrainedException(final String message, final Throwable cause) {
+            super(message, cause);
         }
+    }
+
+    void destroy() {
         long last = this.currentSubmitIndex;
-        MetalNative.submit(this.handle(), last);
-        this.transientMemory.endSubmit();
-        if (MetalNative.waitSubmit(this.handle(), last, SUBMIT_TIMEOUT_NS) == 0 && MetalNative.waitIdle(this.handle()) == 0) {
+        boolean drained;
+        try {
+            if (this.currentRenderPass != null) {
+                this.currentRenderPass.end();
+                MetalNative.passEnd(this.handle());
+                this.currentRenderPass = null;
+            }
+            MetalNative.submit(this.handle(), last);
+            this.transientMemory.endSubmit();
+            drained = MetalNative.waitSubmit(this.handle(), last, SUBMIT_TIMEOUT_NS) != 0 || MetalNative.waitIdle(this.handle()) != 0;
+        } catch (Throwable error) {
+            // Drain was never confirmed, so GPU state may still be in use.
+            throw new NotDrainedException("Pure Metal: GPU shutdown state unknown; scratch retained", error);
+        }
+        if (!drained) {
             // Retain unfinished resources rather than running readback callbacks or freeing GPU-owned scratch.
-            throw new IllegalStateException("Pure Metal: GPU shutdown could not drain; scratch retained");
+            throw new NotDrainedException("Pure Metal: GPU shutdown could not drain; scratch retained", null);
         }
         try {
             // A successful queue barrier proves completion even if native submit callbacks are still catching up.
@@ -311,8 +326,12 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         // Metal has no "clear rectangle" outside a draw, so fill the region from a staging buffer instead.
         if (!this.fillRegion(colorTexture, clearColor, 0.0, regionX, regionY, regionWidth, regionHeight, mipLevel)
             | !this.fillRegion(depthTexture, clearColor, clearDepth, regionX, regionY, regionWidth, regionHeight, mipLevel)) {
-            LOGGER.warn("Pure Metal: region clear of {} / {} not supported for these formats, clearing whole textures",
-                colorTexture.getFormat(), depthTexture.getFormat());
+            // Whole-texture clear is the documented fallback (0.4.1 notes); warn once so it does not spam the log per call.
+            if (!this.warnedRegionClearFallback) {
+                this.warnedRegionClearFallback = true;
+                LOGGER.warn("Pure Metal: region clear of {} / {} not supported for these formats, clearing whole textures",
+                    colorTexture.getFormat(), depthTexture.getFormat());
+            }
             this.clearColorAndDepthTextures(colorTexture, clearColor, depthTexture, clearDepth);
         }
     }
@@ -373,6 +392,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalBuffer target = (MetalBuffer)destination.buffer();
         long dstOffset = destination.offset();
         int size = data.remaining();
+        if (dstOffset < 0L || size < 0L || dstOffset > target.size() || size > target.size() - dstOffset) {
+            throw new IllegalArgumentException("Cannot write " + size + " bytes at offset " + dstOffset + " of a " + target.size() + " byte buffer");
+        }
         // The CPU knows these bytes, so keep the shadow current; this does not drop it (the copy below is CPU-sourced).
         target.shadowWrite(dstOffset, MemoryUtil.memAddress(data), size);
         if ((dstOffset & 3L) == 0L && (size & 3) == 0) {
@@ -400,9 +422,6 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 io.github.imcinq.puremetal.bench.Bench.countBlit(target.benchLabel, target.usage(), size);
             }
             long start = dstOffset & ~3L;
-            if (dstOffset < 0L || size < 0L || dstOffset > target.size() || size > target.size() - dstOffset) {
-                throw new IllegalArgumentException("Cannot write " + size + " bytes at offset " + dstOffset + " of a " + target.size() + " byte buffer");
-            }
             // The allocation is padded to 16 bytes (see MetalBuffer), so the widened end can always be 4-aligned.
             // Limitation: a buffer without a shadow that an earlier command in this submit already wrote on the GPU
             // has stale neighbour bytes in contents(); the widened copy would write those back.

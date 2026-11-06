@@ -6,7 +6,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Smooth Frame Pacing with VSync
-- Experimental Distant Horizons support
+- Distant Horizons support, on by default (tested on DH 3.3.4)
 - A Pure Metal line on the F3 screen for bug reports
 
 ![Before and after](docs/gallery/1-before-after.webp)
@@ -17,8 +17,6 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Minecraft 26.3 with Fabric Loader 0.19+
 - Java 25
 - Sodium (optional)
-
-Iris and other shader mods are not supported.
 
 ## Known limitations
 
@@ -33,13 +31,15 @@ Download the jar from the releases page and put it in your `mods` folder. Leave 
 
 ## Distant Horizons
 
-**Distant Horizons** is experimental in **Pure Metal 0.4.2**. Use DH **3.3.4** and add this to your launcher's JVM arguments:
+**Distant Horizons** support is on by default in **Pure Metal 0.4.3**. It is tested with DH **3.3.4** only, so use that version. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
+
+To turn it off, add this to your launcher's JVM arguments and restart:
 
 ```
--Dpuremetal.experimentalDistantHorizons=true
+-Dpuremetal.experimentalDistantHorizons=false
 ```
 
-Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris. Remove the JVM argument and restart to turn it off.
+The value `false` turns it off in any case (`FALSE` and `False` also work).
 
 ![Distant Horizons](docs/gallery/3-distant-horizons.webp)
 
@@ -55,7 +55,7 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 ![Benchmarks](docs/gallery/2-benchmarks.webp)
 
-**Pure Metal vs mcopt (1920x1080 window)**
+**Pure Metal vs mcopt (1920x1080 fullscreen)**
 
 | Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
 | --- | --- | --- |

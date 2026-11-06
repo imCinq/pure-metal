@@ -100,6 +100,7 @@ PM_EXPORT void pm_enc_take(uint64_t *out) {
 
 #define PM_MAX_COLOR 8
 #define PM_VERTEX_BUFFER_BASE 16
+#define PM_MAX_VERTEX_SLOTS 31 // Metal's vertex layout and attribute tables each have 31 entries
 
 // The device running the Metal 4 command model, or NULL. Metal 4 does not retain what a command buffer uses, so every retain and
 // release of a buffer, texture, pipeline or sampler is routed through m4_retained / m4_released (below).
@@ -779,7 +780,12 @@ static id<MTLComputePipelineState> pm_new_compute_pipeline(PMDevice *d, id<MTLLi
             pm_mtl4_failed(d, @"compute pipeline", e4);
         }
     }
-    return [DEV_MTL(d) newComputePipelineStateWithFunction:[lib newFunctionWithName:name] error:error];
+    id<MTLFunction> function = [lib newFunctionWithName:name];
+    if (!function) {
+        if (error) *error = [NSError errorWithDomain:@"PureMetal" code:1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"compute function %@ is missing", name]}];
+        return nil;
+    }
+    return [DEV_MTL(d) newComputePipelineStateWithFunction:function error:error];
 }
 
 // The device's MTL4Compiler, created on first use (by the compile path, or by the Metal 4 command model for its MetalFX scalers).
@@ -1687,6 +1693,8 @@ static id<MTLRenderCommandEncoder> new_render_encoder(PMDevice *d, id<MTLCommand
 // Copies `length` bytes into this frame's inline-constant chunks (Metal 4 has no setBytes) and returns their GPU address.
 API_AVAILABLE(macos(26.0))
 static MTLGPUAddress m4_inline(PMDevice *d, const void *data, NSUInteger length) {
+    // A value larger than one chunk would overflow the chunk after rolling to a new one, so reject it up front.
+    if (length > PM_M4_CHUNK_BYTES) { set_error(d, @"inline constant is larger than an inline constant buffer"); return 0; }
     int slot = (int)(d->m4Seq % PM_M4_FRAMES);
     if (d->m4ChunkSeq != d->m4Seq) {
         d->m4ChunkSeq = d->m4Seq;
@@ -3033,8 +3041,14 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
             }
         } else {
             id<MTLCommandBuffer> last = [PM_OBJ(id<MTLCommandQueue>, d->queue) commandBuffer];
+            dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+            [last addCompletedHandler:^(id<MTLCommandBuffer> done) { dispatch_semaphore_signal(finished); }];
             [last commit];
-            [last waitUntilCompleted];
+            // Bounded like pm_wait_idle, so a stuck GPU cannot hang shutdown.
+            if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+                NSLog(@"Pure Metal: GPU did not go idle; leaking the device state");
+                return;
+            }
         }
         // Completion handlers of earlier command buffers may still be running and touch this struct; wait for them,
         // and leak the struct rather than free it under one that never finishes.
@@ -3155,6 +3169,7 @@ PM_EXPORT void *pm_buffer_texture(void *buffer, uint64_t offset, uint64_t length
         if (pf == MTLPixelFormatInvalid || texelSize <= 0) return NULL;
         id<MTLBuffer> b = PM_OBJ(id<MTLBuffer>, buffer);
         NSUInteger texels = (NSUInteger)(length / (uint64_t)texelSize);
+        if (!b || texels == 0 || offset > (uint64_t)b.length || length > (uint64_t)b.length - offset) return NULL;
         MTLTextureDescriptor *desc = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pf width:texels
                                                                                  resourceOptions:b.resourceOptions
                                                                                            usage:MTLTextureUsageShaderRead];
@@ -3254,12 +3269,20 @@ PM_EXPORT void *pm_pipeline_create(PMDevice *d, void *vertexFn, void *fragmentFn
         const int *cursor = desc + 5;
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
         for (int i = 0; i < vbCount; i++, cursor += 3) {
+            if (cursor[0] < 0 || PM_VERTEX_BUFFER_BASE + cursor[0] >= PM_MAX_VERTEX_SLOTS) {
+                pm_copy_string([NSString stringWithFormat:@"vertex buffer index %d out of range", cursor[0]], err, errCap);
+                return NULL;
+            }
             MTLVertexBufferLayoutDescriptor *l = vd.layouts[(NSUInteger)(PM_VERTEX_BUFFER_BASE + cursor[0])];
             l.stride = (NSUInteger)cursor[1];
             if (cursor[2] > 0) { l.stepFunction = MTLVertexStepFunctionPerInstance; l.stepRate = (NSUInteger)cursor[2]; }
             else { l.stepFunction = MTLVertexStepFunctionPerVertex; l.stepRate = 1; }
         }
         for (int i = 0; i < attrCount; i++, cursor += 4) {
+            if (cursor[0] < 0 || cursor[0] >= PM_MAX_VERTEX_SLOTS || cursor[1] < 0 || PM_VERTEX_BUFFER_BASE + cursor[1] >= PM_MAX_VERTEX_SLOTS || cursor[2] < 0) {
+                pm_copy_string([NSString stringWithFormat:@"vertex attribute at location %d has an out-of-range index or offset", cursor[0]], err, errCap);
+                return NULL;
+            }
             if (cursor[3] < 0 || cursor[3] >= FORMAT_COUNT || VERTEX_FORMATS[cursor[3]] == MTLVertexFormatInvalid) {
                 pm_copy_string([NSString stringWithFormat:@"unsupported vertex format %d at location %d", cursor[3], cursor[0]], err, errCap);
                 return NULL;
@@ -5607,7 +5630,7 @@ PM_EXPORT int pm_surface_blit(PMDevice *d, PMSurface *s, void *texture, char *er
     }
 }
 
-// Copies and resets the five counters described on PMSurface.stats.
+// Copies and resets the seven counters (out[0] to out[6]) described on PMSurface.stats.
 PM_EXPORT void pm_surface_take_stats(PMSurface *s, uint64_t *out) {
     atomic_store(&s->statsEnabled, 1);
     for (int i = 0; i < 5; i++) out[i] = atomic_exchange(&s->stats[i], 0);
@@ -5658,8 +5681,14 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
             if (s->waitingSlot >= 0) { release_slot(s, s->waitingSlot); s->waitingSlot = -1; }
         });
         id<MTLCommandBuffer> last = [PM_OBJ(id<MTLCommandQueue>, s->presentQueue) commandBuffer];
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        [last addCompletedHandler:^(id<MTLCommandBuffer> done) { dispatch_semaphore_signal(finished); }];
         [last commit];
-        [last waitUntilCompleted];
+        // Bounded like pm_wait_idle, so a stuck GPU cannot hang shutdown; the leak matches the drain failure above.
+        if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+            NSLog(@"Pure Metal: surface present work did not finish; leaking the surface state");
+            return;
+        }
         dispatch_sync((__bridge dispatch_queue_t)s->dispatch, ^{});
         PM_IF_M4(s->device) [PM_OBJ(id<MTL4CommandQueue>, s->device->m4PresentQueue) removeResidencySet:PM_OBJ(CAMetalLayer *, s->layer).residencySet];
     }

@@ -17,7 +17,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Opt-in compatibility with DH 3.3.4 for Minecraft 26.3. */
+/** Compatibility with DH 3.3.4 for Minecraft 26.3. On by default; -Dpuremetal.experimentalDistantHorizons=false turns it off. */
 public final class DistantHorizonsExperiment {
     public static final String PROPERTY = "puremetal.experimentalDistantHorizons";
     // Fingerprints of the official 26.3 release's classes that govern this adapter.
@@ -54,7 +54,7 @@ public final class DistantHorizonsExperiment {
     public enum Status {
         OFF(null),
         NOT_INSTALLED(null),
-        ACTIVE("DH: experimental on"),
+        ACTIVE("DH: on"),
         IRIS("DH: off (Iris)"),
         VERSION("DH: off (version)"),
         MODIFIED("DH: off (modified build)"),
@@ -94,7 +94,8 @@ public final class DistantHorizonsExperiment {
     }
 
     private static Status preflight() {
-        if (!Boolean.getBoolean(PROPERTY)) return Status.OFF;
+        String switchValue = System.getProperty(PROPERTY);
+        if (switchValue != null && switchValue.trim().equalsIgnoreCase("false")) return Status.OFF;
         try {
             FabricLoader loader = FabricLoader.getInstance();
             var mod = loader.getModContainer("distanthorizons");
@@ -122,7 +123,7 @@ public final class DistantHorizonsExperiment {
                 LOGGER.warn("Pure Metal: DistantHorizons.toml could not be read or its renderingEngine entry is not understood. Set DH's rendering engine to AUTO and restart; until then DH stays on Pure Metal's normal fallback.");
                 return Status.CONFIG_UNREADABLE;
             }
-            LOGGER.warn("Pure Metal: experimental DH 3.3.4 preflight passed. If Metal is selected, DH sees the Vulkan API label while rendering through Metal. This path is experimental and opt-in.");
+            LOGGER.warn("Pure Metal: Distant Horizons path is on (DH 3.3.4 is the tested version). If Metal is selected, DH sees the Vulkan API label while rendering through Metal.");
             return Status.ACTIVE;
         } catch (Exception error) {
             LOGGER.warn("Pure Metal: DH experiment preflight failed; using the normal backend fallback ({})", error.getClass().getSimpleName());

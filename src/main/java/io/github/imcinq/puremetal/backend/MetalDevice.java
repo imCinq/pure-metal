@@ -518,22 +518,36 @@ final class MetalDevice implements GpuDeviceBackend {
         current = null;
         try {
             this.commandEncoder.destroy();
-        } finally {
-            try {
-                this.samplers.close();
-                this.functions.close();
-                this.depthStates.close();
-            } finally {
-                this.closeBufferPool();
-                try {
-                    MetalSurface surface = this.liveSurface;
-                    if (surface != null) {
-                        surface.close();
-                    }
-                } finally {
-                    MetalNative.deviceDestroy(this.handle);
-                }
-            }
+        } catch (MetalCommandEncoder.NotDrainedException error) {
+            // Scratch was retained because GPU work did not drain; GPU-owned state may still be in use, so leave the device alive.
+            LOGGER.error("Pure Metal: GPU work did not drain at shutdown; the Metal device is left alive", error);
+            return;
+        } catch (RuntimeException error) {
+            // The drain was confirmed; only a completion callback or readback failed. Log it and still release everything.
+            LOGGER.error("Pure Metal: a GPU completion callback failed at shutdown; releasing resources anyway", error);
+        } catch (Error error) {
+            LOGGER.error("Pure Metal: a GPU completion callback failed at shutdown; releasing resources anyway", error);
+            releaseNative();
+            throw error;
+        }
+        releaseNative();
+    }
+
+    private void releaseNative() {
+        closeIsolated("samplers", this.samplers::close);
+        closeIsolated("functions", this.functions::close);
+        closeIsolated("depth states", this.depthStates::close);
+        closeIsolated("buffer pool", this::closeBufferPool);
+        MetalSurface surface = this.liveSurface;
+        if (surface != null) closeIsolated("surface", surface::close);
+        MetalNative.deviceDestroy(this.handle);
+    }
+
+    private static void closeIsolated(final String what, final Runnable close) {
+        try {
+            close.run();
+        } catch (RuntimeException error) {
+            LOGGER.warn("Pure Metal: could not close {} at shutdown", what, error);
         }
     }
 }

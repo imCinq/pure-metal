@@ -20,6 +20,8 @@ Environment variables:
 |---|---|
 | `BENCH_SECONDS`, `BENCH_WARMUP` | Measure and warm-up length in seconds (default 25 and 10) |
 | `BENCH_REPEAT` | Runs per API; the median is printed |
+| `BENCH_PREWARM` | Set to `1` for one unmeasured run with the first API before the measured runs, so autopilot chunks are generated and saved (off by default) |
+| `BENCH_COOLDOWN` | Idle seconds before each run, so heat from earlier runs does not favour early ones (default 0) |
 | `BENCH_WALK` | Fly forward during the run |
 | `BENCH_COMMAND` | Command to run once on join, for example `gamemode creative` |
 | `NO_SODIUM` | Run without Sodium |
