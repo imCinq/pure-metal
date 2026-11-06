@@ -137,9 +137,9 @@ public final class DistantHorizonsExperiment {
         }
     }
 
-    /** True for 3.3, 3.3.x and 3.3.x-suffix strings; anything else (3.4, 4.0, 3.2.9, odd text) is false. */
+    /** True for 3.3.N with an optional -suffix or +suffix (3.3.4, 3.3.5-b); bare 3.3, 3.3.garbage, 3.4, 4.0 and odd text are false. */
     static boolean isSupportedLine(String version) {
-        return version != null && version.matches("3\\.3(?:[.+-].*)?");
+        return version != null && version.matches("3\\.3\\.\\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.+-]*)?");
     }
 
     static boolean hasVerifiedClasses(Function<String, Optional<Path>> findPath) throws Exception {

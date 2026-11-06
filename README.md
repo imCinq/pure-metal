@@ -6,7 +6,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Smooth Frame Pacing with VSync
-- Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested)
+- Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
 - A Pure Metal line on the F3 screen for bug reports
 
 ![Before and after](docs/gallery/1-before-after.webp)
