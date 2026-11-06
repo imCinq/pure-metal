@@ -33,7 +33,7 @@ Download the jar from the releases page and put it in your `mods` folder. Leave 
 
 **Distant Horizons** support is on by default in **Pure Metal 0.4.3**. It is tested with DH **3.3.4** only, so use that version. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
 
-To turn it off, add this to your launcher's JVM arguments and restart:
+With any other DH version, Pure Metal doesn't use Metal while DH is installed. To turn the support off, add this to your launcher's JVM arguments and restart. If DH stays installed, the game then runs without Metal too, so to keep Metal without DH, remove the DH mod instead:
 
 ```
 -Dpuremetal.experimentalDistantHorizons=false

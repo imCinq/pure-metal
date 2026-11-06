@@ -42,7 +42,8 @@ public final class DebugLine implements DebugScreenEntry {
         if (now == null) {
             this.backend = null;
             String dh = DistantHorizonsExperiment.debugNote();
-            return dh == null ? INACTIVE : INACTIVE + " | " + dh;
+            // "DH: on" describes the preflight, which is misleading when Pure Metal is not the one rendering.
+            return dh == null || !dh.startsWith("DH: off") ? INACTIVE : INACTIVE + " | " + dh;
         }
         String name = MetalInfo.gpuName();
         int percent = ScaleConfig.scale();

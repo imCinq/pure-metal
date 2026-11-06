@@ -101,32 +101,32 @@ public final class DistantHorizonsExperiment {
             var mod = loader.getModContainer("distanthorizons");
             if (mod.isEmpty()) return Status.NOT_INSTALLED;
             if (loader.isModLoaded("iris")) {
-                LOGGER.warn("Pure Metal: Distant Horizons is installed together with Iris, which the experimental path does not support; DH stays on Pure Metal's normal fallback.");
+                LOGGER.warn("Pure Metal: Distant Horizons is installed together with Iris, which Pure Metal's DH support does not cover; the game uses its normal graphics backend instead of Metal.");
                 return Status.IRIS;
             }
             String version = mod.get().getMetadata().getVersion().getFriendlyString();
             if (!"3.3.4".equals(version)) {
-                LOGGER.warn("Pure Metal: Distant Horizons {} found, the experimental path needs 3.3.4; DH stays on Pure Metal's normal fallback.", version);
+                LOGGER.warn("Pure Metal: Distant Horizons {} found, Pure Metal's DH support needs 3.3.4; the game uses its normal graphics backend instead of Metal.", version);
                 return Status.VERSION;
             }
             if (!hasVerifiedClasses(mod.get()::findPath)) {
-                LOGGER.warn("Pure Metal: this Distant Horizons 3.3.4 build is modified or unofficial (its key classes differ from the official release); DH stays on Pure Metal's normal fallback.");
+                LOGGER.warn("Pure Metal: this Distant Horizons 3.3.4 build is modified or unofficial (its key classes differ from the official release); the game uses its normal graphics backend instead of Metal.");
                 return Status.MODIFIED;
             }
             EngineCheck engine = checkEngine(loader.getConfigDir().resolve("DistantHorizons.toml"));
             if (engine.state() == EngineState.WRONG_ENGINE) {
-                LOGGER.warn("Pure Metal: Distant Horizons is set to {} rendering engine, which the experimental path cannot use. Set DH's rendering engine to AUTO (renderingEngine in DistantHorizons.toml) and restart; until then DH stays on Pure Metal's normal fallback.",
+                LOGGER.warn("Pure Metal: Distant Horizons is set to {} rendering engine, which Pure Metal's DH support cannot use. Set DH's rendering engine to AUTO (renderingEngine in DistantHorizons.toml) and restart; until then the game uses its normal graphics backend instead of Metal.",
                     engine.value() == null ? "an unsupported" : "the " + engine.value());
                 return Status.ENGINE;
             }
             if (engine.state() == EngineState.UNREADABLE) {
-                LOGGER.warn("Pure Metal: DistantHorizons.toml could not be read or its renderingEngine entry is not understood. Set DH's rendering engine to AUTO and restart; until then DH stays on Pure Metal's normal fallback.");
+                LOGGER.warn("Pure Metal: DistantHorizons.toml could not be read or its renderingEngine entry is not understood. Set DH's rendering engine to AUTO and restart; until then the game uses its normal graphics backend instead of Metal.");
                 return Status.CONFIG_UNREADABLE;
             }
-            LOGGER.warn("Pure Metal: Distant Horizons path is on (DH 3.3.4 is the tested version). If Metal is selected, DH sees the Vulkan API label while rendering through Metal.");
+            LOGGER.info("Pure Metal: Distant Horizons path is on (DH 3.3.4 is the tested version). If Metal is selected, DH sees the Vulkan API label while rendering through Metal.");
             return Status.ACTIVE;
         } catch (Exception error) {
-            LOGGER.warn("Pure Metal: DH experiment preflight failed; using the normal backend fallback ({})", error.getClass().getSimpleName());
+            LOGGER.warn("Pure Metal: DH preflight failed; using the normal backend fallback ({})", error.getClass().getSimpleName());
             return Status.ERROR;
         }
     }

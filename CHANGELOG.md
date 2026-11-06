@@ -5,10 +5,10 @@
 Distant Horizons support is now on by default, and a set of small fixes and doc updates ship with it.
 
 **Improvements**
-- Distant Horizons support is on by default with DH 3.3.4 and no Iris. The `-Dpuremetal.experimentalDistantHorizons=true` JVM argument is no longer needed. Add `-Dpuremetal.experimentalDistantHorizons=false` to turn it off. It is tested on DH 3.3.4 only. The F3 line reads `DH: on` when it is active. The value `false` in any case turns it off.
+- Distant Horizons support is on by default with DH 3.3.4 and no Iris. The `-Dpuremetal.experimentalDistantHorizons=true` JVM argument is no longer needed. Add `-Dpuremetal.experimentalDistantHorizons=false` to turn it off, in any letter case. If DH stays installed with the support off, or with another DH version, the game runs without Metal, so remove DH to keep Metal without it. It is tested on DH 3.3.4 only. The F3 line reads `DH: on` when it is active.
 
 **Fixes**
-- Shutdown waits for the GPU for at most 5 seconds. If work does not finish, Pure Metal logs it and keeps the state alive instead of freeing it under pending GPU work.
+- Shutdown GPU waits are now limited to 5 seconds each, so a stuck GPU is much less likely to hang quitting. If work does not finish, Pure Metal logs it and keeps the state alive instead of freeing it under pending GPU work.
 - Invalid buffer writes, texture buffer views, pipeline vertex layouts and inline constants are rejected with an error instead of writing out of bounds.
 - The world-generation FPS cap, Smooth Frame Pacing, Terrain LOD and Render Scale entries on the Pure Metal screen now show the current value when the screen opens, including after a change in Sodium's settings.
 - The whole-texture fallback for a region clear logs its warning once instead of on every call.
