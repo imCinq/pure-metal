@@ -6,7 +6,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Smooth Frame Pacing with VSync
-- Distant Horizons support, on by default (tested on DH 3.3.4)
+- Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested)
 - A Pure Metal line on the F3 screen for bug reports
 
 ![Before and after](docs/gallery/1-before-after.webp)
@@ -31,9 +31,9 @@ Download the jar from the releases page and put it in your `mods` folder. Leave 
 
 ## Distant Horizons
 
-**Distant Horizons** support is on by default in **Pure Metal 0.4.3**. It is tested with DH **3.3.4** only, so use that version. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
+**Distant Horizons** support is on by default in **Pure Metal 0.4.3**. It is tested with DH **3.3.4**. Other 3.3.x versions whose key classes are unchanged also run, with an "untested version" note in F3 and a log warning. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
 
-With any other DH version, Pure Metal doesn't use Metal while DH is installed. To turn the support off, add this to your launcher's JVM arguments and restart. If DH stays installed, the game then runs without Metal too, so to keep Metal without DH, remove the DH mod instead:
+With any other DH version (3.2, 3.4, 4.x and so on), Pure Metal falls back to the normal backend and doesn't use Metal while DH is installed. To turn the support off, add this to your launcher's JVM arguments and restart. If DH stays installed, the game then runs without Metal too, so to keep Metal without DH, remove the DH mod instead:
 
 ```
 -Dpuremetal.experimentalDistantHorizons=false

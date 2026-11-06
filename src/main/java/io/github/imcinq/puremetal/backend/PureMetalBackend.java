@@ -82,7 +82,7 @@ public final class PureMetalBackend implements GpuBackend {
         if (conflict != null) {
             if (conflict.endsWith("(distanthorizons)")) {
                 return "Distant Horizons is installed but Pure Metal's support for it is off or can't be used (see the log). "
-                    + "To use Metal, remove DH, or use DH 3.3.4 with its rendering engine on AUTO and without -D" + DistantHorizonsExperiment.PROPERTY + "=false";
+                    + "To use Metal, remove DH, or use DH 3.3.x (tested on 3.3.4; other versions fall back to the normal backend) with its rendering engine on AUTO and without -D" + DistantHorizonsExperiment.PROPERTY + "=false";
             }
             return conflict + " is installed and draws with OpenGL directly (add -Dpuremetal.ignoreIncompatibleMods=true to try anyway)";
         }

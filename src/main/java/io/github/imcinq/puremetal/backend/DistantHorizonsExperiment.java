@@ -17,7 +17,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Compatibility with DH 3.3.4 for Minecraft 26.3. On by default; -Dpuremetal.experimentalDistantHorizons=false turns it off. */
+/** Compatibility with DH 3.3.x for Minecraft 26.3 (tested on 3.3.4). On by default; -Dpuremetal.experimentalDistantHorizons=false turns it off. */
 public final class DistantHorizonsExperiment {
     public static final String PROPERTY = "puremetal.experimentalDistantHorizons";
     // Fingerprints of the official 26.3 release's classes that govern this adapter.
@@ -29,6 +29,7 @@ public final class DistantHorizonsExperiment {
             "com/seibel/distanthorizons/common/wrappers/VersionConstants.class", "6131c47d6f17250e99c9d9e354312ab9f20257660279e516639c366d4fe5b0c6",
             "com/seibel/distanthorizons/common/wrappers/minecraft/MinecraftRenderWrapper.class", "9c10b82bcf5d939e9b67692097ba5ef9813e62ed23a259cbf1d468a9b30b98c4",
             "com/seibel/distanthorizons/fabric/mixins/client/MixinLightTexture.class", "5717a3c5cc3a5cbffa5ef76cedd36c3c532801f4852db3021dc78b1b1e6dc76e");
+    private static final String TESTED_VERSION = "3.3.4";
     private static final Logger LOGGER = LoggerFactory.getLogger("Pure Metal");
     private static final long MAX_CLASS_BYTES = 2L * 1024 * 1024;
     private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
@@ -55,6 +56,7 @@ public final class DistantHorizonsExperiment {
         OFF(null),
         NOT_INSTALLED(null),
         ACTIVE("DH: on"),
+        ACTIVE_UNTESTED("DH: on (untested version)"),
         IRIS("DH: off (Iris)"),
         VERSION("DH: off (version)"),
         MODIFIED("DH: off (modified build)"),
@@ -90,7 +92,7 @@ public final class DistantHorizonsExperiment {
     public static synchronized boolean enabled() {
         if (enabled != null) return enabled;
         status = preflight();
-        return enabled = status == Status.ACTIVE;
+        return enabled = status == Status.ACTIVE || status == Status.ACTIVE_UNTESTED;
     }
 
     private static Status preflight() {
@@ -105,12 +107,12 @@ public final class DistantHorizonsExperiment {
                 return Status.IRIS;
             }
             String version = mod.get().getMetadata().getVersion().getFriendlyString();
-            if (!"3.3.4".equals(version)) {
-                LOGGER.warn("Pure Metal: Distant Horizons {} found, Pure Metal's DH support needs 3.3.4; the game uses its normal graphics backend instead of Metal.", version);
+            if (!isSupportedLine(version)) {
+                LOGGER.warn("Pure Metal: Distant Horizons {} found, Pure Metal's DH support needs 3.3.x (tested on {}); the game uses its normal graphics backend instead of Metal.", version, TESTED_VERSION);
                 return Status.VERSION;
             }
             if (!hasVerifiedClasses(mod.get()::findPath)) {
-                LOGGER.warn("Pure Metal: this Distant Horizons 3.3.4 build is modified or unofficial (its key classes differ from the official release); the game uses its normal graphics backend instead of Metal.");
+                LOGGER.warn("Pure Metal: this Distant Horizons {} build is modified or unofficial or changed its key classes (they differ from the official 3.3.4 release); the game uses its normal graphics backend instead of Metal.", version);
                 return Status.MODIFIED;
             }
             EngineCheck engine = checkEngine(loader.getConfigDir().resolve("DistantHorizons.toml"));
@@ -123,12 +125,21 @@ public final class DistantHorizonsExperiment {
                 LOGGER.warn("Pure Metal: DistantHorizons.toml could not be read or its renderingEngine entry is not understood. Set DH's rendering engine to AUTO and restart; until then the game uses its normal graphics backend instead of Metal.");
                 return Status.CONFIG_UNREADABLE;
             }
+            if (!TESTED_VERSION.equals(version)) {
+                LOGGER.warn("Pure Metal: Distant Horizons {} found; its key classes match the official {} release but the tested version is {}, so its behavior with Pure Metal is untested. The DH path is on.", version, TESTED_VERSION, TESTED_VERSION);
+                return Status.ACTIVE_UNTESTED;
+            }
             LOGGER.info("Pure Metal: Distant Horizons path is on (DH 3.3.4 is the tested version). If Metal is selected, DH sees the Vulkan API label while rendering through Metal.");
             return Status.ACTIVE;
         } catch (Exception error) {
             LOGGER.warn("Pure Metal: DH preflight failed; using the normal backend fallback ({})", error.getClass().getSimpleName());
             return Status.ERROR;
         }
+    }
+
+    /** True for 3.3, 3.3.x and 3.3.x-suffix strings; anything else (3.4, 4.0, 3.2.9, odd text) is false. */
+    static boolean isSupportedLine(String version) {
+        return version != null && version.matches("3\\.3(?:[.+-].*)?");
     }
 
     static boolean hasVerifiedClasses(Function<String, Optional<Path>> findPath) throws Exception {
