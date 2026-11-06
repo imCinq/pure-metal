@@ -3029,8 +3029,8 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
                     });
                 }
             } else {
+                // No unbounded wait here: the bounded wait on the last buffer below covers this one (same queue).
                 [cb commit];
-                [cb waitUntilCompleted];
             }
             pm_release(d->cb);
         }

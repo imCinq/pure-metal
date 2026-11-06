@@ -7,12 +7,9 @@ import net.minecraft.client.Options;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
-import org.jspecify.annotations.Nullable;
 
 /** Names, tooltips and the vanilla Pure Metal screen entries for terrain LOD (Sodium's page reuses the text). */
 public final class LodOptions {
-    private static OptionInstance<?> @Nullable [] vanilla;
-
     private LodOptions() {
     }
 
@@ -44,35 +41,32 @@ public final class LodOptions {
         }
     }
 
-    /** Entries for the Terrain section of the Pure Metal screen. */
+    /** Entries for the Terrain section of the Pure Metal screen. Built on each call so the values are read from the live config. */
     public static OptionInstance<?>[] vanilla() {
-        if (vanilla == null) {
-            vanilla = new OptionInstance<?>[]{
-                Lang.withCaption(OptionInstance.createBoolean(
-                    "puremetal.options.terrainLod",
-                    value -> Tooltip.create(enabledTooltip()),
-                    (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
-                    TerrainLodConfig.enabled(),
-                    value -> {
-                        if (TerrainLodConfig.setEnabled(value)) {
-                            reloadChunks();
-                        }
+        return new OptionInstance<?>[]{
+            Lang.withCaption(OptionInstance.createBoolean(
+                "puremetal.options.terrainLod",
+                value -> Tooltip.create(enabledTooltip()),
+                (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
+                TerrainLodConfig.enabled(),
+                value -> {
+                    if (TerrainLodConfig.setEnabled(value)) {
+                        reloadChunks();
                     }
-                ), enabledName()),
-                new OptionInstance<>(
-                    "puremetal.options.terrainLodRatio",
-                    value -> Tooltip.create(ratioTooltip()),
-                    (caption, value) -> Options.genericValueLabel(ratioName(), ratioLabel(value)),
-                    new OptionInstance.IntRange(TerrainLodConfig.MIN_RATIO, TerrainLodConfig.MAX_RATIO, false),
-                    TerrainLodConfig.ratioPercent(),
-                    value -> {
-                        if (TerrainLodConfig.setRatioPercent(value) && TerrainLodConfig.enabled()) {
-                            reloadChunks();
-                        }
+                }
+            ), enabledName()),
+            new OptionInstance<>(
+                "puremetal.options.terrainLodRatio",
+                value -> Tooltip.create(ratioTooltip()),
+                (caption, value) -> Options.genericValueLabel(ratioName(), ratioLabel(value)),
+                new OptionInstance.IntRange(TerrainLodConfig.MIN_RATIO, TerrainLodConfig.MAX_RATIO, false),
+                TerrainLodConfig.ratioPercent(),
+                value -> {
+                    if (TerrainLodConfig.setRatioPercent(value) && TerrainLodConfig.enabled()) {
+                        reloadChunks();
                     }
-                )
-            };
-        }
-        return vanilla;
+                }
+            )
+        };
     }
 }

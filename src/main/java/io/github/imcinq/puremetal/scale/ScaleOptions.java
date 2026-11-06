@@ -17,13 +17,9 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
-import org.jspecify.annotations.Nullable;
 
 /** Names, tooltips and the vanilla Pure Metal screen entries for render scale and the upscaler (Sodium's page reuses the text). */
 public final class ScaleOptions {
-    private static OptionInstance<?> @Nullable [] vanilla;
-    private static @Nullable OptionInstance<Boolean> vanillaMetal4;
-
     private ScaleOptions() {
     }
 
@@ -117,56 +113,51 @@ public final class ScaleOptions {
         return MetalUpscaler.active() ? text : Component.empty().append(text).append("\n").append(Lang.text("puremetal.options.inactive"));
     }
 
-    /** The Resolution section of Pure Metal's vanilla settings screen. */
+    /** The Resolution section of Pure Metal's vanilla settings screen. Built on each call so the values are read from the live config. */
     public static OptionInstance<?>[] vanillaResolution() {
-        if (vanilla == null) {
-            vanilla = new OptionInstance<?>[]{
-                new OptionInstance<>(
-                    "puremetal.options.renderScale",
-                    value -> Tooltip.create(scaleTooltip(value)),
-                    (caption, value) -> Options.genericValueLabel(scaleName(), scaleLabel(value)),
-                    new AutoLockedValues<>(new OptionInstance.IntRange(ScaleConfig.MIN_SCALE, ScaleConfig.MAX_SCALE, false)),
-                    ScaleConfig.savedScale(),
-                    ScaleConfig::setScale
+        return new OptionInstance<?>[]{
+            new OptionInstance<>(
+                "puremetal.options.renderScale",
+                value -> Tooltip.create(scaleTooltip(value)),
+                (caption, value) -> Options.genericValueLabel(scaleName(), scaleLabel(value)),
+                new AutoLockedValues<>(new OptionInstance.IntRange(ScaleConfig.MIN_SCALE, ScaleConfig.MAX_SCALE, false)),
+                ScaleConfig.savedScale(),
+                ScaleConfig::setScale
+            ),
+            Lang.withCaption(OptionInstance.createBoolean(
+                "puremetal.options.autoRenderScale",
+                value -> Tooltip.create(autoTooltip()),
+                (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
+                ScaleConfig.autoScale(),
+                value -> {
+                    ScaleConfig.setAutoScale(value);
+                    AutoLockedValues.refresh();
+                }
+            ), autoName()),
+            Lang.withCaption(new OptionInstance<>(
+                "puremetal.options.upscaler",
+                value -> Tooltip.create(upscalerTooltip(value)),
+                (caption, value) -> upscalerLabel(value),
+                new OptionInstance.Enum<>(
+                    List.of(ScaleConfig.Upscaler.BILINEAR, ScaleConfig.Upscaler.METALFX, ScaleConfig.Upscaler.TEMPORAL),
+                    enumCodec(ScaleConfig.Upscaler.class)
                 ),
-                Lang.withCaption(OptionInstance.createBoolean(
-                    "puremetal.options.autoRenderScale",
-                    value -> Tooltip.create(autoTooltip()),
-                    (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
-                    ScaleConfig.autoScale(),
-                    value -> {
-                        ScaleConfig.setAutoScale(value);
-                        AutoLockedValues.refresh();
-                    }
-                ), autoName()),
-                Lang.withCaption(new OptionInstance<>(
-                    "puremetal.options.upscaler",
-                    value -> Tooltip.create(upscalerTooltip(value)),
-                    (caption, value) -> upscalerLabel(value),
-                    new OptionInstance.Enum<>(
-                        List.of(ScaleConfig.Upscaler.BILINEAR, ScaleConfig.Upscaler.METALFX, ScaleConfig.Upscaler.TEMPORAL),
-                        enumCodec(ScaleConfig.Upscaler.class)
-                    ),
-                    ScaleConfig.upscaler(),
-                    ScaleConfig::setUpscaler
-                ), upscalerName())
-            };
-        }
-        return vanilla;
+                ScaleConfig.upscaler(),
+                ScaleConfig::setUpscaler
+            ), upscalerName())
+        };
     }
 
+    /** Built on each call so the initial value is read from the live Metal 4 config. */
     public static OptionInstance<Boolean> vanillaMetal4() {
-        if (vanillaMetal4 == null) {
-            vanillaMetal4 = Lang.withCaption(new OptionInstance<>(
-                "puremetal.options.metal4",
-                value -> Tooltip.create(metal4Tooltip()),
-                (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
-                Metal4Config.supported() ? OptionInstance.BOOLEAN_VALUES : new LockedBooleanValues(),
-                Metal4Config.enabled(),
-                Metal4Config::setEnabled
-            ), metal4Name());
-        }
-        return vanillaMetal4;
+        return Lang.withCaption(new OptionInstance<>(
+            "puremetal.options.metal4",
+            value -> Tooltip.create(metal4Tooltip()),
+            (caption, value) -> value ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
+            Metal4Config.supported() ? OptionInstance.BOOLEAN_VALUES : new LockedBooleanValues(),
+            Metal4Config.enabled(),
+            Metal4Config::setEnabled
+        ), metal4Name());
     }
 
     /**

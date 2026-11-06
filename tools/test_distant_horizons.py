@@ -55,7 +55,8 @@ def main():
                  ("auto-config", True, True, 'renderingEngine = "AUTO"\n', None),
                  ("opengl", True, False, 'renderingEngine = "OPEN_GL"\n', None),
                  ("repacked", True, True, None, "repacked"),
-                 ("altered-code", True, False, None, "altered")]
+                 ("altered-code", True, False, None, "altered"),
+                 ("default", None, True, None, None), ("disabled-upper", "FALSE", False, None, None)]
         for name, flag, expected, config, variant in cases:
             game = temp / name
             (game / "mods").mkdir(parents=True)
@@ -77,9 +78,11 @@ def main():
             if config:
                 (game / "config").mkdir()
                 (game / "config/DistantHorizons.toml").write_text(config)
+            # None omits the property (unset); booleans are lowercased; strings are passed through verbatim.
+            flag_arg = [] if flag is None else ["-Dpuremetal.experimentalDistantHorizons=" + (str(flag).lower() if isinstance(flag, bool) else flag)]
             command = [str(home / "bin/java"), "-Djava.awt.headless=true", "-Dfabric.development=true",
                        "-Dfabric.defaultModDistributionNamespace=official", "-Dfabric.defaultMixinRemapType=static",
-                       "-Dfabric.classPathGroups=" + groups, "-Dpuremetal.experimentalDistantHorizons=" + str(flag).lower(),
+                       "-Dfabric.classPathGroups=" + groups, *flag_arg,
                        "-cp", full_cp, "TestDistantHorizonsKnot", str(game), str(expected).lower()]
             result = subprocess.run(command, cwd=game, text=True, capture_output=True, timeout=25)
             if result.returncode:
