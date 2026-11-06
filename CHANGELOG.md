@@ -10,7 +10,7 @@ Distant Horizons support is now on by default, and a set of small fixes and doc 
 **Fixes**
 - Shutdown waits for the GPU for at most 5 seconds. If work does not finish, Pure Metal logs it and keeps the state alive instead of freeing it under pending GPU work.
 - Invalid buffer writes, texture buffer views, pipeline vertex layouts and inline constants are rejected with an error instead of writing out of bounds.
-- The world-generation FPS cap and Smooth Frame Pacing entries on the Pure Metal screen now show the current value when the screen opens, including after a change in Sodium's settings.
+- The world-generation FPS cap, Smooth Frame Pacing, Terrain LOD and Render Scale entries on the Pure Metal screen now show the current value when the screen opens, including after a change in Sodium's settings.
 - The whole-texture fallback for a region clear logs its warning once instead of on every call.
 
 **Docs**
