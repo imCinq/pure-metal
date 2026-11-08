@@ -59,9 +59,12 @@ def main():
         subprocess.run([str(javac), "-d", str(compiled), "-cp", cp,
                         str(root / "tools/TestTerrainLod.java"), str(root / "tools/TestLodMixins.java"),
                         str(root / "tools/TestPaletteScratch.java"), str(root / "tools/TestTerrainDiagnostics.java"), str(root / "tools/TestMeshBounds.java"), str(root / "tools/TestBoundsProjection.java"),
-                        str(root / "tools/TestSodiumBlockCallbacks.java"), str(root / "tools/TestFluidCallbacks.java")], check=True)
+                        str(root / "tools/TestSodiumBlockCallbacks.java"), str(root / "tools/TestFluidCallbacks.java"),
+                        str(root / "tools/TestSodiumLodGuard.java")], check=True)
         subprocess.run([str(javac), "-d", str(compiled), "-cp", cp + os.pathsep + str(fluid_api),
                         str(root / "tools/TestFluidCarrierCost.java")], check=True)
+        subprocess.run([str(java), "-Djava.awt.headless=true", "-cp", str(compiled) + os.pathsep + cp,
+                        "TestSodiumLodGuard"], cwd=temp, check=True)
         subprocess.run([str(java), "-cp", str(compiled) + os.pathsep + vanilla_cp, "TestTerrainLod"], cwd=temp, check=True)
         subprocess.run([str(java), "-cp", str(compiled) + os.pathsep + vanilla_cp, "TestMeshBounds"], cwd=temp, check=True)
         subprocess.run([str(java), "-cp", str(compiled) + os.pathsep + vanilla_cp, "TestBoundsProjection"], cwd=temp, check=True)

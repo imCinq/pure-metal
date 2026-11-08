@@ -16,13 +16,7 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
     private static final boolean SODIUM = FabricLoader.getInstance().isModLoaded("sodium");
     private static Boolean sodiumMemoryTrimSupported;
     private static Boolean sodiumOptionListSupported;
-    /**
-     * Sodium releases whose OptionListWidget local-variable slots were verified (0.9.3-alpha.1 and 0.9.3-beta.1 have
-     * byte-identical OptionListWidget, AbstractParentWidget and ModOptions classes to 0.9.2); other versions skip the note.
-     * An entry matches itself and "entry+build", never another prerelease tag or a longer number such as 0.9.30.
-     */
-    private static final List<String> VERIFIED_SODIUM_VERSIONS = List.of("0.9.2", "0.9.3-alpha.1", "0.9.3-beta.1", "0.9.3");
-
+    private static Boolean sodiumLodSupported;
     @Override
     public void onLoad(final String mixinPackage) {
     }
@@ -108,12 +102,49 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return supported;
         }
         if (mixinClassName.contains(".lod.sodium.")) {
-            return SODIUM;
+            // The state interfaces, mesher and manager hooks only work together; one shared shape check skips all of them.
+            return SODIUM && isSodiumLodSupported();
         }
         if (mixinClassName.contains(".lod.")) {
             return !SODIUM;
         }
         return true;
+    }
+
+    /**
+     * Terrain LOD injects at exact Sodium methods and reads context fields by name. A release that changes any of those
+     * shapes skips the whole set instead of failing during mixin application or later in the mesher.
+     */
+    private static synchronized boolean isSodiumLodSupported() {
+        if (sodiumLodSupported == null) {
+            sodiumLodSupported = checkSodiumLod();
+            if (!sodiumLodSupported) {
+                LOGGER.warn("Pure Metal: Terrain LOD skipped, this Sodium version's chunk mesher does not match");
+            }
+        }
+        return sodiumLodSupported;
+    }
+
+    private static boolean checkSodiumLod() {
+        try {
+            final var provider = MixinService.getService().getBytecodeProvider();
+            return io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.meshingTask(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.compile.tasks.ChunkBuilderMeshingTask", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.renderManager(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.RenderSectionManager", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.renderSection(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.RenderSection", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.buildOutput(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildOutput", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.buildContext(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildContext", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.renderContext(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.world.cloned.ChunkRenderContext", false))
+                && io.github.imcinq.puremetal.lod.sodium.SodiumLodSupport.renderCache(provider.getClassNode(
+                    "net.caffeinemc.mods.sodium.client.render.chunk.compile.pipeline.BlockRenderCache", false));
+        } catch (Throwable unavailable) {
+            return false;
+        }
     }
 
     /** The memory trim is optional, so a Sodium version whose ArenaAggregator internals changed skips it instead of crashing. */
@@ -134,20 +165,19 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
      */
     private static synchronized boolean isSodiumOptionListSupported() {
         if (sodiumOptionListSupported == null) {
-            sodiumOptionListSupported = isVerifiedSodiumVersion() && checkSodiumOptionList();
+            sodiumOptionListSupported = hasVerifiedSodiumSettings() && checkSodiumOptionList();
             if (!sodiumOptionListSupported) {
-                LOGGER.debug("Pure Metal: Sodium options note skipped, this Sodium version is not verified");
+                LOGGER.debug("Pure Metal: Sodium options note and card skipped, settings classes are not verified");
             }
         }
         return sodiumOptionListSupported;
     }
 
-    /** The list mixin captures @Local slots, which the member check cannot see, so only allow-listed versions apply it. */
-    private static boolean isVerifiedSodiumVersion() {
+    /** Exact bytes protect the local-variable injection points across Sodium versions. */
+    private static boolean hasVerifiedSodiumSettings() {
         return FabricLoader.getInstance().getModContainer("sodium")
-            .map(c -> c.getMetadata().getVersion().getFriendlyString())
-            .filter(v -> VERIFIED_SODIUM_VERSIONS.stream().anyMatch(ok -> v.equals(ok) || v.startsWith(ok + "+")))
-            .isPresent();
+            .map(mod -> io.github.imcinq.puremetal.scale.SodiumSettingsFingerprint.matches(mod::findPath))
+            .orElse(false);
     }
 
     private static boolean checkSodiumOptionList() {
@@ -176,15 +206,18 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             if (m.localVariables == null || m.instructions == null) return false;
             final boolean offset = m.localVariables.stream().anyMatch(v -> v.index == 5 && "I".equals(v.desc));
             final boolean mod = m.localVariables.stream().anyMatch(v -> v.index == 7 && modName.equals(v.desc));
+            final boolean page = m.localVariables.stream().anyMatch(v -> v.index == 12 && "Lnet/caffeinemc/mods/sodium/client/config/structure/Page;".equals(v.desc));
             boolean add = false;
+            boolean section = false;
             for (final org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
                 if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call
                     && listName.equals(call.owner) && "addRenderableChild".equals(call.name)) {
                     add = true;
-                    break;
                 }
+                if (insn instanceof org.objectweb.asm.tree.TypeInsnNode type && insn.getOpcode() == org.objectweb.asm.Opcodes.NEW
+                    && (listName + "$SectionInfo").equals(type.desc)) section = true;
             }
-            return offset && mod && add;
+            return offset && mod && page && add && section;
         }
         return false;
     }

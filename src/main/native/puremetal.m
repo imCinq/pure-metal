@@ -12,6 +12,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <math.h>
+#include "present_credits.h"
 
 #define PM_EXPORT __attribute__((visibility("default")))
 
@@ -4375,7 +4376,7 @@ typedef struct PMSurface {
     atomic_int shutdown;                      // set by pm_surface_destroy: callbacks release their slots without presenting
     // Mailbox pacing (vsync off): at most two presented frames wait to be shown. Until macOS reports one on screen,
     // a newer finished frame replaces the waiting one instead of queueing behind it (that queue added ~75 ms).
-    void *shown;              // dispatch_semaphore_t, counts free places (of 2) for presented frames waiting to be shown, retained
+    PMPresentCredits shown;   // two generation-tagged presentation credits
     int waitingSlot;          // finished frame waiting for the screen, or -1 (present dispatch queue only)
     double lastPresent;       // CACurrentMediaTime() of the last present (present dispatch queue only)
     atomic_int onScreenPending;  // presented drawables whose presented handler has not run yet
@@ -5188,11 +5189,8 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer) {
         dispatch_semaphore_t depth = dispatch_semaphore_create(0);
         for (int i = 0; i < 2; i++) dispatch_semaphore_signal(depth);
         s->vsyncDepth = (__bridge_retained void *)depth;
-        // Two presents may wait for the screen at once. With one, a present that missed a refresh made the next one
-        // start just after a late refresh and miss too, locking the screen at half the refresh rate under GPU load.
-        dispatch_semaphore_t shown = dispatch_semaphore_create(0);
-        for (int i = 0; i < 2; i++) dispatch_semaphore_signal(shown);
-        s->shown = (__bridge_retained void *)shown;
+        // Two presents may wait for the screen. Stale leases are recoverable after a forced frame is shown.
+        pm_credits_init(&s->shown);
         s->waitingSlot = -1;
         return s;
     }
@@ -5261,7 +5259,7 @@ static void release_slot(PMSurface *s, int slot) {
     dispatch_semaphore_signal((__bridge dispatch_semaphore_t)s->slotsFree);
 }
 
-static void draw_and_present(PMSurface *s, int slot, int holdsShown);
+static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease);
 static void drop_waiting(PMSurface *s);
 
 // Runs on s->dispatch after the frame presented last is on screen (or was dropped by the compositor); `shown` has
@@ -5273,10 +5271,13 @@ static void frame_shown(PMSurface *s) {
         drop_waiting(s);
         return;
     }
-    if (s->waitingSlot >= 0 && dispatch_semaphore_wait((__bridge dispatch_semaphore_t)s->shown, DISPATCH_TIME_NOW) == 0) {
-        int slot = s->waitingSlot;
-        s->waitingSlot = -1;
-        draw_and_present(s, slot, 1);
+    if (s->waitingSlot >= 0) {
+        PMPresentLease lease = pm_credits_acquire(&s->shown, 0);
+        if (lease.ticket) {
+            int slot = s->waitingSlot;
+            s->waitingSlot = -1;
+            draw_and_present(s, slot, lease);
+        }
     }
 }
 
@@ -5292,7 +5293,6 @@ static void drop_waiting(PMSurface *s) {
 }
 
 static void present_slot(PMSurface *s, int slot, uint64_t value) {
-    dispatch_semaphore_t shown = (__bridge dispatch_semaphore_t)s->shown;
     if (atomic_load(&s->shutdown)) {
         release_slot(s, slot);
         return;
@@ -5301,7 +5301,7 @@ static void present_slot(PMSurface *s, int slot, uint64_t value) {
     if (s->slotVsync[slot]) {
         drop_waiting(s);
         // FIFO: wait for the screen (bounded, in case the window is hidden and nothing is ever shown).
-        draw_and_present(s, slot, dispatch_semaphore_wait(shown, dispatch_time(DISPATCH_TIME_NOW, 100000000LL)) == 0);
+        draw_and_present(s, slot, pm_credits_acquire(&s->shown, 100000000L));
         return;
     }
     if (PM_OBJ(id<MTLSharedEvent>, s->event).signaledValue > value) {
@@ -5310,14 +5310,14 @@ static void present_slot(PMSurface *s, int slot, uint64_t value) {
         release_slot(s, slot);
         return;
     }
-    int holdsShown = dispatch_semaphore_wait(shown, DISPATCH_TIME_NOW) == 0;
+    PMPresentLease lease = pm_credits_acquire(&s->shown, 0);
     drop_waiting(s);
-    if (!holdsShown && CACurrentMediaTime() - s->lastPresent < 0.1) {
+    if (!lease.ticket && CACurrentMediaTime() - s->lastPresent < 0.1) {
         // The previous frame is not on screen yet: this one waits (replacing any older waiting frame, above).
         s->waitingSlot = slot;
         return;
     }
-    draw_and_present(s, slot, holdsShown);
+    draw_and_present(s, slot, lease);
 }
 
 // The present pass runs on the present thread, so on Metal 4 it has its own queue, argument table and per-slot allocator
@@ -5399,9 +5399,8 @@ static void present_commit(PMSurface *s, id<MTLCommandBuffer> pcb, id<CAMetalDra
     [pcb commit];
 }
 
-// `holdsShown`: this present took the `shown` count, so its presented handler gives it back. A present forced by a
-// timeout did not, and must not add a count (that would let two frames wait for the screen from then on).
-static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
+// Each callback retires only its own lease. A forced frame may recover stale credits only after it is shown.
+static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
     PM_ENC_SCOPE(PM_ENC_PRESENT_THREAD);
     @autoreleasepool {
         CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
@@ -5414,7 +5413,7 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
         trace_ev(8, slot, 0, 0);
         if (!drawable) {
             release_slot(s, slot);
-            if (holdsShown) dispatch_semaphore_signal((__bridge dispatch_semaphore_t)s->shown);
+            pm_credits_finish(&s->shown, lease, 0);
             return;
         }
         id<MTLTexture> dst = drawable.texture;
@@ -5425,7 +5424,7 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
         PM_ENC_COUNT(PM_ENC_CBS_CREATED, 1);
         if (!pcb) {
             release_slot(s, slot);
-            if (holdsShown) dispatch_semaphore_signal((__bridge dispatch_semaphore_t)s->shown);
+            pm_credits_finish(&s->shown, lease, 0);
             set_error(s->device, @"could not create the present command buffer");
             return;
         }
@@ -5440,7 +5439,7 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
         if (e) atomic_fetch_add(&s->device->encCounts[5], 1);
         if (!e) {
             release_slot(s, slot);
-            if (holdsShown) dispatch_semaphore_signal((__bridge dispatch_semaphore_t)s->shown);
+            pm_credits_finish(&s->shown, lease, 0);
             set_error(s->device, @"could not create the present encoder");
             return;
         }
@@ -5473,7 +5472,7 @@ static void draw_and_present(PMSurface *s, int slot, int holdsShown) {
                     atomic_fetch_add(&s->stats[3], 1);
                     atomic_fetch_add(&s->stats[4], (uint64_t)((done.presentedTime - submitted) * 1e6));
                 }
-                if (holdsShown) dispatch_semaphore_signal((__bridge dispatch_semaphore_t)s->shown);
+                pm_credits_finish(&s->shown, lease, done.presentedTime > 0);
                 dispatch_async((__bridge dispatch_queue_t)s->dispatch, ^{
                     frame_shown(s);
                     atomic_fetch_sub(&s->onScreenPending, 1);
@@ -5703,7 +5702,7 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     pm_release(s->listener);
     CFRelease(s->dispatch);
     CFRelease(s->slotsFree);
-    CFRelease(s->shown);
+    pm_credits_destroy(&s->shown);
     CFRelease(s->vsyncDepth);
     pthread_mutex_destroy(&s->cfgLock);
     free(s);

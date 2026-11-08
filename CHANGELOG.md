@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4
+
+**Fixes**
+- Recover Metal presentation pacing after a shown frame confirms older presentation callbacks were missed.
+
+**Improvements**
+- Distant Horizons 3.3.x versions with the same checked classes as 3.3.4 can use the Metal path, with an untested-version warning. DH 3.3.3 was checked in Loom; other 3.3.x releases beyond 3.3.3 and 3.3.4 have not been tested.
+- Sodium Terrain LOD hooks are skipped if their checked class shapes do not match, helping avoid failures when Sodium changes.
+- Added a dismissible GitHub star card to the Pure Metal page in Sodium and a one-time in-game reminder during the first hour of play.
+
 ## 0.4.3
 
 Distant Horizons support is now on by default, and a set of small fixes and doc updates ship with it.

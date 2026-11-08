@@ -2,8 +2,9 @@
 
 A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Apple's Metal API instead of OpenGL. Works with Sodium.
 
-- Terrain LOD for extra FPS at long render distances
+- Terrain LOD simplifies distant terrain, leaves, plants and water at render distance 16+
 - Optional Render Scale with temporal upscaling and an Auto mode
+- Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Smooth Frame Pacing with VSync
 - Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
@@ -14,7 +15,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 ## Requirements
 
 - macOS 14 or newer on Apple Silicon (tested on M2). The optional Metal 4 mode needs macOS 26.
-- Minecraft 26.3 with Fabric Loader 0.19+
+- Minecraft 26.3 with Fabric Loader 0.19+ or Quilt Loader
 - Java 25
 - Sodium (optional)
 
@@ -27,13 +28,13 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 ## Install
 
-Download the jar from the releases page and put it in your `mods` folder. Leave Graphics API on Default.
+Download the jar from the [releases page](https://github.com/imCinq/Pure-Metal/releases) and put it in your `mods` folder. Leave Graphics API on Default. Find Pure Metal settings in Video Settings or on its page in Sodium.
 
 ## Distant Horizons
 
-**Distant Horizons** support is on by default in **Pure Metal 0.4.3**. It is tested with DH **3.3.4**. Other 3.3.x versions whose key classes are unchanged also run, with an "untested version" note in F3 and a log warning. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
+**Distant Horizons** support is on by default in **Pure Metal 0.4.3**. DH **3.3.4** has been visually tested. Starting with **0.4.4**, other 3.3.x versions whose key classes match 3.3.4 also run, with an "untested version" note in F3 and a log warning. DH 3.3.3 was checked in Loom. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate. Not supported with Iris.
 
-With any other DH version (3.2, 3.4, 4.x and so on), Pure Metal falls back to the normal backend and doesn't use Metal while DH is installed. To turn the support off, add this to your launcher's JVM arguments and restart. If DH stays installed, the game then runs without Metal too, so to keep Metal without DH, remove the DH mod instead:
+With an unsupported DH version, including 3.3.x versions whose checked classes differ (or 3.2, 3.4, 4.x and so on), Pure Metal falls back to the normal backend and doesn't use Metal while DH is installed. To turn the support off, add this to your launcher's JVM arguments and restart. If DH stays installed, the game then runs without Metal too, so to keep Metal without DH, remove the DH mod instead:
 
 ```
 -Dpuremetal.experimentalDistantHorizons=false
@@ -55,7 +56,7 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 ![Benchmarks](docs/gallery/2-benchmarks.webp)
 
-**Pure Metal vs mcopt (1920x1080 fullscreen)**
+**Pure Metal vs mcopt (1920x1080)**
 
 | Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
 | --- | --- | --- |
@@ -83,7 +84,7 @@ Results depend on the Mac, the world and the render distance, so compare runs on
 
 ## Issues
 
-Bug reports go to the issue tracker. Include the Pure Metal line from F3 and `latest.log`.
+Bug reports go to the [issue tracker](https://github.com/imCinq/Pure-Metal/issues). Include the Pure Metal line from F3 and `latest.log`.
 
 ## License
 

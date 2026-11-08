@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the DH experiment using an existing 3.3.4 jar, without launching Minecraft."""
+"""Check the DH experiment using existing 3.3.x jars, without launching Minecraft."""
 import os
 from pathlib import Path
 import shutil
@@ -25,13 +25,17 @@ def java_home():
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: python3 tools/test_distant_horizons.py /path/to/DistantHorizons-3.3.4.jar")
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: python3 tools/test_distant_horizons.py /path/to/DistantHorizons-3.3.4.jar [newer-3.3.x.jar ...]")
     root = Path(__file__).resolve().parent.parent
-    jar = Path(sys.argv[1]).resolve(strict=True)
     env = dict(os.environ)
     home = java_home()
     env["JAVA_HOME"] = str(home)
+    for argument in sys.argv[1:]:
+        check(Path(argument).resolve(strict=True), root, env, home)
+
+
+def check(jar, root, env, home):
     with tempfile.TemporaryDirectory(prefix="puremetal-dh-check-") as directory:
         temp = Path(directory)
         init = temp / "classpath.gradle"
@@ -56,23 +60,35 @@ def main():
                  ("opengl", True, False, 'renderingEngine = "OPEN_GL"\n', None),
                  ("repacked", True, True, None, "repacked"),
                  ("altered-code", True, False, None, "altered"),
+                 ("altered-constants", True, False, None, "altered-constants"),
                  ("default", None, True, None, None), ("disabled-upper", "FALSE", False, None, None)]
         for name, flag, expected, config, variant in cases:
             game = temp / name
             (game / "mods").mkdir(parents=True)
             copy = game / "mods/dh.jar"
             if variant:
-                target = "com/seibel/distanthorizons/common/wrappers/VersionConstants.class"
+                target = "com/seibel/distanthorizons/common/wrappers/minecraft/MinecraftRenderWrapper.class"
+                constants = "com/seibel/distanthorizons/common/wrappers/VersionConstants.class"
+                matches = 0
                 with zipfile.ZipFile(jar) as source, zipfile.ZipFile(copy, "w") as out:
                     for entry in source.infolist():
                         data = source.read(entry)
                         if variant == "altered" and entry.filename == target:
-                            data += b"\0"
+                            matches += 1
+                            old = b"MinecraftRenderWrapper.java"
+                            if data.count(old) != 1: raise RuntimeError("Expected wrapper source marker")
+                            data = data.replace(old, b"MinecraftRenderWrappex.java")
+                        if variant == "altered-constants" and entry.filename == constants:
+                            matches += 1
+                            if data.count(b"26.3") != 1: raise RuntimeError("Expected one 26.3 constant in " + constants)
+                            data = data.replace(b"26.3", b"26.4")
                         if variant == "repacked":
                             entry.compress_type = zipfile.ZIP_DEFLATED
                         out.writestr(entry, data)
                     if variant == "repacked":
                         out.writestr("puremetal-fingerprint-test.txt", "additional harmless resource")
+                if variant != "repacked" and matches != 1:
+                    raise RuntimeError("Expected exactly one class to alter for " + variant)
             else:
                 shutil.copyfile(jar, copy)
             if config:
@@ -87,7 +103,7 @@ def main():
             result = subprocess.run(command, cwd=game, text=True, capture_output=True, timeout=25)
             if result.returncode:
                 raise RuntimeError(name + " failed:\n" + result.stdout + result.stderr)
-            print(name + ": " + next(line for line in result.stdout.splitlines() if line.startswith("PASS DH Knot")))
+            print(jar.name + " " + name + ": " + next(line for line in result.stdout.splitlines() if line.startswith("PASS DH Knot")))
 
 
 if __name__ == "__main__":
