@@ -6,7 +6,8 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
 - Experimental Metal 4 mode (macOS 26+)
-- Experimental Smooth Frame Pacing with VSync
+- Experimental Smooth Frame Pacing with VSync tries to show frames at an even pace
+- With VSync off, Minecraft can render at a higher FPS without screen tearing by default
 - Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
 - A Pure Metal line on the F3 screen for bug reports
 
@@ -15,14 +16,14 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 ## Requirements
 
 - macOS 14 or newer on Apple Silicon (tested on M2). The optional Metal 4 mode needs macOS 26.
-- Minecraft 26.3 with Fabric Loader 0.19+ or Quilt Loader
+- Minecraft 26.3 with Fabric Loader 0.19+
 - Java 25
 - Sodium (optional)
 
 ## Known limitations
 
 - Experimental. Tested on an Apple M2 only; other Macs should work but are untested.
-- Metal 4 mode is optional and slower or less stable than Metal 3 for now.
+- Metal 4 mode is optional and has been slower or less stable than Metal 3 on the tested M2.
 - Iris and other shader mods are not supported.
 - Pure Metal is an independent project and is not affiliated with Mojang, Microsoft or Apple.
 
