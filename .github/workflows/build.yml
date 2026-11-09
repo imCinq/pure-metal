@@ -21,8 +21,16 @@ jobs:
       - run: ./gradlew build
       - name: Presentation credit tests
         run: |
-          clang -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread tools/test_present_credits.c -o /tmp/puremetal-present-credits
+          clang -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread -framework CoreFoundation -framework IOSurface tools/test_present_credits.c -o /tmp/puremetal-present-credits
           /tmp/puremetal-present-credits
+      - name: IOSurface credit recovery tests
+        run: |
+          clang -fobjc-arc -O1 -g -fsanitize=address -Wall -Wextra -Werror -framework Foundation -framework IOSurface tools/test_present_iosurface.m -o /tmp/puremetal-iosurface-test
+          /tmp/puremetal-iosurface-test
+      - name: Metal 4 surface shutdown test
+        run: |
+          clang -fobjc-arc -O1 -g -fsanitize=address -arch arm64 -mmacosx-version-min=14.0 -framework Metal -framework MetalFX -framework QuartzCore -framework Foundation -framework AppKit -framework IOSurface tools/test_metal4_surface_shutdown.m -o /tmp/puremetal-surface-shutdown
+          /tmp/puremetal-surface-shutdown
       - uses: actions/upload-artifact@v4
         with:
           name: pure-metal

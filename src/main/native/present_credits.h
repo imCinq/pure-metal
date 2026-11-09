@@ -4,18 +4,51 @@
 #include <stdint.h>
 #include <time.h>
 #include <errno.h>
+#include <IOSurface/IOSurface.h>
 
 typedef struct { uint64_t ticket, stale[2]; } PMPresentLease;
 typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t available;
     uint64_t held[2], next;
+    uint64_t imageTicket[2];
+    IOSurfaceRef image[2];
 } PMPresentCredits;
 
 static inline void pm_credits_init(PMPresentCredits *c) {
     pthread_mutex_init(&c->lock, NULL);
     pthread_cond_init(&c->available, NULL);
     c->held[0] = c->held[1] = c->next = 0;
+    c->imageTicket[0] = c->imageTicket[1] = 0;
+    c->image[0] = c->image[1] = NULL;
+}
+
+// The layer has returned this image for another use. Retain the earlier image while its lease is
+// held so its ID cannot be recycled. A late callback is still restricted to its original ticket.
+static inline int pm_credits_bind_image(PMPresentCredits *c, PMPresentLease lease, IOSurfaceRef image) {
+    if (!image) return 0;
+    pthread_mutex_lock(&c->lock);
+    int recovered = 0;
+    IOSurfaceID id = IOSurfaceGetID(image);
+    for (int i = 0; i < 2; i++) {
+        if (c->image[i] && c->imageTicket[i] == c->held[i] && c->held[i] &&
+            c->held[i] != lease.ticket && IOSurfaceGetID(c->image[i]) == id) {
+            c->held[i] = 0;
+            c->imageTicket[i] = 0;
+            CFRelease(c->image[i]); c->image[i] = NULL;
+            recovered++;
+        }
+    }
+    for (int i = 0; i < 2; i++) {
+        if (lease.ticket && c->held[i] == lease.ticket) {
+            if (c->image[i]) CFRelease(c->image[i]);
+            c->image[i] = (IOSurfaceRef)CFRetain(image);
+            c->imageTicket[i] = lease.ticket;
+        }
+    }
+    if (recovered) pthread_cond_broadcast(&c->available);
+    pthread_mutex_unlock(&c->lock);
+    return recovered;
 }
 
 // timeoutNs=0 never blocks. If no credit is available, record exactly which leases were held at this point.
@@ -53,6 +86,8 @@ static inline void pm_credits_finish(PMPresentCredits *c, PMPresentLease lease, 
         if (c->held[i] && (lease.ticket == c->held[i] ||
                 (!lease.ticket && shown && lease.stale[i] == c->held[i]))) {
             c->held[i] = 0;
+            if (c->image[i]) { CFRelease(c->image[i]); c->image[i] = NULL; }
+            c->imageTicket[i] = 0;
             released = 1;
         }
     }
@@ -61,6 +96,7 @@ static inline void pm_credits_finish(PMPresentCredits *c, PMPresentLease lease, 
 }
 
 static inline void pm_credits_destroy(PMPresentCredits *c) {
+    for (int i = 0; i < 2; i++) if (c->image[i]) CFRelease(c->image[i]);
     pthread_cond_destroy(&c->available);
     pthread_mutex_destroy(&c->lock);
 }

@@ -1,6 +1,6 @@
 package io.github.imcinq.puremetal.scale;
 
-import io.github.imcinq.puremetal.GitHubReminder;
+import java.net.URI;
 import java.util.List;
 import net.caffeinemc.mods.sodium.client.gui.ColorTheme;
 import net.caffeinemc.mods.sodium.client.gui.widgets.AbstractWidget;
@@ -82,7 +82,7 @@ public final class SodiumStarWidget extends AbstractWidget {
 
     private void open() {
         var client = Minecraft.getInstance();
-        if (client.gui.screen() != null) ConfirmLinkScreen.confirmLinkNow(client.gui.screen(), GitHubReminder.REPOSITORY);
+        if (client.gui.screen() != null) ConfirmLinkScreen.confirmLinkNow(client.gui.screen(), URI.create("https://github.com/imCinq/Pure-Metal"));
     }
 
     private final class CloseButton extends AbstractWidget {

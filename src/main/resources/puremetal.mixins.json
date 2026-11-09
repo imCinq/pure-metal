@@ -7,7 +7,6 @@
     "compat.DistantHorizonsApiMixin",
     "PreferredGraphicsApiMixin",
     "MinecraftBenchMixin",
-    "GitHubReminderMixin",
     "OptionsSaveMixin",
     "MinecraftStartupMixin",
     "RenderTargetMixin",

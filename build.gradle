@@ -32,7 +32,7 @@ tasks.register('buildNative', Exec) {
 	doFirst { nativeOut.get().asFile.parentFile.mkdirs() }
 	commandLine 'clang', '-dynamiclib', '-fobjc-arc', '-O2', '-arch', 'arm64', '-install_name', '@rpath/libpuremetal.dylib',
 		'-mmacosx-version-min=14.0', '-Wall', '-Werror',
-		'-framework', 'Metal', '-framework', 'MetalFX', '-framework', 'QuartzCore', '-framework', 'Foundation', '-framework', 'AppKit',
+		'-framework', 'Metal', '-framework', 'MetalFX', '-framework', 'QuartzCore', '-framework', 'Foundation', '-framework', 'AppKit', '-framework', 'IOSurface',
 		'-o', nativeOut.get().asFile.absolutePath,
 		"${nativeSrc}/puremetal.m"
 }

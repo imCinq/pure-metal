@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4.1
+
+- Improved recovery from Metal 4 presentation stutter after switching windows.
+- Avoided a long wait when Metal 4 presentation callbacks do not arrive at shutdown.
+- Removed the in-game GitHub star reminder. The dismissible card in Sodium settings remains.
+- Updated the mod icon.
+
 ## 0.4.4
 
 **Fixes**

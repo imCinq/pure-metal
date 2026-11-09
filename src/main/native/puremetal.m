@@ -4346,9 +4346,11 @@ PM_EXPORT void pm_pass_draw_indirect(PMDevice *d, int prim, void *args, uint64_t
 // (a serial dispatch queue) takes a drawable, draws the newest finished slot into it and presents it from its own
 // command queue. Holding a drawable across the frame's GPU work kept all three busy for ~50 ms each and capped the
 // frames shown far below the frames rendered; writing it on the frame's queue stalled every later frame.
+typedef struct PMShownContext PMShownContext;
 typedef struct PMSurface {
     void *layer;           // CAMetalLayer, borrowed from SDL's view
     PMDevice *device;
+    PMShownContext *shownContext; // Metal 4 presented handlers can outlive the surface.
     void *dispatch;        // dispatch_queue_t (serial) the listener runs on, retained
     void *listener;        // MTLSharedEventListener, retained
     void *event;           // id<MTLSharedEvent>, retained
@@ -4397,6 +4399,19 @@ typedef struct PMSurface {
     _Atomic uint64_t lastShownNs;     // presentedTime of the previous shown frame, for stats[7..8]
     uint64_t presentSeq;              // present dispatch queue only
 } PMSurface;
+
+struct PMShownContext {
+    pthread_mutex_t lock;
+    PMSurface *surface; // guarded by lock
+    atomic_uint refs;   // surface owner and one reference per registered handler
+};
+
+static void shown_context_release(PMShownContext *c) {
+    if (atomic_fetch_sub(&c->refs, 1) == 1) {
+        pthread_mutex_destroy(&c->lock);
+        free(c);
+    }
+}
 
 static NSString *const PRESENT_SHADER =
     @"#include <metal_stdlib>\n"
@@ -5171,6 +5186,13 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer) {
         }
         PMSurface *s = calloc(1, sizeof(PMSurface));
         if (!s) return NULL;
+        if (d->m4) {
+            s->shownContext = calloc(1, sizeof(PMShownContext));
+            if (!s->shownContext) { free(s); return NULL; }
+            pthread_mutex_init(&s->shownContext->lock, NULL);
+            s->shownContext->surface = s;
+            atomic_init(&s->shownContext->refs, 1);
+        }
         s->layer = layer;
         s->device = d;
         s->vsync = 1;
@@ -5417,6 +5439,9 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
             return;
         }
         id<MTLTexture> dst = drawable.texture;
+        // If the layer returns an earlier backing image, recover only its matching old lease.
+        // Missing IOSurface information leaves the original pacing behavior in place.
+        PM_IF_M4(s->device) pm_credits_bind_image(&s->shown, lease, dst.iosurface);
         void *directTexture = atomic_load(&s->direct[slot]);
         id<MTLTexture> src = PM_OBJ(id<MTLTexture>, directTexture ? directTexture : s->staging[slot]);
         NSUInteger w = MIN(src.width, dst.width), h = MIN(src.height, dst.height);
@@ -5453,9 +5478,19 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         double submitted = s->slotTime[slot];
         uint64_t seq = ++s->presentSeq;
         double presentAt = pacing_target(s, seq);
+        PMShownContext *shownContext = s->shownContext;
+        if (shownContext) atomic_fetch_add(&shownContext->refs, 1);
         atomic_fetch_add(&s->onScreenPending, 1);
         [drawable addPresentedHandler:^(id<MTLDrawable> done) {
             @autoreleasepool {
+                if (shownContext) {
+                    pthread_mutex_lock(&shownContext->lock);
+                    if (!shownContext->surface) {
+                        pthread_mutex_unlock(&shownContext->lock);
+                        shown_context_release(shownContext);
+                        return;
+                    }
+                }
                 trace_ev(9, (int64_t)pm_sec_ns(done.presentedTime), 0, 0);
                 if (done.presentedTime > 0) {
                     uint64_t shownNs = (uint64_t)(done.presentedTime * 1e9);
@@ -5477,6 +5512,10 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
                     frame_shown(s);
                     atomic_fetch_sub(&s->onScreenPending, 1);
                 });
+                if (shownContext) {
+                    pthread_mutex_unlock(&shownContext->lock);
+                    shown_context_release(shownContext);
+                }
             }
         }];
         atomic_fetch_add(&s->stats[2], 1);
@@ -5661,11 +5700,17 @@ PM_EXPORT void pm_surface_take_present_gpu(PMSurface *s, uint64_t *out) {
 PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     // From here on callbacks release their slots without presenting, so no new listener or presented handler work starts.
     atomic_store(&s->shutdown, 1);
+    PMShownContext *shownContext = s->shownContext;
+    if (shownContext) {
+        pthread_mutex_lock(&shownContext->lock);
+        shownContext->surface = NULL;
+        pthread_mutex_unlock(&shownContext->lock);
+    }
     // Wait for callbacks already running or queued. Frames never submitted never fire, so after a generous wait
     // leak the struct rather than free memory those callbacks may still touch.
     int drained = 0;
     for (int i = 0; i < 5000; i++) {
-        if (atomic_load(&s->pending) == 0 && atomic_load(&s->onScreenPending) == 0 && atomic_load(&s->presentsPending) == 0) {
+        if (atomic_load(&s->pending) == 0 && (shownContext || atomic_load(&s->onScreenPending) == 0) && atomic_load(&s->presentsPending) == 0) {
             drained = 1;
             break;
         }
@@ -5706,4 +5751,5 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     CFRelease(s->vsyncDepth);
     pthread_mutex_destroy(&s->cfgLock);
     free(s);
+    if (shownContext) shown_context_release(shownContext);
 }
