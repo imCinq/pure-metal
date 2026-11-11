@@ -22,8 +22,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 ## Known limitations
 
-- Experimental. Tested on an Apple M2 only; other Macs should work but are untested.
-- Metal 4 mode is optional and has been slower or less stable than Metal 3 on the tested M2.
+- Metal 4 is optional and off by default. Metal 3 is the recommended mode and is currently the faster one.
 - Iris and other shader mods are not supported.
 - Pure Metal is an independent project and is not affiliated with Mojang, Microsoft or Apple.
 
