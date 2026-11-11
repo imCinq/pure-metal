@@ -69,6 +69,15 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 *Separate test from the benchmark above: one 20-second flight per renderer, same world and path. Pure Metal 0.4.2, Sodium 0.9.3-beta.1, mcopt 0.3.0-alpha.2.*
 
+**Pure Metal on different Macs (more coming soon)**
+
+| Mac | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
+| --- | --- | --- | --- |
+| MacBook Pro M3 Max, 36 GB | <strong>551.6</strong> | 3.2 ms | 6.3 ms |
+| MacBook Air M2, 16 GB | 154.6 | 11.8 ms | 22.6 ms |
+
+*Pure Metal 0.4.4.1, Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution (3456x2168 and 3420x2148), vsync off, no FPS cap, M2 ran at 50% LOD while others ran at 80%. Same seed and flight route: a warm-up lap, then 30 seconds measured. The M3 Max result was run by a third party. More Macs coming soon.*
+
 `tools/bench.py` compares graphics APIs on your own Mac:
 
 ```
