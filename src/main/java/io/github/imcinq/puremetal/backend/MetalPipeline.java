@@ -63,7 +63,20 @@ final class MetalPipeline implements BackendRenderPipeline {
     private volatile boolean strictFailed;
     private final java.util.concurrent.atomic.AtomicBoolean strictStarted = new java.util.concurrent.atomic.AtomicBoolean();
     private final Object strictLock = new Object();
-    private final Runnable strictListener = this::startStrictBuild;
+    /** The family's view of this relaxed pipeline: it asks for the strict build and waits until it is done before the family switches. */
+    private final io.github.imcinq.puremetal.perf.TerrainShaderProof.Member strictListener = new io.github.imcinq.puremetal.perf.TerrainShaderProof.Member() {
+        @Override
+        public void prepareStrict() {
+            MetalPipeline.this.startStrictBuild();
+        }
+
+        @Override
+        public boolean strictDone() {
+            return MetalPipeline.this.strictReady || MetalPipeline.this.strictFailed;
+        }
+    };
+    /** Family of a terrain pipeline that was refused: it is compiled strict and does not draw until the family has switched, so no frame mixes modes. */
+    private final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState waitFamily;
     /** The pipeline has no depth state (it is drawn into passes with a depth attachment anyway). */
     private final boolean descriptorHasNoDepthState;
     /** Builds the strict fallbacks of relaxed terrain pipelines after their family turned strict; off the render thread. */
@@ -133,7 +146,8 @@ final class MetalPipeline implements BackendRenderPipeline {
     }
 
     private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
-                          final long fragmentFunctionFast, final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState family, final boolean relaxedBase,
+                          final long fragmentFunctionFast, final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState family,
+                          final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState waitFamily, final boolean relaxedBase,
                           final List<StageSource> strictSources, final long vertexFunctionFast, final int mathGroup) {
         this.device = device;
         this.vertexFunctionFast = vertexFunctionFast;
@@ -141,6 +155,7 @@ final class MetalPipeline implements BackendRenderPipeline {
         this.fragmentFunctionOff = fragmentFunctionOff;
         this.fragmentFunctionFast = fragmentFunctionFast;
         this.family = family;
+        this.waitFamily = waitFamily;
         this.descriptorHasNoDepthState = info.depthStencilState() == null;
         this.terrain = family != null;
         this.relaxedBase = relaxedBase;
@@ -182,6 +197,7 @@ final class MetalPipeline implements BackendRenderPipeline {
         MetalPipeline pipeline = null;
         // Relaxed math (vertex and fragment together) for pipelines whose terrain shader sources proved stock; see FastTerrainMath.
         var family = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedFamily(info);
+        var waitFamily = io.github.imcinq.puremetal.perf.TerrainShaderProof.refusedFamily(info);
         boolean terrain = family != null;
         boolean ab = terrain && FastTerrainMath.AB;
         // Diagnostic fastMath group A/B only: classify (and allocate the shader name list) just then, never in a normal run.
@@ -237,11 +253,11 @@ final class MetalPipeline implements BackendRenderPipeline {
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, family, relaxedBase, strictSources, vertexFunctionFast, mathGroup.ordinal());
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, family, waitFamily, relaxedBase, strictSources, vertexFunctionFast, mathGroup.ordinal());
             if (relaxedBase) {
                 LOGGER.info("Pure Metal: relaxed terrain math (vertex and fragment) compiled for {}", info.name());
-                // If the family turns strict (now or later) the strict fallback is built in the background; runs at once if it already is.
-                family.onStrict(pipeline.strictListener);
+                // If the family has to switch to strict math (now or later) this pipeline builds its strict variant in the background first.
+                family.register(pipeline.strictListener);
             }
             // Build the variants up front so the render thread never stalls on a first draw. Vanilla only uses
             // D32_FLOAT depth targets; pipelines without depth testing still get drawn into passes that have one.
@@ -320,11 +336,15 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built or must not draw yet. */
     long state(final int depthFormat) {
-        // A strict terrain family (some sibling was refused) overrides everything: no pipeline of it may draw relaxed, not even briefly.
+        // The family mode only changes at a frame boundary, so every pass of a frame sees the same value. A refused (strict) terrain pipeline waits for
+        // the switch so it never draws strict next to relaxed siblings.
+        if (this.waitFamily != null && !this.waitFamily.strict()) {
+            return 0L;
+        }
         boolean familyStrict = this.terrain && this.family.strict();
         boolean strictFallback = familyStrict && this.relaxedBase;
         if (strictFallback && !this.strictReady) {
-            // Fail closed: skip this pipeline's draws until the background strict build is ready (or for good if it failed).
+            // Only reachable when this pipeline's strict build failed (the family waits for every member): fail closed, never draw it relaxed.
             this.startStrictBuild();
             return 0L;
         }
@@ -351,7 +371,7 @@ final class MetalPipeline implements BackendRenderPipeline {
         if (!this.relaxedBase || !this.strictStarted.compareAndSet(false, true)) {
             return;
         }
-        LOGGER.info("Pure Metal: strict math fallback requested for {}, its draws are skipped until it is built", this.name);
+        LOGGER.info("Pure Metal: strict math variant requested for {}; it keeps drawing relaxed until its whole family switches", this.name);
         STRICT_WORKERS.execute(this::buildStrict);
     }
 
@@ -385,7 +405,7 @@ final class MetalPipeline implements BackendRenderPipeline {
                 }
                 this.strictReady = true;
             }
-            LOGGER.info("Pure Metal: strict math fallback ready for {} (its terrain shader family is strict)", this.name);
+            LOGGER.info("Pure Metal: strict math variant ready for {} (waiting for the family switch)", this.name);
         } catch (RuntimeException e) {
             this.strictFailed = true;
             LOGGER.error("Pure Metal couldn't build the strict fallback for {}; its draws stay skipped so the family never mixes math modes: {}", this.name, Redact.home(e.getMessage()));

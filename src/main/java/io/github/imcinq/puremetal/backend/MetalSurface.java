@@ -75,6 +75,8 @@ final class MetalSurface implements GpuSurfaceBackend {
 
     @Override
     public void acquireNextTexture() {
+        // Frame boundary: terrain math switches are published here, before any pass of the frame is recorded.
+        io.github.imcinq.puremetal.perf.TerrainShaderProof.frameBoundary();
         if (NO_PRESENT) {
             return;
         }

@@ -19,7 +19,11 @@ public final class FastTerrainMath {
     public static final String SWITCH = "fastTerrainMath";
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    /** The configured default: relaxed terrain math on (no A/B). */
+    /** macOS 15 added MTLMathModeRelaxed. Before it the only option is the legacy fastMathEnabled, which also assumes no NaN or infinity, so it is not the default. */
+    private static final boolean RELAXED_MODE_AVAILABLE = relaxedModeAvailable(System.getProperty("os.name", ""), System.getProperty("os.version", ""));
+    /** Why relaxed terrain math is off, or null when it is on: "turned off" (the JVM argument) or "macOS 15 required". Fixed at startup. */
+    private static volatile String offReason;
+    /** The configured default: relaxed terrain math on (no A/B), except where MTLMathModeRelaxed does not exist (macOS 14 and older). */
     private static final boolean ENABLED = parse(System.getProperty("puremetal.fastTerrainMath"));
     /** True only in a -PbenchAB=fastTerrainMath run: both variants are built and the bench switch picks one. */
     static final boolean AB = abRequested(System.getProperty("puremetal.benchAB", ""));
@@ -33,17 +37,51 @@ public final class FastTerrainMath {
         return ENABLED || AB;
     }
 
-    /** A typo in the JVM argument must never stop the game: warn and keep the default (on). */
-    private static boolean parse(final String value) {
-        if (value == null) {
+    static boolean relaxedModeAvailable(final String osName, final String osVersion) {
+        if (!osName.toLowerCase(Locale.ROOT).contains("mac")) {
             return true;
         }
+        try {
+            String major = osVersion.trim().split("\\.")[0];
+            return Integer.parseInt(major) >= 15;
+        } catch (NumberFormatException unknown) {
+            return true;
+        }
+    }
+
+    /** The reason terrain math is standard (strict) by configuration, or null when it is on. */
+    public static String offReason() {
+        return offReason;
+    }
+
+    private static boolean defaultOn() {
+        if (RELAXED_MODE_AVAILABLE) {
+            return true;
+        }
+        offReason = "macOS 15 required";
+        LOGGER.info("Pure Metal: relaxed terrain math is off by default on this macOS version (MTLMathModeRelaxed needs macOS 15); -Dpuremetal.fastTerrainMath=on forces the older fast math path");
+        return false;
+    }
+
+    /** A typo in the JVM argument must never stop the game: warn and keep the default. */
+    private static boolean parse(final String value) {
+        if (value == null) {
+            return defaultOn();
+        }
         return switch (value.trim().toLowerCase(Locale.ROOT)) {
-            case "on", "true", "opaque", "all" -> true;
-            case "off", "false" -> false;
-            default -> {
-                LOGGER.warn("Pure Metal: unsupported -Dpuremetal.fastTerrainMath={} (use on or off), using the default on", value);
+            case "on", "true", "opaque", "all" -> {
+                if (!RELAXED_MODE_AVAILABLE) {
+                    LOGGER.warn("Pure Metal: -Dpuremetal.fastTerrainMath=on on a macOS version without MTLMathModeRelaxed uses the older fast math, which also assumes no NaN or infinity");
+                }
                 yield true;
+            }
+            case "off", "false" -> {
+                offReason = "turned off";
+                yield false;
+            }
+            default -> {
+                LOGGER.warn("Pure Metal: unsupported -Dpuremetal.fastTerrainMath={} (use on or off), using the default", value);
+                yield defaultOn();
             }
         };
     }

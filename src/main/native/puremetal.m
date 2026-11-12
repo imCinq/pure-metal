@@ -3410,8 +3410,10 @@ PM_EXPORT void *pm_library_create(PMDevice *d, const char *source, char *err, in
         opts.languageVersion = MTLLanguageVersion3_0;
         // Keeps [[invariant]] positions bit-exact across pipelines (the frontend asks for this on Apple GPUs).
         opts.preserveInvariance = YES;
-        // Relaxed allows FMA contraction and reassociation (like MoltenVK and Apple's GL driver) but keeps NaN and
-        // infinity behaviour. Safe is strict IEEE and noticeably slower on Apple GPUs.
+        // macOS 15 and newer: MTLMathModeRelaxed allows FMA contraction and reassociation (like MoltenVK and Apple's GL
+        // driver) but keeps NaN and infinity behaviour. Safe is strict IEEE and noticeably slower on Apple GPUs.
+        // Older macOS: the only switch is the legacy fastMathEnabled, which also lets the compiler assume no NaN or
+        // infinity, so Pure Metal does not turn relaxed math on by default there (see FastTerrainMath).
         if (@available(macOS 15.0, *)) {
             opts.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
         } else {

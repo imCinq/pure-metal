@@ -22,34 +22,108 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static final ThreadLocal<Integer> CURRENT=ThreadLocal.withInitial(()->0);
     private final int previous;
     private final Accepted previousRelaxed;
-    /** The exact compile input (CreateInfo) the stock proof was made for, with its shader family; the backend only trusts it for that same object. */
-    private record Accepted(CreateInfo info,FamilyState family) {}
-    private static final ThreadLocal<Accepted> RELAXED=new ThreadLocal<>();
     /**
-     * Math mode of one shader family, shared by every terrain pipeline of it. Once any member (not a wireframe debug pipeline) is refused, the family is strict
-     * for good: pipelines compiled afterwards compile strict, and already compiled relaxed ones switch to their strict variant at draw time (see MetalPipeline),
-     * so a family never draws with mixed modes.
+     * The exact compile input (CreateInfo) the proof was made for, with its family state; the backend only trusts it for that same object.
+     * relaxed: the pipeline may compile relaxed. Otherwise it was refused (it compiles strict and waits for the family switch).
+     */
+    private record Accepted(CreateInfo info,FamilyState family,boolean relaxed) {}
+    private static final ThreadLocal<Accepted> RELAXED=new ThreadLocal<>();
+    /** Why a family is (turning) strict, in the words the settings page and F3 use. */
+    public enum Why {PACK,SODIUM_VERSION,OTHER}
+    /** A relaxed terrain pipeline of a family, which has to build a strict variant before the family can switch. */
+    public interface Member {
+        /** Start building the strict variant in the background (idempotent, quick). */
+        void prepareStrict();
+        /** The strict variant is built or its build failed (a failed member stays undrawn after the switch). */
+        boolean strictDone();
+    }
+    /**
+     * Math mode of one shader family for one resource generation, shared by every terrain pipeline of it. Relaxed pipelines draw relaxed until a member is refused.
+     * Then the family only requests a switch: every relaxed member builds its strict variant in the background while it keeps drawing relaxed, and once all are
+     * done the switch is published at the next frame boundary ({@link TerrainShaderProof#frameBoundary}) for all of them at once, so no frame mixes modes and
+     * nothing blinks. Refused pipelines (compiled strict) wait for that same switch. A new resource generation (new ShaderSource) starts a fresh state.
      */
     public static final class FamilyState {
         private final String shader;
-        private volatile String strictBecause;
-        FamilyState(String shader) {this.shader=shader;}
-        public boolean strict() {return strictBecause!=null;}
-        private final java.util.concurrent.CopyOnWriteArrayList<Runnable> strictListeners=new java.util.concurrent.CopyOnWriteArrayList<>();
-        /** Runs the listener when the family turns strict (at once if it already is); it may run more than once and must be idempotent and quick. */
-        public void onStrict(Runnable listener) {
-            strictListeners.add(listener);
-            if(strictBecause!=null) listener.run();
+        private final boolean sodium;
+        private volatile boolean requested;
+        private volatile boolean published;
+        private volatile boolean retired;
+        private volatile Why why=Why.OTHER;
+        private volatile String because;
+        private volatile int generation;
+        private final java.util.concurrent.CopyOnWriteArrayList<Member> members=new java.util.concurrent.CopyOnWriteArrayList<>();
+        FamilyState(String shader,boolean sodium) {this.shader=shader;this.sodium=sodium;}
+        /** The mode every draw of this family uses right now: true once the switch to strict math was published. Changes only at frame boundaries. */
+        public boolean strict() {return published;}
+        public boolean requested() {return requested;}
+        public Why why() {return why;}
+        public int relaxedMembers() {return members.size();}
+        /** Registers a relaxed pipeline; if a switch is already requested it starts building its strict variant at once. */
+        public void register(Member member) {
+            members.add(member);
+            if(requested) member.prepareStrict();
         }
-        public void removeOnStrict(Runnable listener) {strictListeners.remove(listener);}
-        synchronized void makeStrict(String because) {
-            if(strictBecause!=null) return;
-            strictBecause=because;
-            LOGGER.warn("Pure Metal: terrain shader family {} is strict from now on ({}); relaxed pipelines of it switch to strict math so its passes agree",shader,because);
-            for(Runnable listener:strictListeners) {
-                try {listener.run();} catch(RuntimeException failed) {LOGGER.error("Pure Metal: strict family listener failed",failed);}
+        public void removeOnStrict(Member member) {
+            members.remove(member);
+            if(retired && members.isEmpty()) ACTIVE.remove(this);
+        }
+        synchronized void request(String reason,Why kind) {
+            if(requested) return;
+            because=reason;
+            why=kind;
+            requested=true;
+            LOGGER.warn("Pure Metal: terrain shader family {} will switch to strict math ({}); relaxed pipelines build their strict variants first, then all switch at one frame boundary",shader,reason);
+            for(Member member:members) {
+                try {member.prepareStrict();} catch(RuntimeException failed) {LOGGER.error("Pure Metal: strict family member failed",failed);}
             }
         }
+        /** Render thread, once per frame: publish the switch when every relaxed member has its strict variant. */
+        void poll() {
+            if(published || !requested) return;
+            for(Member member:members) if(!member.strictDone()) return;
+            generation++;
+            published=true;
+            LOGGER.info("Pure Metal: terrain shader family {} is strict now (generation {}, {} relaxed pipeline(s) switched together)",shader,generation,members.size());
+        }
+        void retire() {retired=true;if(members.isEmpty()) ACTIVE.remove(this);}
+    }
+    /** Every family state that may still have to publish a switch (the current generations and retired ones that still have pipelines). */
+    private static final java.util.concurrent.CopyOnWriteArrayList<FamilyState> ACTIVE=new java.util.concurrent.CopyOnWriteArrayList<>();
+    /** The current resource generation of each family: its source identity, family state and stock proof. */
+    private static final class Generation {
+        final java.lang.ref.WeakReference<ShaderSource> source;
+        final FamilyState state;
+        private Boolean stock;
+        Generation(ShaderSource source,FamilyState state) {this.source=new java.lang.ref.WeakReference<>(source);this.state=state;}
+        synchronized boolean stock(Family family,ShaderSource original) throws Exception {
+            if(stock==null) stock=sourceStock(family,original);
+            return stock;
+        }
+    }
+    private static final java.util.concurrent.ConcurrentHashMap<Identifier,Generation> GENERATIONS=new java.util.concurrent.ConcurrentHashMap<>();
+    private static Generation generation(Family family,ShaderSource original) {
+        synchronized(family) {
+            Generation current=GENERATIONS.get(family.shader());
+            if(current==null || current.source.get()!=original) {
+                // A resource reload (new ShaderSource): fresh state, so removing a shader changing pack restores relaxed math without a restart.
+                if(current!=null) current.state.retire();
+                current=new Generation(original,new FamilyState(family.shader().toString(),family.shader().getNamespace().equals("sodium")));
+                GENERATIONS.put(family.shader(),current);
+                ACTIVE.add(current.state);
+            }
+            return current;
+        }
+    }
+    /** Called once per frame on the render thread, before any pass: publishes pending family switches (see {@link FamilyState}). */
+    public static void frameBoundary() {
+        for(FamilyState state:ACTIVE) state.poll();
+    }
+    /** The family states of the current resource generation, for the status line. */
+    public static java.util.List<FamilyState> currentStates() {
+        java.util.ArrayList<FamilyState> states=new java.util.ArrayList<>();
+        for(Generation generation:GENERATIONS.values()) states.add(generation.state);
+        return states;
     }
     /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */
     private static final Map<String,String> OIT=Map.of(
@@ -85,9 +159,7 @@ public final class TerrainShaderProof implements AutoCloseable {
     /** Pinned stock text of one shader family version: both stages and every include they reach. */
     private record Variant(String vertexHash,String fragmentHash,Map<String,String> includes) {}
     /** A terrain shader family: one shader id (vertex and fragment share it), the ALPHA_CUTOUT values its pipelines use, and the stock versions known. */
-    private record Family(Identifier shader,float[] alphaCutouts,Variant[] variants,FamilyState state) {
-        Family(Identifier shader,float[] alphaCutouts,Variant[] variants) {this(shader,alphaCutouts,variants,new FamilyState(shader.toString()));}
-    }
+    private record Family(Identifier shader,float[] alphaCutouts,Variant[] variants) {}
     /** ALPHA_CUTOUT: RenderPipelines threshold for cutout terrain / cutout_block (0.5) and its default for translucent and OIT terrain (0.1). */
     private static final float[] VANILLA_ALPHAS={VANILLA_CUTOUT_ALPHA,0.1F};
     /** Sodium 0.9.x pipelines (ShaderChunkRenderer): cutout 0.5, translucent 0.01. */
@@ -112,10 +184,15 @@ public final class TerrainShaderProof implements AutoCloseable {
     private TerrainShaderProof(int value,Accepted relaxed) {previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);}
     /** True while compiling exactly this CreateInfo, whose shader sources proved to be stock terrain (vanilla, Sodium or block), up to Pure Metal's own patch. */
     public static boolean relaxedMath(CreateInfo info) {return relaxedFamily(info)!=null;}
-    /** The family state of the pipeline being compiled for this exact CreateInfo when its sources proved stock terrain, else null. */
+    /** The family state of the pipeline being compiled for this exact CreateInfo when its sources proved stock terrain (it may compile relaxed), else null. */
     public static FamilyState relaxedFamily(CreateInfo info) {
         Accepted accepted=RELAXED.get();
-        return info!=null && accepted!=null && accepted.info()==info ? accepted.family() : null;
+        return info!=null && accepted!=null && accepted.relaxed() && accepted.info()==info ? accepted.family() : null;
+    }
+    /** The family state of a terrain pipeline that was refused (it compiles strict and must not draw before the family switch), else null. */
+    public static FamilyState refusedFamily(CreateInfo info) {
+        Accepted accepted=RELAXED.get();
+        return info!=null && accepted!=null && !accepted.relaxed() && accepted.info()==info ? accepted.family() : null;
     }
     public static int current() {return CURRENT.get();}
     public static boolean eligibleShape(DepthStencilState depth,PrimitiveTopology topology,PolygonMode polygon) {
@@ -174,8 +251,6 @@ public final class TerrainShaderProof implements AutoCloseable {
     /** Flags the stock terrain pipelines set: the four above, Sodium's USE_SPHERICAL_FOG (an #ifdef inside the hash-proven sodium:fog.glsl) and the stock OIT ones (OitPipelineSet, LevelRenderer.OIT_SNIPPET). */
     private static final java.util.Set<String> RELAXED_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN","USE_SPHERICAL_FOG",
         "OIT","OIT_ACCUMULATE","OIT_ALPHA_ONLY","OIT_DEPTH_BOUNDS","OIT_TRANSMITTANCE");
-    /** Why a terrain pipeline keeps strict math, or null when it may be relaxed; NOT_TERRAIN for every other pipeline (never logged). */
-    private static final String NOT_TERRAIN="";
     private static boolean oitValue(String key,Object value) {
         int expected;
         switch(key) {
@@ -186,9 +261,6 @@ public final class TerrainShaderProof implements AutoCloseable {
         }
         return String.valueOf(value).equals(Integer.toString(expected));
     }
-    /** Source proof per family, made once per (original) ShaderSource so every pipeline of a family gets the same answer. */
-    private record Proven(java.lang.ref.WeakReference<ShaderSource> source,boolean ok) {}
-    private static final java.util.concurrent.ConcurrentHashMap<Identifier,Proven> PROVEN=new java.util.concurrent.ConcurrentHashMap<>();
     private static final org.slf4j.Logger LOGGER=com.mojang.logging.LogUtils.getLogger();
     private static boolean includeMatches(ShaderSource source,Map.Entry<String,String> entry) throws Exception {
         var include=source.getInclude(Identifier.parse(entry.getKey()));
@@ -226,23 +298,26 @@ public final class TerrainShaderProof implements AutoCloseable {
         Family family=null;
         if(vertex!=null) for(Family candidate:FAMILIES) if(candidate.shader().equals(vertex)) family=candidate;
         if(family==null) return null;
-        String reason=reject(pipeline,borrowed,info,family,vertex);
-        if(reason==null) return new Accepted(info,family.state());
-        if(reason.startsWith("wireframe")) {
-            LOGGER.info("Pure Metal: strict math kept for {} ({})",info.name(),reason);
-        } else {
-            // A refused member makes the whole family strict, so overlapping passes never compute positions with different math.
-            LOGGER.info("Pure Metal: strict math kept for terrain pipeline {}: {}",info.name(),reason);
-            family.state().makeStrict(info.name()+": "+reason);
+        // Wireframe is a debug view, not a family member: decided before any other reason so it can never switch the family.
+        if(pipeline.getPolygonMode()==PolygonMode.WIREFRAME || info.polygonMode()==PolygonMode.WIREFRAME) {
+            LOGGER.info("Pure Metal: strict math kept for {} (wireframe debug pipeline)",info.name());
+            return null;
         }
-        return null;
+        ShaderSource original=LodTextureRepeat.originalSource(borrowed);
+        Generation generation=generation(family,original);
+        FamilyState state=generation.state;
+        Why[] why={Why.OTHER};
+        String reason=reject(pipeline,original,info,family,vertex,generation,why);
+        if(reason==null) return new Accepted(info,state,true);
+        LOGGER.info("Pure Metal: strict math kept for terrain pipeline {}: {}",info.name(),reason);
+        // A refused member switches the whole family: this pipeline compiles strict and waits, the relaxed ones switch together with it.
+        state.request(info.name()+": "+reason,why[0]);
+        return new Accepted(info,state,false);
     }
-    private static String reject(RenderPipeline pipeline,ShaderSource borrowed,CreateInfo info,Family family,Identifier vertex) {
+    private static String reject(RenderPipeline pipeline,ShaderSource source,CreateInfo info,Family family,Identifier vertex,Generation generation,Why[] why) {
         try {
-            // Wireframe is a debug view, not a family member: decided before any other reason so it can never make the family strict.
-            if(pipeline.getPolygonMode()==PolygonMode.WIREFRAME || info.polygonMode()==PolygonMode.WIREFRAME) return "wireframe debug pipeline";
             if(!vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return "vertex and fragment shaders differ";
-            if(family.state().strict()) return "its shader family is already strict ("+family.state().strictBecause+")";
+            if(generation.state.requested()) return "its shader family is switching to strict ("+generation.state.because+")";
             // The compile input must be the proven pipeline: same name and exactly the proven vertex and fragment shader.
             if(!info.name().equals(String.valueOf(pipeline.getLocation())) || info.shaders().size()!=2) return "compile input does not match the pipeline";
             boolean hasVertex=false,hasFragment=false;
@@ -262,13 +337,11 @@ public final class TerrainShaderProof implements AutoCloseable {
                     if(!known) return "unknown ALPHA_CUTOUT="+define.getValue();
                 } else if(!oitValue(key,define.getValue())) return "unknown define "+key+"="+define.getValue();
             }
-            ShaderSource source=LodTextureRepeat.originalSource(borrowed);
-            Proven cached=PROVEN.get(vertex);
-            if(cached==null || cached.source().get()!=source) {
-                cached=new Proven(new java.lang.ref.WeakReference<>(source),sourceStock(family,source));
-                PROVEN.put(vertex,cached);
+            if(!generation.stock(family,source)) {
+                why[0]=generation.state.sodium ? Why.SODIUM_VERSION : Why.PACK;
+                return "shader sources are not the stock ones (resource pack, mod, Iris or an unknown version)";
             }
-            return cached.ok() ? null : "shader sources are not the stock ones (resource pack, mod, Iris or an unknown version)";
+            return null;
         } catch(Exception unsupported) {return "proof failed: "+unsupported;}
     }
     @Override public void close() {CURRENT.set(previous);RELAXED.set(previousRelaxed);}
