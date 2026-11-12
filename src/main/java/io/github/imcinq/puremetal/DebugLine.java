@@ -32,6 +32,9 @@ public final class DebugLine implements DebugScreenEntry {
                         final @Nullable LevelChunk serverChunk) {
         try {
             displayer.addLine(line());
+            if (MetalInfo.backend() != null) {
+                displayer.addLine(io.github.imcinq.puremetal.perf.TerrainMathStatus.line().getString());
+            }
         } catch (Throwable t) {
             displayer.addLine("Pure Metal: unavailable");
         }

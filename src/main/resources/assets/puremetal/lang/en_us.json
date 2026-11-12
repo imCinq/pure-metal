@@ -37,5 +37,13 @@
   "puremetal.options.generationFpsCap": "Faster World Generation",
   "puremetal.options.generationFpsCap.tooltip": "Loads new terrain faster in singleplayer.\n\nThe game draws frames and builds chunks on the same CPU. While chunks near you are still missing, FPS is limited to twice your refresh rate, so the CPU time saved goes to building chunks.\n\nNormal FPS returns once they have loaded.",
   "puremetal.options.smoothFramePacing": "Smooth Frame Pacing",
-  "puremetal.options.smoothFramePacing.tooltip": "Makes motion look smoother when VSync is on.\n\nEach frame is shown on the next display refresh, at an even rhythm, instead of the moment it is ready. This reduces small stutters when you turn the camera or move.\n\nA frame that is already late is never held back.\n\nOnly works with VSync on.\n\nExperimental."
+  "puremetal.options.smoothFramePacing.tooltip": "Makes motion look smoother when VSync is on.\n\nEach frame is shown on the next display refresh, at an even rhythm, instead of the moment it is ready. This reduces small stutters when you turn the camera or move.\n\nA frame that is already late is never held back.\n\nOnly works with VSync on.\n\nExperimental.",
+  "puremetal.terrainMath.fast": "Terrain math: Fast",
+  "puremetal.terrainMath.standard": "Terrain math: Standard (%s)",
+  "puremetal.terrainMath.reason.off": "turned off",
+  "puremetal.terrainMath.reason.macos": "macOS 15 required",
+  "puremetal.terrainMath.reason.pack": "shader changed by a resource pack or mod",
+  "puremetal.terrainMath.reason.sodium": "unknown Sodium version",
+  "puremetal.terrainMath.reason.other": "unrecognized shader setup",
+  "puremetal.terrainMath.reason.none": "terrain shaders not recognized"
 }

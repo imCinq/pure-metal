@@ -17,7 +17,7 @@ public final class PureMetalOptionsScreen extends OptionsSubScreen {
 
     @Override
     protected void addOptions() {
-        FocusableTextWidget note = FocusableTextWidget.builder(Lang.text("puremetal.options.note"), this.getFont(), 4)
+        FocusableTextWidget note = FocusableTextWidget.builder(io.github.imcinq.puremetal.perf.TerrainMathStatus.noteWithStatus(), this.getFont(), 4)
             .maxWidth(this.list.getRowWidth())
             .alwaysShowBorder(false)
             .backgroundFill(FocusableTextWidget.BackgroundFill.NEVER)

@@ -1,6 +1,5 @@
 package io.github.imcinq.puremetal.scale;
 
-import io.github.imcinq.puremetal.Lang;
 import java.util.List;
 import net.caffeinemc.mods.sodium.client.gui.options.control.AbstractOptionList;
 import net.caffeinemc.mods.sodium.client.gui.widgets.AbstractWidget;
@@ -30,7 +29,7 @@ public final class SodiumNoteWidget extends AbstractWidget {
     /** Wraps the note to the row width; the row height grows with the wrapped lines. */
     public static SodiumNoteWidget create(final AbstractOptionList list, final int x, final int y, final int width) {
         final var font = Minecraft.getInstance().font;
-        final List<FormattedCharSequence> lines = font.split(Lang.text("puremetal.options.note"), Math.max(20, width - PADDING_X * 2));
+        final List<FormattedCharSequence> lines = font.split(io.github.imcinq.puremetal.perf.TerrainMathStatus.noteWithStatus(), Math.max(20, width - PADDING_X * 2));
         return new SodiumNoteWidget(list, new Dim2i(x, y, width, lines.size() * font.lineHeight + PADDING_Y * 2), lines);
     }
 
