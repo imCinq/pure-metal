@@ -88,8 +88,15 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
-    private final long[][] states = new long[4][MetalConst.FORMAT_NAMES.size() + 1];
-    private final boolean[][] failedStates = new boolean[4][MetalConst.FORMAT_NAMES.size() + 1];
+    private final long[][] states = new long[3][MetalConst.FORMAT_NAMES.size() + 1];
+    private final boolean[][] failedStates = new boolean[3][MetalConst.FORMAT_NAMES.size() + 1];
+    /** Strict fallback states per depth slot, built only by the strict workers: 0 = not built, {@link #STATE_FAILED} = failed. */
+    private final java.util.concurrent.atomic.AtomicLongArray strictStates = new java.util.concurrent.atomic.AtomicLongArray(MetalConst.FORMAT_NAMES.size() + 1);
+    /** Render thread only: strict states already queued for a background build. */
+    private final boolean[] strictStateQueued = new boolean[MetalConst.FORMAT_NAMES.size() + 1];
+    private static final long STATE_FAILED = -1L;
+    /** Strict worker jobs running on this pipeline; guarded by strictLock. The last one releases a pipeline closed meanwhile. */
+    private int strictJobs;
     final int primitive;
     final boolean triangleFan;
     final boolean cull;
@@ -99,7 +106,7 @@ final class MetalPipeline implements BackendRenderPipeline {
     /** 0 unsupported, 1 pinned vanilla transform, 2 pinned Sodium transform; captured per compilation. */
     final int terrainProbeTransform;
     final boolean terrainProbeReverse;
-    private boolean closed;
+    private volatile boolean closed;
 
     /** Where each frontend uniform index lands in Metal's argument tables. */
     record Bindings(UniformType[] types, int[] buffers, int[] textures, int[] samplers) {
@@ -358,7 +365,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             }
         }
         if (strictFallback) {
-            return this.state(depthFormat, 3);
+            return this.strictState(depthFormat);
         }
         if (fast) {
             return this.state(depthFormat, 2);
@@ -377,38 +384,92 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** Worker thread: compile the strict functions and the state the draws will bind, then publish. Nothing is published on failure. */
     private void buildStrict() {
-        if (!this.device.enterCompilation()) {
+        if (!this.beginStrictJob()) {
             this.strictFailed = true;
             return;
         }
         try {
-            synchronized (this.strictLock) {
-                if (this.closed) {
-                    return;
+            for (StageSource stage : this.strictSources) {
+                long function = stage.constant() >= 0
+                    ? this.device.compileFunction(stage.msl(), stage.label(), stage.constant(), 1, false)
+                    : this.device.compileFunction(stage.msl(), stage.label(), -1, 0, false);
+                if (stage.fragment()) {
+                    this.fragmentFunctionStrict = function;
+                } else {
+                    this.vertexFunctionStrict = function;
                 }
-                for (StageSource stage : this.strictSources) {
-                    long function = stage.constant() >= 0
-                        ? this.device.compileFunction(stage.msl(), stage.label(), stage.constant(), 1, false)
-                        : this.device.compileFunction(stage.msl(), stage.label(), -1, 0, false);
-                    if (stage.fragment()) {
-                        this.fragmentFunctionStrict = function;
-                    } else {
-                        this.vertexFunctionStrict = function;
-                    }
-                }
-                // Same states the compile step prebuilds, so the render thread normally only reads them.
-                int d32 = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.D32_FLOAT);
-                boolean noDepth = this.descriptorHasNoDepthState;
-                long state = this.state(noDepth ? NO_DEPTH : d32, 3);
-                if (state == 0L || noDepth && this.state(d32, 3) == 0L) {
-                    throw new IllegalStateException("strict pipeline state could not be built");
-                }
-                this.strictReady = true;
             }
+            // Same depth formats the compile step prebuilds, so the render thread normally only reads them.
+            int d32 = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.D32_FLOAT);
+            boolean noDepth = this.descriptorHasNoDepthState;
+            if (!this.buildStrictStateNow(noDepth ? NO_DEPTH : d32) || noDepth && !this.buildStrictStateNow(d32)) {
+                throw new IllegalStateException("strict pipeline state could not be built");
+            }
+            this.strictReady = true;
             LOGGER.info("Pure Metal: strict math variant ready for {} (waiting for the family switch)", this.name);
         } catch (RuntimeException e) {
             this.strictFailed = true;
             LOGGER.error("Pure Metal couldn't build the strict fallback for {}; its draws stay skipped so the family never mixes math modes: {}", this.name, Redact.home(e.getMessage()));
+        } finally {
+            this.endStrictJob();
+        }
+    }
+
+    /** Render thread: the strict state for this depth format, or 0 while a worker builds it (the draw is skipped, never stalled or drawn relaxed). */
+    private long strictState(final int depthFormat) {
+        int slot = depthFormat + 1;
+        long state = this.strictStates.get(slot);
+        if (state == 0L && !this.strictStateQueued[slot]) {
+            this.strictStateQueued[slot] = true;
+            STRICT_WORKERS.execute(() -> {
+                if (this.beginStrictJob()) {
+                    try {
+                        this.buildStrictStateNow(depthFormat);
+                    } finally {
+                        this.endStrictJob();
+                    }
+                }
+            });
+        }
+        return state == STATE_FAILED ? 0L : state;
+    }
+
+    /** Worker thread inside a strict job: builds and publishes the strict state for one depth format; false if it failed. */
+    private boolean buildStrictStateNow(final int depthFormat) {
+        int slot = depthFormat + 1;
+        if (this.strictStates.get(slot) != 0L) {
+            return this.strictStates.get(slot) != STATE_FAILED;
+        }
+        long state = this.createState(depthFormat, this.vertexFunctionStrict, this.fragmentFunctionStrict);
+        this.strictStates.set(slot, state == 0L ? STATE_FAILED : state);
+        return state != 0L;
+    }
+
+    /** Joins the device compilations and this pipeline's strict jobs; false if either is closing. */
+    private boolean beginStrictJob() {
+        if (!this.device.enterCompilation()) {
+            return false;
+        }
+        synchronized (this.strictLock) {
+            if (!this.closed) {
+                this.strictJobs++;
+                return true;
+            }
+        }
+        this.device.exitCompilation();
+        return false;
+    }
+
+    /** Ends a strict job; the last job of a pipeline closed meanwhile releases its native state (before the device may shut down). */
+    private void endStrictJob() {
+        boolean release;
+        synchronized (this.strictLock) {
+            release = --this.strictJobs == 0 && this.closed;
+        }
+        try {
+            if (release) {
+                this.releaseNative();
+            }
         } finally {
             this.device.exitCompilation();
         }
@@ -420,6 +481,19 @@ final class MetalPipeline implements BackendRenderPipeline {
         if (state != 0L || this.failedStates[variant][slot]) {
             return state;
         }
+        state = this.createState(depthFormat,
+            variant == 2 && this.vertexFunctionFast != 0L ? this.vertexFunctionFast : this.vertexFunction,
+            variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction);
+        if (state == 0L) {
+            this.failedStates[variant][slot] = true;
+        }
+        this.states[variant][slot] = state;
+        return state;
+    }
+
+    /** Builds one pipeline state (0 on failure, logged); stores nothing. */
+    private long createState(final int depthFormat, final long vertex, final long fragment) {
+        long state;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer desc = stack.mallocInt(this.descriptor.length);
             desc.put(0, this.descriptor);
@@ -427,19 +501,15 @@ final class MetalPipeline implements BackendRenderPipeline {
             ByteBuffer label = stack.UTF8(this.name);
             ByteBuffer err = stack.calloc(1024);
             state = MetalNative.pipelineCreate(
-                this.device.handle(),
-                variant == 3 ? this.vertexFunctionStrict : variant == 2 && this.vertexFunctionFast != 0L ? this.vertexFunctionFast : this.vertexFunction,
-                variant == 3 ? this.fragmentFunctionStrict : variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
+                this.device.handle(), vertex, fragment,
                 org.lwjgl.system.MemoryUtil.memAddress(desc), org.lwjgl.system.MemoryUtil.memAddress(label),
                 org.lwjgl.system.MemoryUtil.memAddress(err), err.capacity()
             );
             if (state == 0L) {
-                this.failedStates[variant][slot] = true;
                 LOGGER.error("Pure Metal couldn't build pipeline {} (depth format {}): {}", this.name, depthFormat,
                     Redact.home(org.lwjgl.system.MemoryUtil.memUTF8(org.lwjgl.system.MemoryUtil.memAddress(err))));
             }
         }
-        this.states[variant][slot] = state;
         return state;
     }
 
@@ -469,28 +539,39 @@ final class MetalPipeline implements BackendRenderPipeline {
         if (this.family != null) {
             this.family.removeOnStrict(this.strictListener);
         }
-        // Wait for a running strict build (it holds this lock) so it cannot publish into released state.
+        // Never waits for a strict compile: a running strict job sees the pipeline closed and the last one releases it.
+        boolean release;
         synchronized (this.strictLock) {
-            this.closeLocked();
+            if (this.closed) {
+                return;
+            }
+            this.closed = true;
+            release = this.strictJobs == 0;
+        }
+        if (release) {
+            this.releaseNative();
         }
     }
 
-    private void closeLocked() {
-        if (!this.closed) {
-            this.closed = true;
-            for (long[] variantStates : this.states) {
-                for (long state : variantStates) {
-                    MetalNative.release(state);
-                }
+    private void releaseNative() {
+        for (long[] variantStates : this.states) {
+            for (long state : variantStates) {
+                MetalNative.release(state);
             }
-            this.device.releaseDepthState(this.depthState);
-            this.device.releaseFunction(this.vertexFunction);
-            this.device.releaseFunction(this.fragmentFunction);
-            this.device.releaseFunction(this.fragmentFunctionOff);
-            this.device.releaseFunction(this.fragmentFunctionFast);
-            this.device.releaseFunction(this.vertexFunctionFast);
-            this.device.releaseFunction(this.vertexFunctionStrict);
-            this.device.releaseFunction(this.fragmentFunctionStrict);
         }
+        for (int i = 0; i < this.strictStates.length(); i++) {
+            long state = this.strictStates.get(i);
+            if (state != 0L && state != STATE_FAILED) {
+                MetalNative.release(state);
+            }
+        }
+        this.device.releaseDepthState(this.depthState);
+        this.device.releaseFunction(this.vertexFunction);
+        this.device.releaseFunction(this.fragmentFunction);
+        this.device.releaseFunction(this.fragmentFunctionOff);
+        this.device.releaseFunction(this.fragmentFunctionFast);
+        this.device.releaseFunction(this.vertexFunctionFast);
+        this.device.releaseFunction(this.vertexFunctionStrict);
+        this.device.releaseFunction(this.fragmentFunctionStrict);
     }
 }
