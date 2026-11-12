@@ -514,6 +514,22 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.debugLabels;
     }
 
+    /** Registers a background compilation so the device waits for it on close; false (nothing registered) if the device is already closing. */
+    boolean enterCompilation() {
+        synchronized (this.compilationLock) {
+            if (this.shuttingDown) return false;
+            this.activeCompilations++;
+            return true;
+        }
+    }
+
+    void exitCompilation() {
+        synchronized (this.compilationLock) {
+            this.activeCompilations--;
+            this.compilationLock.notifyAll();
+        }
+    }
+
     @Override
     public BackendRenderPipeline.Pending compilePipeline(final BackendRenderPipeline.CreateInfo createInfo) {
         synchronized (this.compilationLock) {

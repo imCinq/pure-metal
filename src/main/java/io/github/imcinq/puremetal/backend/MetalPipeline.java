@@ -57,8 +57,21 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final List<StageSource> strictSources;
     private long vertexFunctionStrict;
     private long fragmentFunctionStrict;
-    private boolean strictBuilt;
-    private boolean strictFailed;
+    /** Set once (after the strict functions and state exist) by the strict worker; until then a relaxed pipeline of a strict family draws nothing. */
+    private volatile boolean strictReady;
+    /** The strict build failed: the pipeline stays undrawn, never relaxed. */
+    private volatile boolean strictFailed;
+    private final java.util.concurrent.atomic.AtomicBoolean strictStarted = new java.util.concurrent.atomic.AtomicBoolean();
+    private final Object strictLock = new Object();
+    private final Runnable strictListener = this::startStrictBuild;
+    /** The pipeline has no depth state (it is drawn into passes with a depth attachment anyway). */
+    private final boolean descriptorHasNoDepthState;
+    /** Builds the strict fallbacks of relaxed terrain pipelines after their family turned strict; off the render thread. */
+    private static final java.util.concurrent.ExecutorService STRICT_WORKERS = java.util.concurrent.Executors.newFixedThreadPool(4, task -> {
+        Thread thread = new Thread(task, "Pure Metal strict fallback");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
@@ -128,6 +141,7 @@ final class MetalPipeline implements BackendRenderPipeline {
         this.fragmentFunctionOff = fragmentFunctionOff;
         this.fragmentFunctionFast = fragmentFunctionFast;
         this.family = family;
+        this.descriptorHasNoDepthState = info.depthStencilState() == null;
         this.terrain = family != null;
         this.relaxedBase = relaxedBase;
         this.strictSources = strictSources;
@@ -226,6 +240,8 @@ final class MetalPipeline implements BackendRenderPipeline {
             pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, family, relaxedBase, strictSources, vertexFunctionFast, mathGroup.ordinal());
             if (relaxedBase) {
                 LOGGER.info("Pure Metal: relaxed terrain math (vertex and fragment) compiled for {}", info.name());
+                // If the family turns strict (now or later) the strict fallback is built in the background; runs at once if it already is.
+                family.onStrict(pipeline.strictListener);
             }
             // Build the variants up front so the render thread never stalls on a first draw. Vanilla only uses
             // D32_FLOAT depth targets; pipelines without depth testing still get drawn into passes that have one.
@@ -302,12 +318,17 @@ final class MetalPipeline implements BackendRenderPipeline {
         return d;
     }
 
-    /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
+    /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built or must not draw yet. */
     long state(final int depthFormat) {
-        // A strict terrain family (some sibling was refused) overrides everything: no pipeline of it may keep relaxed math.
+        // A strict terrain family (some sibling was refused) overrides everything: no pipeline of it may draw relaxed, not even briefly.
         boolean familyStrict = this.terrain && this.family.strict();
-        boolean strictFallback = familyStrict && this.relaxedBase && this.buildStrict();
-        boolean fast = !strictFallback && this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain && !familyStrict, this.mathGroup);
+        boolean strictFallback = familyStrict && this.relaxedBase;
+        if (strictFallback && !this.strictReady) {
+            // Fail closed: skip this pipeline's draws until the background strict build is ready (or for good if it failed).
+            this.startStrictBuild();
+            return 0L;
+        }
+        boolean fast = !familyStrict && this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain, this.mathGroup);
         if (this.terrain) {
             // Log the math mode actually bound the first time each mode is drawn (once per pipeline and mode).
             int bit = fast || this.relaxedBase && !strictFallback ? 2 : 1;
@@ -325,32 +346,51 @@ final class MetalPipeline implements BackendRenderPipeline {
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);
     }
 
-    /** Builds the strict functions of a pipeline that was compiled relaxed, once, on first need (its family became strict). False if that failed. */
-    private boolean buildStrict() {
-        if (this.strictBuilt) {
-            return true;
+    /** Starts (once) the background build of the strict functions and state of a pipeline that was compiled relaxed. */
+    private void startStrictBuild() {
+        if (!this.relaxedBase || !this.strictStarted.compareAndSet(false, true)) {
+            return;
         }
-        if (this.strictFailed) {
-            return false;
+        LOGGER.info("Pure Metal: strict math fallback requested for {}, its draws are skipped until it is built", this.name);
+        STRICT_WORKERS.execute(this::buildStrict);
+    }
+
+    /** Worker thread: compile the strict functions and the state the draws will bind, then publish. Nothing is published on failure. */
+    private void buildStrict() {
+        if (!this.device.enterCompilation()) {
+            this.strictFailed = true;
+            return;
         }
         try {
-            for (StageSource stage : this.strictSources) {
-                long function = stage.constant() >= 0
-                    ? this.device.compileFunction(stage.msl(), stage.label(), stage.constant(), 1, false)
-                    : this.device.compileFunction(stage.msl(), stage.label(), -1, 0, false);
-                if (stage.fragment()) {
-                    this.fragmentFunctionStrict = function;
-                } else {
-                    this.vertexFunctionStrict = function;
+            synchronized (this.strictLock) {
+                if (this.closed) {
+                    return;
                 }
+                for (StageSource stage : this.strictSources) {
+                    long function = stage.constant() >= 0
+                        ? this.device.compileFunction(stage.msl(), stage.label(), stage.constant(), 1, false)
+                        : this.device.compileFunction(stage.msl(), stage.label(), -1, 0, false);
+                    if (stage.fragment()) {
+                        this.fragmentFunctionStrict = function;
+                    } else {
+                        this.vertexFunctionStrict = function;
+                    }
+                }
+                // Same states the compile step prebuilds, so the render thread normally only reads them.
+                int d32 = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.D32_FLOAT);
+                boolean noDepth = this.descriptorHasNoDepthState;
+                long state = this.state(noDepth ? NO_DEPTH : d32, 3);
+                if (state == 0L || noDepth && this.state(d32, 3) == 0L) {
+                    throw new IllegalStateException("strict pipeline state could not be built");
+                }
+                this.strictReady = true;
             }
-            this.strictBuilt = true;
-            LOGGER.info("Pure Metal: strict math fallback built for {} (its terrain shader family is strict)", this.name);
-            return true;
+            LOGGER.info("Pure Metal: strict math fallback ready for {} (its terrain shader family is strict)", this.name);
         } catch (RuntimeException e) {
             this.strictFailed = true;
-            LOGGER.error("Pure Metal couldn't build the strict fallback for {}, it keeps relaxed math: {}", this.name, Redact.home(e.getMessage()));
-            return false;
+            LOGGER.error("Pure Metal couldn't build the strict fallback for {}; its draws stay skipped so the family never mixes math modes: {}", this.name, Redact.home(e.getMessage()));
+        } finally {
+            this.device.exitCompilation();
         }
     }
 
@@ -406,6 +446,16 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     @Override
     public void close() {
+        if (this.family != null) {
+            this.family.removeOnStrict(this.strictListener);
+        }
+        // Wait for a running strict build (it holds this lock) so it cannot publish into released state.
+        synchronized (this.strictLock) {
+            this.closeLocked();
+        }
+    }
+
+    private void closeLocked() {
         if (!this.closed) {
             this.closed = true;
             for (long[] variantStates : this.states) {

@@ -35,10 +35,20 @@ public final class TerrainShaderProof implements AutoCloseable {
         private volatile String strictBecause;
         FamilyState(String shader) {this.shader=shader;}
         public boolean strict() {return strictBecause!=null;}
+        private final java.util.concurrent.CopyOnWriteArrayList<Runnable> strictListeners=new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** Runs the listener when the family turns strict (at once if it already is); it may run more than once and must be idempotent and quick. */
+        public void onStrict(Runnable listener) {
+            strictListeners.add(listener);
+            if(strictBecause!=null) listener.run();
+        }
+        public void removeOnStrict(Runnable listener) {strictListeners.remove(listener);}
         synchronized void makeStrict(String because) {
             if(strictBecause!=null) return;
             strictBecause=because;
             LOGGER.warn("Pure Metal: terrain shader family {} is strict from now on ({}); relaxed pipelines of it switch to strict math so its passes agree",shader,because);
+            for(Runnable listener:strictListeners) {
+                try {listener.run();} catch(RuntimeException failed) {LOGGER.error("Pure Metal: strict family listener failed",failed);}
+            }
         }
     }
     /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */
@@ -229,8 +239,9 @@ public final class TerrainShaderProof implements AutoCloseable {
     }
     private static String reject(RenderPipeline pipeline,ShaderSource borrowed,CreateInfo info,Family family,Identifier vertex) {
         try {
-            if(!vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return "vertex and fragment shaders differ";
+            // Wireframe is a debug view, not a family member: decided before any other reason so it can never make the family strict.
             if(pipeline.getPolygonMode()==PolygonMode.WIREFRAME || info.polygonMode()==PolygonMode.WIREFRAME) return "wireframe debug pipeline";
+            if(!vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return "vertex and fragment shaders differ";
             if(family.state().strict()) return "its shader family is already strict ("+family.state().strictBecause+")";
             // The compile input must be the proven pipeline: same name and exactly the proven vertex and fragment shader.
             if(!info.name().equals(String.valueOf(pipeline.getLocation())) || info.shaders().size()!=2) return "compile input does not match the pipeline";
