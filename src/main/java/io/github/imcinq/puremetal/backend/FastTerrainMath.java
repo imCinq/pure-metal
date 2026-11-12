@@ -8,11 +8,11 @@ import com.mojang.logging.LogUtils;
 /**
  * Relaxed (fast) shader math for terrain. Relaxed math in the terrain vertex shader is a large GPU win (about 40% of terrain GPU time
  * measured), but it is not safe for post effects, sky, fog, OIT resolve or GUI, so only pipelines whose vertex and fragment sources
- * proved to be the stock terrain ones get it ({@link io.github.imcinq.puremetal.perf.TerrainShaderProof#relaxedMath()}). Every terrain
+ * proved to be the stock terrain ones get it ({@link io.github.imcinq.puremetal.perf.TerrainShaderProof#relaxedMath}). Every terrain
  * pipeline (solid, cutout, translucent, the OIT passes, the block variants, Sodium) switches as one unit, so all passes compute the same
  * positions. Everything else keeps strict math.
  *
- * <p>-Dpuremetal.fastTerrainMath=on|off (default on; the old opaque and all values mean on). Diagnostic A/B: -PbenchAB=fastTerrainMath
+ * <p>-Dpuremetal.fastTerrainMath=on|off (default on; the old opaque and all values mean on, a typo logs a warning and keeps on). Diagnostic A/B: -PbenchAB=fastTerrainMath
  * builds both math variants per terrain pipeline and toggles them (A = strict, B = shipped relaxed).
  */
 public final class FastTerrainMath {
@@ -33,6 +33,7 @@ public final class FastTerrainMath {
         return ENABLED || AB;
     }
 
+    /** A typo in the JVM argument must never stop the game: warn and keep the default (on). */
     private static boolean parse(final String value) {
         if (value == null) {
             return true;
@@ -40,7 +41,10 @@ public final class FastTerrainMath {
         return switch (value.trim().toLowerCase(Locale.ROOT)) {
             case "on", "true", "opaque", "all" -> true;
             case "off", "false" -> false;
-            default -> throw new IllegalArgumentException("Unsupported -Dpuremetal.fastTerrainMath=" + value + " (use on or off)");
+            default -> {
+                LOGGER.warn("Pure Metal: unsupported -Dpuremetal.fastTerrainMath={} (use on or off), using the default on", value);
+                yield true;
+            }
         };
     }
 
@@ -55,9 +59,13 @@ public final class FastTerrainMath {
         return false;
     }
 
-    /** First draw of a pipeline with relaxed terrain math: one log line each, so the log proves the shipped state is really drawn. */
-    static void noteDraw(final String pipeline) {
-        int count = DRAWN.incrementAndGet();
-        LOGGER.info("Pure Metal: relaxed terrain math active for {} pipeline(s), latest {}", count, pipeline);
+    /** First draw of a terrain pipeline in each math mode: one log line, so the log shows which mode was really bound (vertex and fragment). */
+    static void noteDraw(final String pipeline, final boolean relaxed) {
+        if (relaxed) {
+            int count = DRAWN.incrementAndGet();
+            LOGGER.info("Pure Metal: terrain draw with relaxed math (vertex and fragment): {} (relaxed terrain math active for {} pipeline(s))", pipeline, count);
+        } else {
+            LOGGER.info("Pure Metal: terrain draw with strict math: {}", pipeline);
+        }
     }
 }

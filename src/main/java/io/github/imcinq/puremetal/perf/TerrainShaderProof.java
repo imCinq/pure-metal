@@ -7,6 +7,7 @@ import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.CompareOp;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.PolygonMode;
+import com.mojang.renderpearl.backend.api.BackendRenderPipeline.CreateInfo;
 import io.github.imcinq.puremetal.backend.FastTerrainMath;
 import io.github.imcinq.puremetal.lod.LodTextureRepeat;
 import java.nio.charset.StandardCharsets;
@@ -20,8 +21,9 @@ import org.lwjgl.util.shaderc.ShadercIncludeResult;
 public final class TerrainShaderProof implements AutoCloseable {
     private static final ThreadLocal<Integer> CURRENT=ThreadLocal.withInitial(()->0);
     private final int previous;
-    private final boolean previousRelaxed;
-    private static final ThreadLocal<Boolean> RELAXED=ThreadLocal.withInitial(()->false);
+    private final CreateInfo previousRelaxed;
+    /** The exact compile input (CreateInfo) the stock proof was made for; the backend only trusts it for that same object. */
+    private static final ThreadLocal<CreateInfo> RELAXED=new ThreadLocal<>();
     /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */
     private static final Map<String,String> OIT=Map.of(
         "minecraft:oit_common.glsl","bd5f404aea0c8b75f32471e763332fdfa81a30106dfd1318a3fec0a82e1c7720",
@@ -53,20 +55,34 @@ public final class TerrainShaderProof implements AutoCloseable {
         "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
     /** RenderPipelines.ALPHA_CUTOUT_THRESHOLD_CUTOUT_TERRAIN of Minecraft 26.3 (private there; read from the class constant). Re-check on a version bump. */
     private static final float VANILLA_CUTOUT_ALPHA=0.5F;
-    /** ALPHA_CUTOUT of Sodium 0.9.x translucent terrain pipelines (ShaderChunkRenderer); its solid and cutout pipelines use the vanilla values. */
-    private static final float SODIUM_TRANSLUCENT_ALPHA=0.01F;
-    /** A terrain shader family: one shader id (vertex and fragment share it), the hashes of both stages and of every include they reach. */
-    private record Family(Identifier shader,String vertexHash,String fragmentHash,Map<String,String> includes,float... alphaCutouts) {}
+    /** Pinned stock text of one shader family version: both stages and every include they reach. */
+    private record Variant(String vertexHash,String fragmentHash,Map<String,String> includes) {}
+    /** A terrain shader family: one shader id (vertex and fragment share it), the ALPHA_CUTOUT values its pipelines use, and the stock versions known. */
+    private record Family(Identifier shader,float[] alphaCutouts,Variant[] variants) {}
+    /** ALPHA_CUTOUT: RenderPipelines threshold for cutout terrain / cutout_block (0.5) and its default for translucent and OIT terrain (0.1). */
+    private static final float[] VANILLA_ALPHAS={VANILLA_CUTOUT_ALPHA,0.1F};
+    /** Sodium 0.9.x pipelines (ShaderChunkRenderer): cutout 0.5, translucent 0.01. */
+    private static final float[] SODIUM_ALPHAS={VANILLA_CUTOUT_ALPHA,0.01F};
+    /** Sodium 0.9.3-beta.5 changed the vertex and fragment shader and chunk_vertex, fog and globals (camera relative positions); chunk_material and oit.glsl are unchanged. */
+    private static final Map<String,String> SODIUM_BETA5=Map.of(
+        "sodium:chunk_vertex.glsl","f81998545f37971d167e079b0ea78dee9ae99b660bbf7053053dcfd11e06a793",
+        "sodium:fog.glsl","8f471f062405ed9928e2d298188601966f444072b33675b546b9ebffebe095be",
+        "sodium:globals.glsl","bd44a4ef22ba629caf0c8f887807c340112635d464dc08bc04cfa88d88cfc518",
+        "sodium:chunk_material.glsl","456e00dc7904a2e003fe4e1f06b2023bc3189cb7259fec77ba3e854fc4f7a452",
+        "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
     private static final Family[] FAMILIES={
-        new Family(Identifier.fromNamespaceAndPath("minecraft","core/terrain"),"001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0",
-            "e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9",VANILLA,VANILLA_CUTOUT_ALPHA),
-        new Family(Identifier.fromNamespaceAndPath("sodium","blocks/block_layer_opaque"),"eb663f22c1be14a3a1e391601e466a77b420f8e087f2edf2b06c0c9e64342ce8",
-            "380c49c7463bed6382cb993e39a55e4a07e4c00462f8980fc020b66e29bd27a1",SODIUM,VANILLA_CUTOUT_ALPHA,SODIUM_TRANSLUCENT_ALPHA),
-        new Family(Identifier.fromNamespaceAndPath("minecraft","core/block"),"3c2508a469916fa10c37d1e368b7de8e7505e289bb87c2134aaaf5fed992a9ea",
-            "bb8c8bbbae9227219e68ea3f0dab4ef6586c1dd4f745cab16c635c1553ed2ca9",BLOCK,VANILLA_CUTOUT_ALPHA)};
-    private TerrainShaderProof(int value,boolean relaxed) {previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);}
-    /** True while compiling a pipeline whose vertex and fragment shaders and every include are stock terrain (vanilla, Sodium or block), up to Pure Metal's own patch. */
-    public static boolean relaxedMath() {return RELAXED.get();}
+        new Family(Identifier.fromNamespaceAndPath("minecraft","core/terrain"),VANILLA_ALPHAS,new Variant[] {
+            new Variant("001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0","e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9",VANILLA)}),
+        new Family(Identifier.fromNamespaceAndPath("sodium","blocks/block_layer_opaque"),SODIUM_ALPHAS,new Variant[] {
+            // Sodium 0.9.2 and 0.9.3-beta.1 (identical shaders)
+            new Variant("eb663f22c1be14a3a1e391601e466a77b420f8e087f2edf2b06c0c9e64342ce8","380c49c7463bed6382cb993e39a55e4a07e4c00462f8980fc020b66e29bd27a1",SODIUM),
+            // Sodium 0.9.3-beta.5
+            new Variant("35b6b4307e2254adf90205733b34f96945939643b9fb6f0d8f3d69826cf74451","db2e196489be7a6be867d8ebfdfe96b58580c6de2b002dcedc3aebbe1e201abc",SODIUM_BETA5)}),
+        new Family(Identifier.fromNamespaceAndPath("minecraft","core/block"),VANILLA_ALPHAS,new Variant[] {
+            new Variant("3c2508a469916fa10c37d1e368b7de8e7505e289bb87c2134aaaf5fed992a9ea","bb8c8bbbae9227219e68ea3f0dab4ef6586c1dd4f745cab16c635c1553ed2ca9",BLOCK)})};
+    private TerrainShaderProof(int value,CreateInfo relaxed) {previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);}
+    /** True while compiling exactly this CreateInfo, whose shader sources proved to be stock terrain (vanilla, Sodium or block), up to Pure Metal's own patch. */
+    public static boolean relaxedMath(CreateInfo info) {return info!=null && RELAXED.get()==info;}
     public static int current() {return CURRENT.get();}
     public static boolean eligibleShape(DepthStencilState depth,PrimitiveTopology topology,PolygonMode polygon) {
         return depth!=null && depth.writeDepth() && (depth.depthTest()==CompareOp.LESS_THAN || depth.depthTest()==CompareOp.LESS_THAN_OR_EQUAL
@@ -74,7 +90,7 @@ public final class TerrainShaderProof implements AutoCloseable {
             && depth.depthBiasConstant()==0 && depth.depthBiasScaleFactor()==0 && polygon==PolygonMode.FILL
             && (topology==PrimitiveTopology.TRIANGLES || topology==PrimitiveTopology.QUADS);
     }
-    public static TerrainShaderProof enter(RenderPipeline pipeline,ShaderSource source) {
+    public static TerrainShaderProof enter(RenderPipeline pipeline,ShaderSource source,CreateInfo info) {
         int proof=validate(pipeline,source);
         if(Boolean.getBoolean("puremetal.terrainOcclusionProbe")) {
             var vertex=pipeline.getShaders().get(ShaderType.VERTEX);
@@ -83,7 +99,7 @@ public final class TerrainShaderProof implements AutoCloseable {
                     pipeline.getLocation(),pipeline.getShaders(),proof,pipeline.getShaderDefines());
             }
         }
-        return new TerrainShaderProof(proof,FastTerrainMath.wanted() && relaxedTerrain(pipeline,source));
+        return new TerrainShaderProof(proof,FastTerrainMath.wanted() && relaxedTerrain(pipeline,source,info) ? info : null);
     }
     private static boolean isFloat(Object value,float expected) {
         try {return Float.parseFloat(String.valueOf(value))==expected;} catch(NumberFormatException bad) {return false;}
@@ -121,8 +137,27 @@ public final class TerrainShaderProof implements AutoCloseable {
         } catch(Exception unsupported) {return 0;}
     }
     private static final java.util.Set<String> KNOWN_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN");
-    /** Sodium adds USE_SPHERICAL_FOG when its spherical fog option is on; it only selects an #ifdef inside the hash-proven sodium:fog.glsl. */
-    private static final java.util.Set<String> RELAXED_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN","USE_SPHERICAL_FOG");
+    /** Flags the stock terrain pipelines set: the four above, Sodium's USE_SPHERICAL_FOG (an #ifdef inside the hash-proven sodium:fog.glsl) and the stock OIT ones (OitPipelineSet, LevelRenderer.OIT_SNIPPET). */
+    private static final java.util.Set<String> RELAXED_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN","USE_SPHERICAL_FOG",
+        "OIT","OIT_ACCUMULATE","OIT_ALPHA_ONLY","OIT_DEPTH_BOUNDS","OIT_TRANSMITTANCE");
+    /** Why a terrain pipeline keeps strict math, or null when it may be relaxed; NOT_TERRAIN for every other pipeline (never logged). */
+    private static final String NOT_TERRAIN="";
+    private static boolean oitValue(String key,Object value) {
+        int expected;
+        switch(key) {
+            case "OIT_WAVELET_RANK" -> expected=net.minecraft.client.renderer.LevelRenderer.OIT_WAVELET_RANK;
+            case "OIT_COEFF_COUNT" -> expected=net.minecraft.client.renderer.LevelRenderer.OIT_COEFFICIENT_COUNT;
+            case "OIT_COEFF_ATTACHMENT_COUNT" -> expected=net.minecraft.client.renderer.LevelRenderer.OIT_TRANSMITTANCE_TARGET_COUNT;
+            default -> {return false;}
+        }
+        return String.valueOf(value).equals(Integer.toString(expected));
+    }
+    /** Source proof per family, made once per (original) ShaderSource so every pipeline of a family gets the same answer. */
+    private record Proven(java.lang.ref.WeakReference<ShaderSource> source,boolean ok) {}
+    private static final java.util.concurrent.ConcurrentHashMap<Identifier,Proven> PROVEN=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Per family: bit 1 a pipeline got relaxed math, bit 2 a (non debug) pipeline kept strict; both set means the family mixes modes. */
+    private static final java.util.concurrent.ConcurrentHashMap<Identifier,Integer> OUTCOMES=new java.util.concurrent.ConcurrentHashMap<>();
+    private static final org.slf4j.Logger LOGGER=com.mojang.logging.LogUtils.getLogger();
     private static boolean includeMatches(ShaderSource source,Map.Entry<String,String> entry) throws Exception {
         var include=source.getInclude(Identifier.parse(entry.getKey()));
         if(include==null || include.includeResultPtr()==0) return false;
@@ -134,36 +169,81 @@ public final class TerrainShaderProof implements AutoCloseable {
         // shaderc includes have an explicit byte length; they need not be NUL terminated.
         return content!=null && hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue());
     }
+    private static boolean sourceStock(Family family,ShaderSource source) throws Exception {
+        Identifier id=family.shader();
+        for(Variant variant:family.variants()) {
+            if(!hash(source.getShader(id,ShaderType.VERTEX),variant.vertexHash())
+                || !hash(source.getShader(id,ShaderType.FRAGMENT),variant.fragmentHash())) continue;
+            boolean all=true;
+            for(var group:java.util.List.of(variant.includes(),OIT)) {
+                for(var entry:group.entrySet()) all&=includeMatches(source,entry);
+            }
+            if(all) return true;
+        }
+        return false;
+    }
     /**
-     * Stock terrain shader of any family (vanilla terrain, Sodium terrain, vanilla block), with any define set those pipelines use (cutout, OIT, multidraw),
-     * and no resource pack, mod or Iris edit: both stages and every include are hashed. Pure Metal's own texture-repeat and RGSS early-out patch is accepted:
-     * it wraps the source, and the wrapper only patches text it has itself proven stock, so the hashes are checked on the unpatched original.
+     * Stock terrain shader of any family (vanilla terrain, Sodium terrain, vanilla block): no resource pack, mod or Iris edit, both stages and every include
+     * hashed, only the define sets the stock pipelines use, and the compile input ({@code info}) names exactly the proven shaders. Pure Metal's own texture-repeat
+     * and RGSS early-out patch is accepted: it wraps the source and only patches text it has itself proven stock, so the hashes are checked on the unpatched original.
+     * Limit: the proof covers the GLSL source, defines and shader names; the SPIR-V that PipelineBuilder compiled from them is not re-derived.
      * Cheap for every other pipeline: the shader id is compared first.
      */
-    private static boolean relaxedTerrain(RenderPipeline pipeline,ShaderSource borrowed) {
+    private static boolean relaxedTerrain(RenderPipeline pipeline,ShaderSource borrowed,CreateInfo info) {
+        Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
+        Family family=null;
+        if(vertex!=null) for(Family candidate:FAMILIES) if(candidate.shader().equals(vertex)) family=candidate;
+        if(family==null) return false;
+        String reason=reject(pipeline,borrowed,info,family,vertex);
+        if(reason==null) {
+            note(family,1);
+            return true;
+        }
+        if(reason.startsWith("wireframe")) {
+            LOGGER.info("Pure Metal: strict math kept for {} ({})",info.name(),reason);
+        } else {
+            note(family,2);
+            LOGGER.info("Pure Metal: strict math kept for terrain pipeline {}: {}",info.name(),reason);
+        }
+        return false;
+    }
+    private static void note(Family family,int bit) {
+        int now=OUTCOMES.merge(family.shader(),bit,(a,b)->a|b);
+        if(now==3 && (now&4)==0 && OUTCOMES.replace(family.shader(),3,7)) {
+            LOGGER.warn("Pure Metal: terrain pipelines of {} mix relaxed and strict math (see the lines above); depth between those passes may differ",family.shader());
+        }
+    }
+    private static String reject(RenderPipeline pipeline,ShaderSource borrowed,CreateInfo info,Family family,Identifier vertex) {
         try {
-            Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
-            if(vertex==null || !vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return false;
-            Family family=null;
-            for(Family candidate:FAMILIES) if(candidate.shader().equals(vertex)) family=candidate;
-            if(family==null) return false;
+            if(!vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return "vertex and fragment shaders differ";
+            if(pipeline.getPolygonMode()==PolygonMode.WIREFRAME || info.polygonMode()==PolygonMode.WIREFRAME) return "wireframe debug pipeline";
+            // The compile input must be the proven pipeline: same name and exactly the proven vertex and fragment shader.
+            if(!info.name().equals(String.valueOf(pipeline.getLocation())) || info.shaders().size()!=2) return "compile input does not match the pipeline";
+            boolean hasVertex=false,hasFragment=false;
+            for(var shader:info.shaders()) {
+                if(!vertex.toString().equals(shader.name())) return "compiled shader "+shader.name()+" is not "+vertex;
+                if(shader.module().type()==ShaderType.VERTEX) hasVertex=true; else if(shader.module().type()==ShaderType.FRAGMENT) hasFragment=true;
+            }
+            if(!hasVertex || !hasFragment) return "compile input lacks a vertex or fragment stage";
             for(String flag:pipeline.getShaderDefines().flags()) {
-                if(!(flag.startsWith("OIT_") || RELAXED_FLAGS.contains(flag))) return false;
+                if(!RELAXED_FLAGS.contains(flag)) return "unknown define "+flag;
             }
             for(var define:pipeline.getShaderDefines().values().entrySet()) {
-                if(!define.getKey().equals("ALPHA_CUTOUT")) return false;
-                boolean known=false;
-                for(float alpha:family.alphaCutouts()) known|=isFloat(define.getValue(),alpha);
-                if(!known) return false;
+                String key=define.getKey();
+                if(key.equals("ALPHA_CUTOUT")) {
+                    boolean known=false;
+                    for(float alpha:family.alphaCutouts()) known|=isFloat(define.getValue(),alpha);
+                    if(!known) return "unknown ALPHA_CUTOUT="+define.getValue();
+                } else if(!oitValue(key,define.getValue())) return "unknown define "+key+"="+define.getValue();
             }
             ShaderSource source=LodTextureRepeat.originalSource(borrowed);
-            if(!hash(source.getShader(vertex,ShaderType.VERTEX),family.vertexHash())
-                || !hash(source.getShader(vertex,ShaderType.FRAGMENT),family.fragmentHash())) return false;
-            for(var group:java.util.List.of(family.includes(),OIT)) {
-                for(var entry:group.entrySet()) if(!includeMatches(source,entry)) return false;
+            Proven cached=PROVEN.get(vertex);
+            if(cached==null || cached.source().get()!=source) {
+                cached=new Proven(new java.lang.ref.WeakReference<>(source),sourceStock(family,source));
+                PROVEN.put(vertex,cached);
             }
-            return true;
-        } catch(Exception unsupported) {return false;}
+            return cached.ok() ? null : "shader sources are not the stock ones (resource pack, mod, Iris or an unknown version)";
+        } catch(Exception unsupported) {return "proof failed: "+unsupported;}
     }
     @Override public void close() {CURRENT.set(previous);RELAXED.set(previousRelaxed);}
 }

@@ -17,6 +17,6 @@ public abstract class TerrainShaderProofMixin {
     @WrapOperation(method="lambda$compilePipeline$0",at=@At(value="INVOKE",target="Lcom/mojang/renderpearl/backend/api/GpuDeviceBackend;compilePipeline(Lcom/mojang/renderpearl/backend/api/BackendRenderPipeline$CreateInfo;)Lcom/mojang/renderpearl/backend/api/BackendRenderPipeline$Pending;"))
     private BackendRenderPipeline.Pending puremetal$shaderProof(GpuDeviceBackend backend,BackendRenderPipeline.CreateInfo info,
         Operation<BackendRenderPipeline.Pending> original,@Local(argsOnly=true) RenderPipeline pipeline,@Local(argsOnly=true) ShaderSource source) {
-        try(var proof=TerrainShaderProof.enter(pipeline,source)) {return original.call(backend,info);}
+        try(var proof=TerrainShaderProof.enter(pipeline,source,info)) {return original.call(backend,info);}
     }
 }

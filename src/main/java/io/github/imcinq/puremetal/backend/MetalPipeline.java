@@ -48,7 +48,8 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final boolean terrain;
     /** The primary functions are already compiled with relaxed math (shipped terrain default). */
     private final boolean relaxedBase;
-    private volatile boolean relaxedDrawLogged;
+    /** Bit 1: first draw with strict math logged, bit 2: first draw with relaxed math logged. */
+    private volatile int drawLogged;
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
@@ -155,7 +156,7 @@ final class MetalPipeline implements BackendRenderPipeline {
         long vertexFunctionFast = 0L;
         MetalPipeline pipeline = null;
         // Relaxed math (vertex and fragment together) for pipelines whose terrain shader sources proved stock; see FastTerrainMath.
-        boolean terrain = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedMath();
+        boolean terrain = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedMath(info);
         boolean ab = terrain && FastTerrainMath.AB;
         // Diagnostic fastMath group A/B only: classify (and allocate the shader name list) just then, never in a normal run.
         List<String> shaderNames = MathGroups.AB ? info.shaders().stream().map(s -> String.valueOf(s.name())).toList() : List.of();
@@ -288,9 +289,13 @@ final class MetalPipeline implements BackendRenderPipeline {
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
         boolean fast = this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain, this.mathGroup);
-        if (this.terrain && (fast || this.relaxedBase) && !this.relaxedDrawLogged) {
-            this.relaxedDrawLogged = true;
-            FastTerrainMath.noteDraw(this.name);
+        if (this.terrain) {
+            // Log the math mode actually bound the first time each mode is drawn (once per pipeline and mode).
+            int bit = fast || this.relaxedBase ? 2 : 1;
+            if ((this.drawLogged & bit) == 0) {
+                this.drawLogged |= bit;
+                FastTerrainMath.noteDraw(this.name, bit == 2);
+            }
         }
         if (fast) {
             return this.state(depthFormat, 2);
