@@ -70,6 +70,11 @@ public final class TerrainShaderProof implements AutoCloseable {
         }
         /** Compilations that took this state in generation() and have not finished yet (they may still register a member or request the switch). */
         private final java.util.concurrent.atomic.AtomicInteger inFlight=new java.util.concurrent.atomic.AtomicInteger();
+        /** A compilation takes this state; a retired state that was already dropped from ACTIVE (a late compile of an old generation) is polled again. */
+        synchronized void takeCompile() {
+            inFlight.incrementAndGet();
+            ACTIVE.addIfAbsent(this);
+        }
         void releaseCompile() {
             inFlight.decrementAndGet();
             dispose();
@@ -78,7 +83,7 @@ public final class TerrainShaderProof implements AutoCloseable {
          * Stops polling a retired state only when nothing can need it any more: no compilation in flight, no member, and no switch left to publish
          * (a refused pipeline of the old generation may still wait for it, so a requested switch is published first).
          */
-        private void dispose() {
+        private synchronized void dispose() {
             if(retired && inFlight.get()==0 && members.isEmpty() && (!requested || published)) ACTIVE.remove(this);
         }
         synchronized void request(String reason,Why kind) {
@@ -91,9 +96,12 @@ public final class TerrainShaderProof implements AutoCloseable {
                 try {member.prepareStrict();} catch(RuntimeException failed) {LOGGER.error("Pure Metal: strict family member failed",failed);}
             }
         }
-        /** Render thread, once per frame: publish the switch when every relaxed member has its strict variant. */
+        /**
+         * Render thread, once per frame: publish the switch when every relaxed member has its strict variant. A compilation still in flight may yet
+         * register a relaxed member (it was accepted before the request), so nothing is published until none is left.
+         */
         void poll() {
-            if(published || !requested) return;
+            if(published || !requested || inFlight.get()!=0) return;
             for(Member member:members) if(!member.strictDone()) return;
             generation++;
             published=true;
@@ -104,7 +112,7 @@ public final class TerrainShaderProof implements AutoCloseable {
     }
     /** Every family state that may still have to publish a switch (the current generations and retired ones that still have pipelines). */
     private static final java.util.concurrent.CopyOnWriteArrayList<FamilyState> ACTIVE=new java.util.concurrent.CopyOnWriteArrayList<>();
-    /** The current resource generation of each family: its source identity, family state and stock proof. */
+    /** One resource generation of a family: its source identity, family state and stock proof. */
     private static final class Generation {
         final java.lang.ref.WeakReference<ShaderSource> source;
         final FamilyState state;
@@ -115,19 +123,26 @@ public final class TerrainShaderProof implements AutoCloseable {
             return stock;
         }
     }
-    private static final java.util.concurrent.ConcurrentHashMap<Identifier,Generation> GENERATIONS=new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * The resource generations of each family whose ShaderSource is still alive, newest last. Every live source keeps its own state: lazy compiles of the
+     * old pipeline cache (Sodium's terrain pipelines, for one) can still run while a reload compiles with the new source, and must not split either generation.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<Identifier,java.util.List<Generation>> GENERATIONS=new java.util.concurrent.ConcurrentHashMap<>();
     private static Generation generation(Family family,ShaderSource original) {
         synchronized(family) {
-            Generation current=GENERATIONS.get(family.shader());
-            if(current==null || current.source.get()!=original) {
+            java.util.List<Generation> known=GENERATIONS.computeIfAbsent(family.shader(),id->new java.util.concurrent.CopyOnWriteArrayList<>());
+            // A collected source can never be compiled again; its state lives on in ACTIVE as long as it is needed.
+            known.removeIf(old->old.source.get()==null);
+            Generation current=null;
+            for(Generation candidate:known) if(candidate.source.get()==original) current=candidate;
+            if(current==null) {
                 // A resource reload (new ShaderSource): fresh state, so removing a shader changing pack restores relaxed math without a restart.
-                if(current!=null) current.state.retire();
+                for(Generation old:known) old.state.retire();
                 current=new Generation(original,new FamilyState(family.shader().toString(),family.shader().getNamespace().equals("sodium")));
-                GENERATIONS.put(family.shader(),current);
-                ACTIVE.add(current.state);
+                known.add(current);
             }
-            // Taken under the same lock as retire(): a state with a compilation in flight is never dropped from ACTIVE until that compilation ends.
-            current.state.inFlight.incrementAndGet();
+            // Taken under the state lock that dispose() holds: a state with a compilation in flight is never dropped from ACTIVE until that compilation ends.
+            current.state.takeCompile();
             return current;
         }
     }
@@ -138,7 +153,11 @@ public final class TerrainShaderProof implements AutoCloseable {
     /** The family states of the current resource generation, for the status line. */
     public static java.util.List<FamilyState> currentStates() {
         java.util.ArrayList<FamilyState> states=new java.util.ArrayList<>();
-        for(Generation generation:GENERATIONS.values()) states.add(generation.state);
+        for(java.util.List<Generation> known:GENERATIONS.values()) {
+            Generation newest=null;
+            for(Generation generation:known) newest=generation;
+            if(newest!=null) states.add(newest.state);
+        }
         return states;
     }
     /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */

@@ -59,10 +59,15 @@ public final class CheckTerrainShaderHashes {
         while (maps0.find()) {
             Map<String, String> pairs = new LinkedHashMap<>();
             Matcher pair = PAIR.matcher(maps0.group(2));
+            int parsed = 0;
             while (pair.find()) {
+                parsed++;
                 pairs.put(pair.group(1), pair.group(2));
             }
-            maps.put(maps0.group(1), pairs);
+            // Fail closed: every entry of the map must be a plain "id","hash" pair. One the regex skips (a concatenated hash, a constant, ...)
+            // leaves the map unreadable (empty), so a family that references it stops the tool instead of being checked without that file.
+            int declared = declaredEntries(maps0.group(2));
+            maps.put(maps0.group(1), parsed == declared && pairs.size() == declared ? pairs : Map.of());
         }
         Map<String, String> oit = maps.get("OIT");
         List<Family> families;
@@ -133,6 +138,42 @@ public final class CheckTerrainShaderHashes {
             families.add(new Family(id, variants));
         }
         return families;
+    }
+
+    /** Entries of a Map.of argument list: its top level commas (outside strings, comments and nested calls) separate keys and values. -1 if malformed. */
+    private static int declaredEntries(final String body) {
+        int commas = 0;
+        int depth = 0;
+        boolean any = false;
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c == '"') {
+                any = true;
+                for (i++; i < body.length() && body.charAt(i) != '"'; i++) {
+                    if (body.charAt(i) == '\\') {
+                        i++;
+                    }
+                }
+            } else if (c == '/' && body.startsWith("//", i)) {
+                int end = body.indexOf('\n', i);
+                i = end < 0 ? body.length() : end;
+            } else if (c == '/' && body.startsWith("/*", i)) {
+                int end = body.indexOf("*/", i + 2);
+                i = end < 0 ? body.length() : end + 1;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                commas++;
+            } else if (!Character.isWhitespace(c)) {
+                any = true;
+            }
+        }
+        if (!any) {
+            return 0;
+        }
+        return commas % 2 == 1 ? (commas + 1) / 2 : -1;
     }
 
     /** Jar path of a pinned file id: "ns:path.vsh|fsh" is a shader, "ns:name.glsl" an include. */
