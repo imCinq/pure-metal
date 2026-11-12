@@ -31,7 +31,6 @@
     "perf.sodium.BlockRendererCallbacksMixin",
     "perf.sodium.FluidDefaultContextMixin",
     "perf.TerrainShaderProofMixin",
-    "perf.NativeTerrainShaderMixin",
     "perf.FramerateLimitTrackerMixin",
     "perf.TerrainGenerationMixin",
     "lod.SectionCompilerMixin",
