@@ -72,10 +72,11 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 | Mac | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
 | --- | --- | --- | --- |
-| MacBook Pro M3 Max, 36 GB | <strong>551.6</strong> | 3.2 ms | 6.3 ms |
-| MacBook Air M2, 16 GB | 154.6 | 11.8 ms | 22.6 ms |
+| M5 Max, 48 GB | <strong>940.9</strong> | <strong>1.9 ms</strong> | <strong>3.8 ms</strong> |
+| M3 Max, 36 GB | 551.6 | 3.2 ms | 6.3 ms |
+| M2 Air, 16 GB | 154.6 | 11.8 ms | 22.6 ms |
 
-*Pure Metal 0.4.4.1, Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution (3456x2168 and 3420x2148), vsync off, no FPS cap, M2 ran at 50% LOD while others ran at 80%. Same seed and flight route: a warm-up lap, then 30 seconds measured. The M3 Max result was run by a third party. More Macs coming soon.*
+*Pure Metal 0.4.4.1, Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers.*
 
 `tools/bench.py` compares graphics APIs on your own Mac:
 
