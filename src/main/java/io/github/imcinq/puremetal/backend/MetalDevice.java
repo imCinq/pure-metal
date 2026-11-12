@@ -241,6 +241,12 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     /** True when this session encodes commands through Metal 4 (decided when the device was created). */
+    /** Starts a new per-pass timing measurement: clears the native totals and discards command buffers still in flight. */
+    static void resetPassTiming() {
+        MetalDevice device = current;
+        if (device != null) MetalNative.passTimingReset(device.handle);
+    }
+
     /** Whether the device in use runs the Metal 4 command model (the bench labels its pass-timing line by it). */
     static boolean metal4Active() {
         MetalDevice device = current;

@@ -17,6 +17,8 @@ public final class PassTiming {
     private static final int TOP = 25;
     /** Logical passes that could not be timed because a command buffer held more than the native limit. */
     public static long droppedPasses;
+    /** Passes where only one of the vertex and fragment stage pairs gave a usable timestamp. */
+    public static long partialPasses;
     /** Per key: count, vertex ns, fragment ns, span ns. */
     private static final Map<String, long[]> KEYS = new HashMap<>();
 
@@ -24,7 +26,8 @@ public final class PassTiming {
 
     public static void clear() {
         KEYS.clear();
-        droppedPasses = 0;
+        droppedPasses = partialPasses = 0;
+        if (ENABLED) io.github.imcinq.puremetal.backend.EncodeProfile.resetPassTiming();
     }
 
     /** Adds native lines "name\tcount\tvertexNs\tfragmentNs\tspanNs". */
@@ -57,10 +60,10 @@ public final class PassTiming {
             fragment += v[2];
             span += v[3];
         }
-        log.info("BENCH-PASS-SUMMARY mode=split splitGpuMsPerFrame={} passSpanSumMs/f={} vertexSumMs/f={} fragmentSumMs/f={} blitMs/f={} timedPasses/f={} droppedPasses/f={} keys={} (split mode: every logical pass is its own encoder, so totals are inflated against unsplit gpuMsPerFrame)",
+        log.info("BENCH-PASS-SUMMARY mode=split splitGpuMsPerFrame={} passSpanSumMs/f={} vertexSumMs/f={} fragmentSumMs/f={} blitMs/f={} timedPasses/f={} droppedPasses/f={} partialPasses/f={} keys={} (split mode: every logical pass is its own encoder, so totals are inflated against unsplit gpuMsPerFrame)",
             gpuFrames == 0 ? "n/a" : fmt(gpuNs / 1e6 / frames), fmt(span / 1e6 / frames), fmt(vertex / 1e6 / frames),
             fmt(fragment / 1e6 / frames), fmt(blitNs / 1e6 / frames), fmt((double)count / frames),
-            fmt((double)droppedPasses / frames), KEYS.size());
+            fmt((double)droppedPasses / frames), fmt((double)partialPasses / frames), KEYS.size());
         long[] other = new long[4];
         int otherKeys = 0;
         for (int i = 0; i < rows.size(); i++) {

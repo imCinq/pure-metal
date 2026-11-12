@@ -326,12 +326,13 @@ typedef struct PMDiagPiece {
 #define PM_PASS_MAX 256 // timed render encoders per command buffer; each takes 4 samples
 typedef struct PMPassKey {
     char name[72];
-    _Atomic uint64_t count, vertexNs, fragmentNs, spanNs;
+    uint64_t count, vertexNs, fragmentNs, spanNs; // guarded by PMDevice.passLock
 } PMPassKey;
 // The sample buffer and keys of one command buffer's timed encoders. Owned by the command buffer's completion handler after commit.
 typedef struct PMPassSamples {
     void *buffer; // retained id<MTLCounterSampleBuffer>
     int used;
+    uint32_t epoch; // PMDevice.passEpoch when the set was opened; a set from before a reset is discarded
     uint16_t key[PM_PASS_MAX];
 } PMPassSamples;
 
@@ -600,7 +601,9 @@ typedef struct PMDevice {
     atomic_int passKeyCount;
     void *passSamplesCb;       // retained command buffer that passSamples belongs to (compared by identity, never dereferenced)
     PMPassSamples *passSamples; // the open command buffer's samples; only valid while passSamplesCb is the current buffer
-    _Atomic uint64_t passTimingDropped;
+    pthread_mutex_t passLock; // one lock for the key totals: completion handlers, the drain and the reset
+    uint32_t passEpoch;       // guarded by passLock; bumped by pm_pass_timing_reset
+    _Atomic uint64_t passTimingDropped, passTimingPartial; // passes with no / only one valid stage pair
     void *probeRead, *probeReduce, *probeQuery;
     PMProbeSlot probeSlots[PM_PROBE_SLOTS]; // pooled per in-flight submission, reused only after its commit has finished
     PMProbeSlot *probeCur;                  // the slot encoded for the submit being recorded, handed to its completion in pm_submit
@@ -2176,15 +2179,22 @@ static bool pass_ts_valid(uint64_t t) { return t != 0 && t != MTLCounterErrorVal
 
 // Completion of a command buffer: resolves its timed encoders into the per-key totals (and the vertex/fragment profile bins).
 static void pass_time_resolve(PMDevice *d, PMPassSamples *ps, bool completed) {
-    if (completed && ps->used > 0) {
+    if (ps->used > 0) {
         NSUInteger n = (NSUInteger)ps->used * 4;
-        NSData *data = [PM_OBJ(id<MTLCounterSampleBuffer>, ps->buffer) resolveCounterRange:NSMakeRange(0, n)];
-        if (data.length >= n * sizeof(MTLCounterResultTimestamp)) {
-            const MTLCounterResultTimestamp *t = data.bytes;
+        NSData *data = completed ? [PM_OBJ(id<MTLCounterSampleBuffer>, ps->buffer) resolveCounterRange:NSMakeRange(0, n)] : nil;
+        bool ok = data && data.length >= n * sizeof(MTLCounterResultTimestamp);
+        const MTLCounterResultTimestamp *t = ok ? data.bytes : NULL;
+        uint64_t dropped = 0, partial = 0;
+        pthread_mutex_lock(&d->passLock);
+        if (ps->epoch == d->passEpoch) { // sets recorded before a reset (the warm-up) are not counted
             for (int i = 0; i < ps->used; i++) {
+                if (!ok) { dropped++; continue; }
                 uint64_t v0 = t[i * 4].timestamp, v1 = t[i * 4 + 1].timestamp, f0 = t[i * 4 + 2].timestamp, f1 = t[i * 4 + 3].timestamp;
-                uint64_t vertex = pass_ts_valid(v0) && pass_ts_valid(v1) && v1 >= v0 ? v1 - v0 : 0;
-                uint64_t fragment = pass_ts_valid(f0) && pass_ts_valid(f1) && f1 >= f0 ? f1 - f0 : 0;
+                bool vOk = pass_ts_valid(v0) && pass_ts_valid(v1) && v1 >= v0;
+                bool fOk = pass_ts_valid(f0) && pass_ts_valid(f1) && f1 >= f0;
+                if (!vOk && !fOk) { dropped++; continue; }
+                if (!vOk || !fOk) partial++;
+                uint64_t vertex = vOk ? v1 - v0 : 0, fragment = fOk ? f1 - f0 : 0;
                 uint64_t lo = UINT64_MAX, hi = 0;
                 const uint64_t all[4] = { v0, v1, f0, f1 };
                 for (int k = 0; k < 4; k++) {
@@ -2192,16 +2202,18 @@ static void pass_time_resolve(PMDevice *d, PMPassSamples *ps, bool completed) {
                     if (all[k] < lo) lo = all[k];
                     if (all[k] > hi) hi = all[k];
                 }
-                uint64_t span = hi > lo ? hi - lo : 0;
                 PMPassKey *key = &d->passKeys[ps->key[i]];
-                atomic_fetch_add(&key->count, 1);
-                atomic_fetch_add(&key->vertexNs, vertex);
-                atomic_fetch_add(&key->fragmentNs, fragment);
-                atomic_fetch_add(&key->spanNs, span);
-                if (vertex) { atomic_fetch_add(&d->profileStats[0], vertex); atomic_fetch_add(&d->profileStats[3], 1); }
-                if (fragment) { atomic_fetch_add(&d->profileStats[1], fragment); atomic_fetch_add(&d->profileStats[4], 1); }
+                key->count++;
+                key->vertexNs += vertex;
+                key->fragmentNs += fragment;
+                key->spanNs += hi > lo ? hi - lo : 0;
+                if (vOk) { atomic_fetch_add(&d->profileStats[0], vertex); atomic_fetch_add(&d->profileStats[3], 1); }
+                if (fOk) { atomic_fetch_add(&d->profileStats[1], fragment); atomic_fetch_add(&d->profileStats[4], 1); }
             }
+            if (dropped) atomic_fetch_add(&d->passTimingDropped, dropped);
+            if (partial) atomic_fetch_add(&d->passTimingPartial, partial);
         }
+        pthread_mutex_unlock(&d->passLock);
     }
     pm_release(ps->buffer);
     free(ps);
@@ -2220,9 +2232,13 @@ static PMPassSamples *pass_samples_for(PMDevice *d, id<MTLCommandBuffer> cb) {
     PMPassSamples *ps = buffer ? calloc(1, sizeof(PMPassSamples)) : NULL;
     if (!ps) {
         if (!atomic_flag_test_and_set(&warned)) NSLog(@"Pure Metal: pass timing could not create a counter sample buffer (%@); passes go untimed", error.localizedDescription);
+        atomic_fetch_add(&d->passTimingDropped, 1);
         return NULL;
     }
     ps->buffer = pm_retain(buffer);
+    pthread_mutex_lock(&d->passLock);
+    ps->epoch = d->passEpoch;
+    pthread_mutex_unlock(&d->passLock);
     pm_release(d->passSamplesCb);
     d->passSamplesCb = pm_retain(cb);
     d->passSamples = ps;
@@ -2289,27 +2305,40 @@ static void pass_time_undo(PMDevice *d) {
 }
 
 // Writes "name\tcount\tvertexNs\tfragmentNs\tspanNs" lines for the keys seen since the last call and resets them. Returns the length.
+// Each key is read and zeroed whole under the lock, so a count is never reported without its durations.
 PM_EXPORT int pm_take_pass_timing(PMDevice *d, char *out, int cap) {
     int n = 0, count = atomic_load(&d->passKeyCount);
+    pthread_mutex_lock(&d->passLock);
     for (int i = 0; i < count; i++) {
         PMPassKey *k = &d->passKeys[i];
-        uint64_t c = atomic_exchange(&k->count, 0);
-        if (!c) continue;
-        uint64_t v = atomic_exchange(&k->vertexNs, 0), f = atomic_exchange(&k->fragmentNs, 0), sp = atomic_exchange(&k->spanNs, 0);
-        int w = snprintf(out + n, (size_t)(cap - n), "%s\t%llu\t%llu\t%llu\t%llu\n", k->name, (unsigned long long)c,
-                         (unsigned long long)v, (unsigned long long)f, (unsigned long long)sp);
-        if (w < 0 || n + w >= cap) {
-            // No room: put the entry back so the next call reports it.
-            atomic_fetch_add(&k->count, c); atomic_fetch_add(&k->vertexNs, v);
-            atomic_fetch_add(&k->fragmentNs, f); atomic_fetch_add(&k->spanNs, sp);
-            break;
-        }
+        if (!k->count) continue;
+        int w = snprintf(out + n, (size_t)(cap - n), "%s\t%llu\t%llu\t%llu\t%llu\n", k->name, (unsigned long long)k->count,
+                         (unsigned long long)k->vertexNs, (unsigned long long)k->fragmentNs, (unsigned long long)k->spanNs);
+        if (w < 0 || n + w >= cap) break; // no room: the entry stays for the next call
         n += w;
+        k->count = k->vertexNs = k->fragmentNs = k->spanNs = 0;
     }
+    pthread_mutex_unlock(&d->passLock);
     return n;
 }
 
-PM_EXPORT uint64_t pm_take_pass_timing_dropped(PMDevice *d) { return atomic_exchange(&d->passTimingDropped, 0); }
+// Starts a new measurement: drops the totals and the dropped/partial counts, and makes command buffers recorded so far (the warm-up,
+// still in flight) count for nothing when they complete. Call from the render thread, between frames.
+PM_EXPORT void pm_pass_timing_reset(PMDevice *d) {
+    pthread_mutex_lock(&d->passLock);
+    d->passEpoch++;
+    int count = atomic_load(&d->passKeyCount);
+    for (int i = 0; i < count; i++) d->passKeys[i].count = d->passKeys[i].vertexNs = d->passKeys[i].fragmentNs = d->passKeys[i].spanNs = 0;
+    pthread_mutex_unlock(&d->passLock);
+    atomic_store(&d->passTimingDropped, 0);
+    atomic_store(&d->passTimingPartial, 0);
+    d->passSamples = NULL; // a command buffer open across the reset gets a fresh set (and epoch) for its later passes
+}
+
+// which: 0 passes with no usable timestamps (or no sample buffer), 1 passes with only one of the vertex/fragment pairs usable.
+PM_EXPORT uint64_t pm_take_pass_timing_dropped(PMDevice *d, int which) {
+    return which == 1 ? atomic_exchange(&d->passTimingPartial, 0) : atomic_exchange(&d->passTimingDropped, 0);
+}
 
 PM_EXPORT int pm_probe_enable(PMDevice *d, const char *source) {
     @autoreleasepool {
@@ -2543,6 +2572,7 @@ PM_EXPORT PMDevice *pm_device_create(int debugLabels, int metal4) {
         d->queue = pm_retain(queue);
         d->debugLabels = debugLabels;
         pthread_mutex_init(&d->lock, NULL);
+        pthread_mutex_init(&d->passLock, NULL);
         pthread_cond_init(&d->cond, NULL);
         atomic_store(&d->completed, 0);
         memset(d->doneMark, 0, sizeof(d->doneMark));
@@ -3271,6 +3301,7 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
         pm_release(d->queue);
         pm_release(d->device);
         pthread_mutex_destroy(&d->lock);
+        pthread_mutex_destroy(&d->passLock);
         pthread_cond_destroy(&d->cond);
         free(d);
     }

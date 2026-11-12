@@ -337,6 +337,7 @@ public final class Bench {
             io.github.imcinq.puremetal.backend.EncodeProfile.start(gpuNs);
             blits.clear();
             passTrace.clear();
+            PassTiming.clear();
             if (AB != null) {
                 abHook = AB_HOOKS.get(AB);
                 if (abHook == null) {
@@ -362,7 +363,6 @@ public final class Bench {
         io.github.imcinq.puremetal.backend.EncodeProfile.frame(gpuNs);
         if (SHOT != null && !shotTaken && now - recordStart >= 3_000_000_000L) {
             shotTaken = true;
-            PassTiming.clear();
             net.minecraft.client.Screenshot.grab(minecraft.gameDirectory, SHOT + ".png", minecraft.gameRenderer.mainRenderTarget(), 1, message -> LOGGER.info("BENCH-SHOT {}", message.getString()));
         }
         if (abHook != null) {
@@ -509,6 +509,7 @@ public final class Bench {
                     fmt(profileBlitNs / 1e6 / count), fmt((double)profileBlitSamples / count));
             }
         }
+        PassTiming.report(LOGGER, count, gpuNs, gpuFrames, profileBlitNs);
         if (!blits.isEmpty()) {
             List<Map.Entry<String, long[]>> top = new ArrayList<>(blits.entrySet());
             top.sort((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]));
@@ -542,7 +543,6 @@ public final class Bench {
     private static long pct(final long[] sorted, final double p) {
         return sorted[Math.min(sorted.length - 1, (int)Math.ceil(p * sorted.length) - 1)];
     }
-        PassTiming.report(LOGGER, count, gpuNs, gpuFrames, profileBlitNs);
 
     private static String ms(final long ns) {
         return fmt(ns / 1e6);

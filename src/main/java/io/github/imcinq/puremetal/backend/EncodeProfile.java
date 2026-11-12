@@ -14,6 +14,11 @@ import org.slf4j.Logger;
 public final class EncodeProfile {
     private static final Logger LOGGER = LogUtils.getLogger();
 
+    /** Starts a new per-pass timing measurement (-Dpuremetal.passTiming): the warm-up's samples must not count. */
+    public static void resetPassTiming() {
+        MetalDevice.resetPassTiming();
+    }
+
     /** Whether the device in use runs the Metal 4 command model (the bench labels its pass-timing line by it). */
     public static boolean metal4Active() {
         return MetalDevice.metal4Active();
