@@ -326,13 +326,20 @@ public final class TerrainShaderProof implements AutoCloseable {
         ShaderSource original=LodTextureRepeat.originalSource(borrowed);
         Generation generation=generation(family,original);
         FamilyState state=generation.state;
-        Why[] why={Why.OTHER};
-        String reason=reject(pipeline,original,info,family,vertex,generation,why);
-        if(reason==null) return new Accepted(info,state,true);
-        LOGGER.info("Pure Metal: strict math kept for terrain pipeline {}: {}",info.name(),reason);
-        // A refused member switches the whole family: this pipeline compiles strict and waits, the relaxed ones switch together with it.
-        state.request(info.name()+": "+reason,why[0]);
-        return new Accepted(info,state,false);
+        // generation() counted this compilation in flight; from here until the Accepted is returned, any failure must give the count back
+        // (afterwards the proof object owns it and releases it on close).
+        try {
+            Why[] why={Why.OTHER};
+            String reason=reject(pipeline,original,info,family,vertex,generation,why);
+            if(reason==null) return new Accepted(info,state,true);
+            LOGGER.info("Pure Metal: strict math kept for terrain pipeline {}: {}",info.name(),reason);
+            // A refused member switches the whole family: this pipeline compiles strict and waits, the relaxed ones switch together with it.
+            state.request(info.name()+": "+reason,why[0]);
+            return new Accepted(info,state,false);
+        } catch(Throwable failed) {
+            state.releaseCompile();
+            throw failed;
+        }
     }
     private static String reject(RenderPipeline pipeline,ShaderSource source,CreateInfo info,Family family,Identifier vertex,Generation generation,Why[] why) {
         try {

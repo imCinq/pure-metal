@@ -24,7 +24,7 @@ import java.util.zip.ZipFile;
  * Usage (from the repository root, no classpath needed):
  *   java tools/CheckTerrainShaderHashes.java <minecraft-client.jar> [sodium.jar] [path/to/TerrainShaderProof.java]
  * Without a Sodium jar the Sodium family is skipped (and reported as skipped). Exit code 0: every checked family matches a pinned variant.
- * 1: some family matches none (or a file is missing). 2: bad arguments.
+ * 1: some family matches none (or a file is missing). 2: bad arguments, or the pinned data could not be read completely (fail closed).
  *
  * Not covered by hashes, check by hand on a Minecraft bump: the ALPHA_CUTOUT and OIT_* defines the terrain pipelines set in RenderPipelines
  * (0.5 and 0.1 for vanilla, 0.5 and 0.01 for Sodium's ShaderChunkRenderer), and LevelRenderer.OIT_* constants (javap -c -constants).
@@ -65,8 +65,18 @@ public final class CheckTerrainShaderHashes {
             maps.put(maps0.group(1), pairs);
         }
         Map<String, String> oit = maps.get("OIT");
-        List<Family> families = parseFamilies(text, maps, oit);
-        if (families.isEmpty() || oit == null) {
+        List<Family> families;
+        try {
+            if (oit == null || oit.isEmpty()) {
+                throw new IllegalStateException("the OIT include map could not be parsed");
+            }
+            families = parseFamilies(text, maps, oit);
+        } catch (IllegalStateException unreadable) {
+            System.err.println("ERROR: " + unreadable.getMessage() + " in " + proof + " (did its layout change? update this tool)");
+            System.exit(2);
+            return;
+        }
+        if (families.isEmpty()) {
             System.err.println("could not read the pinned families from " + proof + " (did its layout change? update this tool)");
             System.exit(2);
         }
@@ -100,17 +110,25 @@ public final class CheckTerrainShaderHashes {
             List<Variant> variants = new ArrayList<>();
             Matcher variant = VARIANT.matcher(chunk);
             String id = ids.get(i);
+            int found = 0;
+            int declared = chunk.split("new Variant\\(", -1).length - 1;
             while (variant.find()) {
+                found++;
                 Map<String, String> files = new LinkedHashMap<>();
                 String stem = id.substring(id.indexOf(':') + 1);
                 files.put(id.substring(0, id.indexOf(':')) + ":" + stem + ".vsh", variant.group(1));
                 files.put(id.substring(0, id.indexOf(':')) + ":" + stem + ".fsh", variant.group(2));
                 Map<String, String> includes = maps.get(variant.group(3));
-                if (includes != null) {
-                    includes.forEach((k, v) -> files.put(k, v));
+                if (includes == null || includes.isEmpty()) {
+                    // Fail closed: a map written in a form the regex does not read (Map.ofEntries, a builder, ...) must never be skipped silently.
+                    throw new IllegalStateException("include map " + variant.group(3) + " of " + id + " could not be parsed");
                 }
+                includes.forEach((k, v) -> files.put(k, v));
                 oit.forEach((k, v) -> files.put(k, v));
                 variants.add(new Variant(variant.group(3), files));
+            }
+            if (found == 0 || found != declared) {
+                throw new IllegalStateException("only " + found + " of " + declared + " variants of " + id + " could be parsed");
             }
             families.add(new Family(id, variants));
         }
