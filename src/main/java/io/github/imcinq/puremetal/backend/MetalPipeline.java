@@ -50,11 +50,20 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final boolean relaxedBase;
     /** Bit 1: first draw with strict math logged, bit 2: first draw with relaxed math logged. */
     private volatile int drawLogged;
+    /** Shared math mode of this terrain pipeline's shader family; null for every other pipeline. */
+    private final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState family;
+    /** One translated stage kept so the strict fallback can be built later; only for pipelines compiled relaxed. */
+    private record StageSource(MetalShaderTranslator.Result msl, String label, int constant, boolean fragment) {}
+    private final List<StageSource> strictSources;
+    private long vertexFunctionStrict;
+    private long fragmentFunctionStrict;
+    private boolean strictBuilt;
+    private boolean strictFailed;
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
-    private final long[][] states = new long[3][MetalConst.FORMAT_NAMES.size() + 1];
-    private final boolean[][] failedStates = new boolean[3][MetalConst.FORMAT_NAMES.size() + 1];
+    private final long[][] states = new long[4][MetalConst.FORMAT_NAMES.size() + 1];
+    private final boolean[][] failedStates = new boolean[4][MetalConst.FORMAT_NAMES.size() + 1];
     final int primitive;
     final boolean triangleFan;
     final boolean cull;
@@ -111,15 +120,17 @@ final class MetalPipeline implements BackendRenderPipeline {
     }
 
     private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
-                          final long fragmentFunctionFast, final boolean terrain, final boolean relaxedBase,
-                          final long vertexFunctionFast, final int mathGroup) {
+                          final long fragmentFunctionFast, final io.github.imcinq.puremetal.perf.TerrainShaderProof.FamilyState family, final boolean relaxedBase,
+                          final List<StageSource> strictSources, final long vertexFunctionFast, final int mathGroup) {
         this.device = device;
         this.vertexFunctionFast = vertexFunctionFast;
         this.mathGroup = mathGroup;
         this.fragmentFunctionOff = fragmentFunctionOff;
         this.fragmentFunctionFast = fragmentFunctionFast;
-        this.terrain = terrain;
+        this.family = family;
+        this.terrain = family != null;
         this.relaxedBase = relaxedBase;
+        this.strictSources = strictSources;
         this.name = info.name();
         this.uniforms = List.copyOf(info.uniforms());
         this.bindings = bindings;
@@ -156,13 +167,15 @@ final class MetalPipeline implements BackendRenderPipeline {
         long vertexFunctionFast = 0L;
         MetalPipeline pipeline = null;
         // Relaxed math (vertex and fragment together) for pipelines whose terrain shader sources proved stock; see FastTerrainMath.
-        boolean terrain = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedMath(info);
+        var family = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedFamily(info);
+        boolean terrain = family != null;
         boolean ab = terrain && FastTerrainMath.AB;
         // Diagnostic fastMath group A/B only: classify (and allocate the shader name list) just then, never in a normal run.
         List<String> shaderNames = MathGroups.AB ? info.shaders().stream().map(s -> String.valueOf(s.name())).toList() : List.of();
         MathGroups.Group mathGroup = MathGroups.AB ? MathGroups.classify(info.name(), shaderNames) : MathGroups.Group.OTHER;
         boolean mathAb = MathGroups.AB && MathGroups.isSelected(mathGroup);
         boolean relaxedBase = terrain && !ab && !MathGroups.AB;
+        List<StageSource> strictSources = relaxedBase ? new java.util.ArrayList<>() : null;
         if (MathGroups.AB) {
             MathGroups.record(mathGroup, info.name(), shaderNames);
         }
@@ -176,6 +189,9 @@ final class MetalPipeline implements BackendRenderPipeline {
                     && msl.source().contains("function_constant(" + io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID + ")")
                     ? io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID : -1;
                 boolean fragment = shader.module().type() != ShaderType.VERTEX;
+                if (relaxedBase) {
+                    strictSources.add(new StageSource(msl, label, constant, fragment));
+                }
                 long function = constant >= 0
                     ? device.compileFunction(msl, label, constant, 1, relaxedBase)
                     : device.compileFunction(msl, label, -1, 0, relaxedBase);
@@ -207,7 +223,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, terrain, relaxedBase, vertexFunctionFast, mathGroup.ordinal());
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, family, relaxedBase, strictSources, vertexFunctionFast, mathGroup.ordinal());
             if (relaxedBase) {
                 LOGGER.info("Pure Metal: relaxed terrain math (vertex and fragment) compiled for {}", info.name());
             }
@@ -288,19 +304,54 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
-        boolean fast = this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain, this.mathGroup);
+        // A strict terrain family (some sibling was refused) overrides everything: no pipeline of it may keep relaxed math.
+        boolean familyStrict = this.terrain && this.family.strict();
+        boolean strictFallback = familyStrict && this.relaxedBase && this.buildStrict();
+        boolean fast = !strictFallback && this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain && !familyStrict, this.mathGroup);
         if (this.terrain) {
             // Log the math mode actually bound the first time each mode is drawn (once per pipeline and mode).
-            int bit = fast || this.relaxedBase ? 2 : 1;
+            int bit = fast || this.relaxedBase && !strictFallback ? 2 : 1;
             if ((this.drawLogged & bit) == 0) {
                 this.drawLogged |= bit;
                 FastTerrainMath.noteDraw(this.name, bit == 2);
             }
         }
+        if (strictFallback) {
+            return this.state(depthFormat, 3);
+        }
         if (fast) {
             return this.state(depthFormat, 2);
         }
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);
+    }
+
+    /** Builds the strict functions of a pipeline that was compiled relaxed, once, on first need (its family became strict). False if that failed. */
+    private boolean buildStrict() {
+        if (this.strictBuilt) {
+            return true;
+        }
+        if (this.strictFailed) {
+            return false;
+        }
+        try {
+            for (StageSource stage : this.strictSources) {
+                long function = stage.constant() >= 0
+                    ? this.device.compileFunction(stage.msl(), stage.label(), stage.constant(), 1, false)
+                    : this.device.compileFunction(stage.msl(), stage.label(), -1, 0, false);
+                if (stage.fragment()) {
+                    this.fragmentFunctionStrict = function;
+                } else {
+                    this.vertexFunctionStrict = function;
+                }
+            }
+            this.strictBuilt = true;
+            LOGGER.info("Pure Metal: strict math fallback built for {} (its terrain shader family is strict)", this.name);
+            return true;
+        } catch (RuntimeException e) {
+            this.strictFailed = true;
+            LOGGER.error("Pure Metal couldn't build the strict fallback for {}, it keeps relaxed math: {}", this.name, Redact.home(e.getMessage()));
+            return false;
+        }
     }
 
     private long state(final int depthFormat, final int variant) {
@@ -316,7 +367,9 @@ final class MetalPipeline implements BackendRenderPipeline {
             ByteBuffer label = stack.UTF8(this.name);
             ByteBuffer err = stack.calloc(1024);
             state = MetalNative.pipelineCreate(
-                this.device.handle(), variant == 2 && this.vertexFunctionFast != 0L ? this.vertexFunctionFast : this.vertexFunction, variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
+                this.device.handle(),
+                variant == 3 ? this.vertexFunctionStrict : variant == 2 && this.vertexFunctionFast != 0L ? this.vertexFunctionFast : this.vertexFunction,
+                variant == 3 ? this.fragmentFunctionStrict : variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
                 org.lwjgl.system.MemoryUtil.memAddress(desc), org.lwjgl.system.MemoryUtil.memAddress(label),
                 org.lwjgl.system.MemoryUtil.memAddress(err), err.capacity()
             );
@@ -366,6 +419,8 @@ final class MetalPipeline implements BackendRenderPipeline {
             this.device.releaseFunction(this.fragmentFunctionOff);
             this.device.releaseFunction(this.fragmentFunctionFast);
             this.device.releaseFunction(this.vertexFunctionFast);
+            this.device.releaseFunction(this.vertexFunctionStrict);
+            this.device.releaseFunction(this.fragmentFunctionStrict);
         }
     }
 }
