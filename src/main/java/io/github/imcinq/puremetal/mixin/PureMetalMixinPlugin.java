@@ -75,11 +75,11 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return (Boolean.getBoolean("puremetal.terrainDiagnostics") || Boolean.getBoolean("puremetal.terrainOcclusionProbe"))
                 && (mixinClassName.contains(".diagnostics.sodium.") == SODIUM);
         }
-        // The proof also gates relaxed terrain fragment math (FastTerrainMath), which is off by default.
+        // The proof gates relaxed terrain math (FastTerrainMath), on by default; -Dpuremetal.fastTerrainMath=off removes the hook unless an A/B or probe needs it.
         if (mixinClassName.endsWith(".perf.TerrainShaderProofMixin")) {
-            String fastTerrain = System.getProperty("puremetal.fastTerrainMath", "off");
-            return Boolean.getBoolean("puremetal.terrainOcclusionProbe") || "opaque".equalsIgnoreCase(fastTerrain) || "all".equalsIgnoreCase(fastTerrain)
-                || System.getProperty("puremetal.benchAB", "").startsWith("fastTerrain");
+            String fastTerrain = System.getProperty("puremetal.fastTerrainMath", "on").trim();
+            return Boolean.getBoolean("puremetal.terrainOcclusionProbe") || !(fastTerrain.equalsIgnoreCase("off") || fastTerrain.equalsIgnoreCase("false"))
+                || System.getProperty("puremetal.benchAB", "").toLowerCase(java.util.Locale.ROOT).startsWith("fastterrain");
         }
         if (mixinClassName.endsWith(".perf.PalettedContainerMixin")) {
             return !Boolean.getBoolean("puremetal.disablePaletteScratch");

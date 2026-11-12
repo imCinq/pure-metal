@@ -53,7 +53,16 @@ Auto Render Scale stays inactive during a benchmark, so runs use the saved Rende
 
 In an A/B launch the log prints one table `math group table` (group to pipeline names, `Other` entries with their shader names) when B first switches on. Only the selected groups build a second (relaxed) vertex and fragment function, so startup compiles those pipelines twice and keeps one extra pipeline state each in memory. This ignores the stock-terrain proof on purpose: it is diagnostic and can change pixels. Outside an A/B launch nothing changes.
 
-`fastTerrain` / `fastTerrainAll` compare relaxed fragment math of the proven stock terrain pipelines only. They need `-Dpuremetal.fastTerrainMath.allowLodPatched=true` when Terrain LOD textures or the RGSS early-out patch are active, because the proof refuses the patched fragment text otherwise. `-Dpuremetal.fastTerrainMath` itself defaults to `off`.
+### Shipped terrain math (`fastTerrainMath`)
+
+Relaxed math in the terrain vertex shader is a shipped default since 0.4.5: every pipeline whose vertex and fragment shaders and includes prove to be stock terrain (vanilla `core/terrain`, Sodium `block_layer_opaque`, vanilla `core/block` for the `*_block` pipelines, all define sets including cutout and the OIT passes) compiles with relaxed vertex and fragment math as one unit, so solid, cutout, translucent and OIT depth passes compute the same positions. Pure Metal's own Terrain LOD texture repeat and RGSS early-out patch are accepted by the proof (it hashes the unpatched source the patch is built from). Resource pack or mod edits, Iris, unknown defines and any `ALPHA_CUTOUT` other than the stock values (0.5, plus 0.01 for Sodium translucent) keep strict math for that pipeline. Everything outside terrain stays strict.
+
+- `-Dpuremetal.fastTerrainMath=on|off`, default `on`. The old values `opaque` and `all` mean `on`, `false` means `off`, anything else fails at startup. The old `fastTerrain` / `fastTerrainAll` A/B switches and `-Dpuremetal.fastTerrainMath.allowLodPatched` are gone.
+- Proof that it is active: the log prints `relaxed terrain math (vertex and fragment) compiled for <pipeline>` per pipeline at compile time and `relaxed terrain math active for N pipeline(s)` at each pipeline's first draw.
+- `-PbenchAB=fastTerrainMath` is the confirmation A/B: A = strict math, B = the shipped relaxed math, built as a second variant per stock terrain pipeline (vertex and fragment). Run it with and without `-Dpuremetal.fastTerrainMath=off`; the numbers should match, only the compile time differs. The `fastMath*` group switches above keep ignoring the proof and every `fastMath`/`fastTerrain` name must be spelled exactly, otherwise the launch fails with the list of valid names.
+- Without any A/B, no pipeline is classified into math groups and no name lists are built; only terrain pipelines hash their shader sources once at compile time.
+
+Same-session reference (M2, 3420x2148, Sodium 0.9.3 beta.5, Metal 3): `fastMathTerrain` 13.91 to 8.52 ms/f GPU, 127 to 201 FPS; `fastMathTerrainTranslucent` 14.64 to 12.82 ms/f; relaxed fragment-only terrain, clouds, post, entity, GUI and other groups showed no gain; screenshot diff A vs B stayed inside the A vs A noise (94 px differing by more than 16/255). Far-coordinate visual check: add `tp @s 1000000 140 1000000 0 40` to `-PbenchCommand` and compare the `ab-A1` and `ab-B` screenshots for depth fighting or seams.
 
 ## Terrain LOD
 

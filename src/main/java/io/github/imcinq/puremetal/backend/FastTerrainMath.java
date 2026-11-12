@@ -1,54 +1,63 @@
 package io.github.imcinq.puremetal.backend;
 
-import java.util.Set;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import com.mojang.logging.LogUtils;
 
 /**
- * Per pipeline relaxed shader math for the stock terrain fragment shader. Relaxed math is a large GPU win on terrain but is not
- * safe for post effects, sky, fog, OIT resolve or GUI, so only an allowlist of pipelines gets it, and only when the terrain
- * shader sources are the unmodified stock ones. Vertex shaders always keep safe math, so positions and depth never change.
- * -Dpuremetal.fastTerrainMath=off|opaque|all (default off: no measured gain in game; the fastTerrain A/B and the fastMath A/B in {@link MathGroups} are the diagnostics).
+ * Relaxed (fast) shader math for terrain. Relaxed math in the terrain vertex shader is a large GPU win (about 40% of terrain GPU time
+ * measured), but it is not safe for post effects, sky, fog, OIT resolve or GUI, so only pipelines whose vertex and fragment sources
+ * proved to be the stock terrain ones get it ({@link io.github.imcinq.puremetal.perf.TerrainShaderProof#relaxedMath()}). Every terrain
+ * pipeline (solid, cutout, translucent, the OIT passes, the block variants, Sodium) switches as one unit, so all passes compute the same
+ * positions. Everything else keeps strict math.
+ *
+ * <p>-Dpuremetal.fastTerrainMath=on|off (default on; the old opaque and all values mean on). Diagnostic A/B: -PbenchAB=fastTerrainMath
+ * builds both math variants per terrain pipeline and toggles them (A = strict, B = shipped relaxed).
  */
-final class FastTerrainMath {
-    enum Mode { OFF, OPAQUE, ALL }
+public final class FastTerrainMath {
+    public static final String SWITCH = "fastTerrainMath";
+    private static final Logger LOGGER = LogUtils.getLogger();
 
-    static final Mode MODE = parse(System.getProperty("puremetal.fastTerrainMath"));
-
-    /** Group 1: opaque terrain. */
-    private static final Set<String> OPAQUE = Set.of(
-        "minecraft:pipeline/solid_terrain", "minecraft:pipeline/solid_terrain_multidraw",
-        "minecraft:pipeline/cutout_terrain", "minecraft:pipeline/cutout_terrain_multidraw");
-    /** Group 2: translucent and order independent transparency terrain, which feed blending and transmittance math. */
-    private static final Set<String> TRANSLUCENT = Set.of(
-        "minecraft:pipeline/translucent_terrain", "minecraft:pipeline/translucent_terrain_multidraw",
-        "minecraft:pipeline/oit_transmittance_terrain", "minecraft:pipeline/oit_transmittance_terrain_multidraw",
-        "minecraft:pipeline/oit_depth_bounds_terrain", "minecraft:pipeline/oit_depth_bounds_terrain_multidraw",
-        "minecraft:pipeline/oit_accumulate_terrain", "minecraft:pipeline/oit_accumulate_terrain_multidraw");
-
-    /** True only in a fastTerrain / fastTerrainAll A/B run: both math variants are built and the bench switch picks one. */
-    static final boolean AB = System.getProperty("puremetal.benchAB", "").startsWith("fastTerrain");
+    /** The configured default: relaxed terrain math on (no A/B). */
+    private static final boolean ENABLED = parse(System.getProperty("puremetal.fastTerrainMath"));
+    /** True only in a -PbenchAB=fastTerrainMath run: both variants are built and the bench switch picks one. */
+    static final boolean AB = abRequested(System.getProperty("puremetal.benchAB", ""));
+    private static final AtomicInteger DRAWN = new AtomicInteger();
 
     private FastTerrainMath() {
     }
 
-    private static Mode parse(final String value) {
+    /** Whether the proof has to run at all: nothing to decide when the feature is off and no A/B needs the variants. */
+    public static boolean wanted() {
+        return ENABLED || AB;
+    }
+
+    private static boolean parse(final String value) {
         if (value == null) {
-            return Mode.OFF;
+            return true;
         }
-        return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "off" -> Mode.OFF;
-            case "all" -> Mode.ALL;
-            case "opaque" -> Mode.OPAQUE;
-            default -> Mode.OFF;
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "on", "true", "opaque", "all" -> true;
+            case "off", "false" -> false;
+            default -> throw new IllegalArgumentException("Unsupported -Dpuremetal.fastTerrainMath=" + value + " (use on or off)");
         };
     }
 
-    /** 0 = not a terrain pipeline on the allowlist, 1 = opaque group, 2 = translucent / OIT group. */
-    static int group(final String pipelineName) {
-        return OPAQUE.contains(pipelineName) ? 1 : TRANSLUCENT.contains(pipelineName) ? 2 : 0;
+    /** The old fastTerrain / fastTerrainAll A/B switches are gone; any other fastTerrain* name would silently measure nothing. */
+    private static boolean abRequested(final String name) {
+        if (name.equals(SWITCH)) {
+            return true;
+        }
+        if (name.toLowerCase(Locale.ROOT).startsWith("fastterrain")) {
+            throw new IllegalArgumentException("Unsupported -PbenchAB=" + name + " (the only terrain math switch is " + SWITCH + ")");
+        }
+        return false;
     }
 
-    /** Whether the configured mode alone (no A/B) gives this group relaxed fragment math. */
-    static boolean configured(final int group) {
-        return group == 1 ? MODE != Mode.OFF : group == 2 && MODE == Mode.ALL;
+    /** First draw of a pipeline with relaxed terrain math: one log line each, so the log proves the shipped state is really drawn. */
+    static void noteDraw(final String pipeline) {
+        int count = DRAWN.incrementAndGet();
+        LOGGER.info("Pure Metal: relaxed terrain math active for {} pipeline(s), latest {}", count, pipeline);
     }
 }

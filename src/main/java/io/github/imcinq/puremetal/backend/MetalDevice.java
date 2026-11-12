@@ -43,7 +43,7 @@ final class MetalDevice implements GpuDeviceBackend {
     /**
      * Strict IEEE shader math (GLSL semantics) for every shader. -Dpuremetal.safeMath=false compiles everything with relaxed
      * math instead, which is too risky for post effects, sky, fog and GUI; the stock terrain fragment shaders get relaxed math
-     * selectively, see {@link FastTerrainMath} (-Dpuremetal.fastTerrainMath=off|opaque|all).
+     * selectively, see {@link FastTerrainMath} (-Dpuremetal.fastTerrainMath=on|off, default on).
      */
     private static final boolean SAFE_MATH = !"false".equals(System.getProperty("puremetal.safeMath"));
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -74,15 +74,13 @@ final class MetalDevice implements GpuDeviceBackend {
 
     /** Selects the terrain RGSS early-out shader variant (bit-identical either way); off only for the A/B tool. */
     volatile boolean rgssEarlyOut = true;
-    /** Fragment shaders of the opaque terrain pipelines (solid, cutout) use relaxed math; set by -Dpuremetal.fastTerrainMath, or by the fastTerrain A/B. */
-    volatile boolean fastTerrainOpaque = !FastTerrainMath.AB && !MathGroups.AB && FastTerrainMath.MODE != FastTerrainMath.Mode.OFF;
-    /** Same for the translucent and OIT terrain pipelines (the second group; only the "all" mode and the fastTerrainAll A/B). */
-    volatile boolean fastTerrainTranslucent = !FastTerrainMath.AB && !MathGroups.AB && FastTerrainMath.MODE == FastTerrainMath.Mode.ALL;
+    /** fastTerrainMath A/B only: stock terrain pipelines draw with their relaxed (vertex and fragment) variant; the shipped default compiles relaxed math in directly. */
+    volatile boolean fastTerrainMath;
     /** Diagnostic fastMath A/B: bit per {@link MathGroups.Group} whose pipelines draw with the relaxed (vertex and fragment) variant. */
     volatile int fastMathMask;
 
-    boolean fastVariantOn(final int terrainGroup, final int mathGroup) {
-        return terrainGroup == 1 && this.fastTerrainOpaque || terrainGroup == 2 && this.fastTerrainTranslucent || (this.fastMathMask >> mathGroup & 1) != 0;
+    boolean fastVariantOn(final boolean terrain, final int mathGroup) {
+        return terrain && this.fastTerrainMath || (this.fastMathMask >> mathGroup & 1) != 0;
     }
     /** Present the main target straight from its texture (it rotates to a spare) instead of through a staging copy. */
     volatile boolean directPresent = !"false".equals(System.getProperty("puremetal.directPresent"));
@@ -121,14 +119,7 @@ final class MetalDevice implements GpuDeviceBackend {
         this.handle = handle;
         io.github.imcinq.puremetal.bench.Bench.registerAB("directPresent", on -> this.directPresent = on);
         io.github.imcinq.puremetal.bench.Bench.registerAB("rgssEarlyOut", on -> this.rgssEarlyOut = on);
-        io.github.imcinq.puremetal.bench.Bench.registerAB("fastTerrain", on -> {
-            this.fastTerrainOpaque = on;
-            this.fastTerrainTranslucent = false;
-        });
-        io.github.imcinq.puremetal.bench.Bench.registerAB("fastTerrainAll", on -> {
-            this.fastTerrainOpaque = on;
-            this.fastTerrainTranslucent = on;
-        });
+        io.github.imcinq.puremetal.bench.Bench.registerAB(FastTerrainMath.SWITCH, on -> this.fastTerrainMath = on);
         io.github.imcinq.puremetal.bench.Bench.registerAB(MathGroups.PREFIX + "All", on -> {
             if (on) {
                 MathGroups.logTable();

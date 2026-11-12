@@ -40,24 +40,25 @@ final class MathGroups {
     private MathGroups() {
     }
 
-    /** "fastMathAll" or "fastMathSky" (also "fastMath:sky"); anything else selects nothing. */
+    /**
+     * Exactly "fastMathAll" or one group switch name such as "fastMathSky" (the names Bench has registered); another fastMath* name
+     * fails loudly instead of silently measuring nothing. Anything not starting with fastMath selects nothing.
+     */
     private static int selected(final String abName) {
         if (!abName.startsWith(PREFIX)) {
             return 0;
         }
-        String rest = abName.substring(PREFIX.length());
-        if (rest.startsWith(":")) {
-            rest = rest.substring(1);
-        }
-        if (rest.equalsIgnoreCase("all")) {
+        if (abName.equals(PREFIX + "All")) {
             return ALL_MASK;
         }
+        StringBuilder known = new StringBuilder(PREFIX + "All");
         for (Group group : Group.values()) {
-            if (group.switchName.equalsIgnoreCase(PREFIX + rest)) {
+            if (group.switchName.equals(abName)) {
                 return group.bit();
             }
+            known.append(", ").append(group.switchName);
         }
-        return 0;
+        throw new IllegalArgumentException("Unsupported -PbenchAB=" + abName + " (have " + known + ")");
     }
 
     static boolean isSelected(final Group group) {

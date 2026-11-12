@@ -42,10 +42,13 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final long fragmentFunction;
     /** Fragment variant with the RGSS early-out specialized off; 0 unless the shader has it and the A/B tool is active. */
     private final long fragmentFunctionOff;
-    /** Fragment variant with relaxed math, alternate to the safe one; only built (stock terrain, allowlisted) for the fastTerrain A/B. */
+    /** Fragment variant with relaxed math, alternate to the safe one; only built for the fastTerrainMath and fastMath A/B runs. */
     private final long fragmentFunctionFast;
-    /** FastTerrainMath group of this pipeline (1 opaque, 2 translucent), used to pick the A/B variant. */
-    private final int fastGroup;
+    /** Stock terrain pipeline (proved by TerrainShaderProof): the fastTerrainMath A/B variant applies to it. */
+    private final boolean terrain;
+    /** The primary functions are already compiled with relaxed math (shipped terrain default). */
+    private final boolean relaxedBase;
+    private volatile boolean relaxedDrawLogged;
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
@@ -107,14 +110,15 @@ final class MetalPipeline implements BackendRenderPipeline {
     }
 
     private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
-                          final long fragmentFunctionFast, final int fastGroup,
+                          final long fragmentFunctionFast, final boolean terrain, final boolean relaxedBase,
                           final long vertexFunctionFast, final int mathGroup) {
         this.device = device;
         this.vertexFunctionFast = vertexFunctionFast;
         this.mathGroup = mathGroup;
         this.fragmentFunctionOff = fragmentFunctionOff;
         this.fragmentFunctionFast = fragmentFunctionFast;
-        this.fastGroup = fastGroup;
+        this.terrain = terrain;
+        this.relaxedBase = relaxedBase;
         this.name = info.name();
         this.uniforms = List.copyOf(info.uniforms());
         this.bindings = bindings;
@@ -150,15 +154,14 @@ final class MetalPipeline implements BackendRenderPipeline {
         long fragmentFunctionFast = 0L;
         long vertexFunctionFast = 0L;
         MetalPipeline pipeline = null;
-        // Relaxed fragment math only for allowlisted terrain pipelines whose shader sources proved to be the stock ones.
-        int group = FastTerrainMath.group(info.name());
-        boolean stock = group != 0 && io.github.imcinq.puremetal.perf.TerrainShaderProof.stockTerrain();
-        boolean ab = stock && FastTerrainMath.AB;
-        // Diagnostic fastMath A/B: relaxed vertex and fragment variants for every pipeline of the selected groups, whatever the stock proof says.
-        List<String> shaderNames = info.shaders().stream().map(s -> String.valueOf(s.name())).toList();
-        MathGroups.Group mathGroup = MathGroups.classify(info.name(), shaderNames);
+        // Relaxed math (vertex and fragment together) for pipelines whose terrain shader sources proved stock; see FastTerrainMath.
+        boolean terrain = io.github.imcinq.puremetal.perf.TerrainShaderProof.relaxedMath();
+        boolean ab = terrain && FastTerrainMath.AB;
+        // Diagnostic fastMath group A/B only: classify (and allocate the shader name list) just then, never in a normal run.
+        List<String> shaderNames = MathGroups.AB ? info.shaders().stream().map(s -> String.valueOf(s.name())).toList() : List.of();
+        MathGroups.Group mathGroup = MathGroups.AB ? MathGroups.classify(info.name(), shaderNames) : MathGroups.Group.OTHER;
         boolean mathAb = MathGroups.AB && MathGroups.isSelected(mathGroup);
-        boolean relaxedPrimary = stock && !ab && !MathGroups.AB && FastTerrainMath.configured(group);
+        boolean relaxedBase = terrain && !ab && !MathGroups.AB;
         if (MathGroups.AB) {
             MathGroups.record(mathGroup, info.name(), shaderNames);
         }
@@ -173,8 +176,8 @@ final class MetalPipeline implements BackendRenderPipeline {
                     ? io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID : -1;
                 boolean fragment = shader.module().type() != ShaderType.VERTEX;
                 long function = constant >= 0
-                    ? device.compileFunction(msl, label, constant, 1, relaxedPrimary && fragment)
-                    : device.compileFunction(msl, label, -1, 0, relaxedPrimary && fragment);
+                    ? device.compileFunction(msl, label, constant, 1, relaxedBase)
+                    : device.compileFunction(msl, label, -1, 0, relaxedBase);
                 if (shader.module().type() == ShaderType.VERTEX) {
                     device.releaseFunction(vertexFunction);
                     vertexFunction = function;
@@ -182,12 +185,12 @@ final class MetalPipeline implements BackendRenderPipeline {
                     device.releaseFunction(fragmentFunction);
                     fragmentFunction = function;
                 }
-                if (fragment ? ab || mathAb : mathAb) {
+                if (ab || mathAb) {
                     long fast = constant >= 0 ? device.compileFunction(msl, label, constant, 1, true) : device.compileFunction(msl, label, -1, 0, true);
                     if (fragment) {
                         device.releaseFunction(fragmentFunctionFast);
                         fragmentFunctionFast = fast;
-                        LOGGER.info("Pure Metal: relaxed math A/B variant built for {} (terrain group {}, math group {})", info.name(), group, mathGroup);
+                        LOGGER.info("Pure Metal: relaxed math A/B variant built for {} (terrain {}, math group {})", info.name(), terrain, mathGroup);
                     } else {
                         device.releaseFunction(vertexFunctionFast);
                         vertexFunctionFast = fast;
@@ -196,16 +199,16 @@ final class MetalPipeline implements BackendRenderPipeline {
                 if (constant >= 0 && io.github.imcinq.puremetal.bench.Bench.abRequested()) {
                     device.releaseFunction(fragmentFunctionOff);
                     fragmentFunctionOff = 0L;
-                    fragmentFunctionOff = device.compileFunction(msl, label, constant, 0);
+                    fragmentFunctionOff = device.compileFunction(msl, label, constant, 0, relaxedBase);
                     LOGGER.info("Pure Metal: RGSS early-out A/B variants built for {}", info.name());
                 }
             }
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, group, vertexFunctionFast, mathGroup.ordinal());
-            if (relaxedPrimary) {
-                LOGGER.info("Pure Metal: relaxed fragment math for {} (group {})", info.name(), group);
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, terrain, relaxedBase, vertexFunctionFast, mathGroup.ordinal());
+            if (relaxedBase) {
+                LOGGER.info("Pure Metal: relaxed terrain math (vertex and fragment) compiled for {}", info.name());
             }
             // Build the variants up front so the render thread never stalls on a first draw. Vanilla only uses
             // D32_FLOAT depth targets; pipelines without depth testing still get drawn into passes that have one.
@@ -284,7 +287,12 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
-        if (this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.fastGroup, this.mathGroup)) {
+        boolean fast = this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.terrain, this.mathGroup);
+        if (this.terrain && (fast || this.relaxedBase) && !this.relaxedDrawLogged) {
+            this.relaxedDrawLogged = true;
+            FastTerrainMath.noteDraw(this.name);
+        }
+        if (fast) {
             return this.state(depthFormat, 2);
         }
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);

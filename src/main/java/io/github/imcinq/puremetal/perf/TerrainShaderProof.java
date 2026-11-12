@@ -7,6 +7,7 @@ import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.CompareOp;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.PolygonMode;
+import io.github.imcinq.puremetal.backend.FastTerrainMath;
 import io.github.imcinq.puremetal.lod.LodTextureRepeat;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -19,8 +20,8 @@ import org.lwjgl.util.shaderc.ShadercIncludeResult;
 public final class TerrainShaderProof implements AutoCloseable {
     private static final ThreadLocal<Integer> CURRENT=ThreadLocal.withInitial(()->0);
     private final int previous;
-    private final boolean previousStock;
-    private static final ThreadLocal<Boolean> STOCK=ThreadLocal.withInitial(()->false);
+    private final boolean previousRelaxed;
+    private static final ThreadLocal<Boolean> RELAXED=ThreadLocal.withInitial(()->false);
     /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */
     private static final Map<String,String> OIT=Map.of(
         "minecraft:oit_common.glsl","bd5f404aea0c8b75f32471e763332fdfa81a30106dfd1318a3fec0a82e1c7720",
@@ -43,9 +44,29 @@ public final class TerrainShaderProof implements AutoCloseable {
         "sodium:globals.glsl","59ab558e82d31ea2a0a2b2d95b6a63e4cf960d676cc73c309b7c17e47d02d057",
         "sodium:chunk_material.glsl","456e00dc7904a2e003fe4e1f06b2023bc3189cb7259fec77ba3e854fc4f7a452",
         "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
-    private TerrainShaderProof(int value,boolean stock) {previous=CURRENT.get();CURRENT.set(value);previousStock=STOCK.get();STOCK.set(stock);}
-    /** True while compiling a pipeline whose vertex and fragment shaders and every include are byte identical to stock vanilla terrain. */
-    public static boolean stockTerrain() {return STOCK.get();}
+    /** Vanilla core/block (the solid_block, cutout_block and translucent_block pipelines): the includes it reaches besides the OIT ones. */
+    private static final Map<String,String> BLOCK=Map.of(
+        "minecraft:fog.glsl","c96edf62b3dca66b2dc314516b0cd74f2e12fbe7514342e28a5440ad8dfc49be",
+        "minecraft:dynamictransforms.glsl","13db01aebd7ceeabf7769b1d60d0d5691f88072f302350ca2499f5d962237c7a",
+        "minecraft:projection.glsl","54ad58fcd6b3811992a9432628dba49900b2d9d33e075424224b0e7f0603818e",
+        "minecraft:sample_lightmap.glsl","a9304edbf7f4cae659177dc47b813a5b8a715c9cb3e4a16214273a871eb508e9",
+        "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
+    /** RenderPipelines.ALPHA_CUTOUT_THRESHOLD_CUTOUT_TERRAIN of Minecraft 26.3 (private there; read from the class constant). Re-check on a version bump. */
+    private static final float VANILLA_CUTOUT_ALPHA=0.5F;
+    /** ALPHA_CUTOUT of Sodium 0.9.x translucent terrain pipelines (ShaderChunkRenderer); its solid and cutout pipelines use the vanilla values. */
+    private static final float SODIUM_TRANSLUCENT_ALPHA=0.01F;
+    /** A terrain shader family: one shader id (vertex and fragment share it), the hashes of both stages and of every include they reach. */
+    private record Family(Identifier shader,String vertexHash,String fragmentHash,Map<String,String> includes,float... alphaCutouts) {}
+    private static final Family[] FAMILIES={
+        new Family(Identifier.fromNamespaceAndPath("minecraft","core/terrain"),"001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0",
+            "e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9",VANILLA,VANILLA_CUTOUT_ALPHA),
+        new Family(Identifier.fromNamespaceAndPath("sodium","blocks/block_layer_opaque"),"eb663f22c1be14a3a1e391601e466a77b420f8e087f2edf2b06c0c9e64342ce8",
+            "380c49c7463bed6382cb993e39a55e4a07e4c00462f8980fc020b66e29bd27a1",SODIUM,VANILLA_CUTOUT_ALPHA,SODIUM_TRANSLUCENT_ALPHA),
+        new Family(Identifier.fromNamespaceAndPath("minecraft","core/block"),"3c2508a469916fa10c37d1e368b7de8e7505e289bb87c2134aaaf5fed992a9ea",
+            "bb8c8bbbae9227219e68ea3f0dab4ef6586c1dd4f745cab16c635c1553ed2ca9",BLOCK,VANILLA_CUTOUT_ALPHA)};
+    private TerrainShaderProof(int value,boolean relaxed) {previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);}
+    /** True while compiling a pipeline whose vertex and fragment shaders and every include are stock terrain (vanilla, Sodium or block), up to Pure Metal's own patch. */
+    public static boolean relaxedMath() {return RELAXED.get();}
     public static int current() {return CURRENT.get();}
     public static boolean eligibleShape(DepthStencilState depth,PrimitiveTopology topology,PolygonMode polygon) {
         return depth!=null && depth.writeDepth() && (depth.depthTest()==CompareOp.LESS_THAN || depth.depthTest()==CompareOp.LESS_THAN_OR_EQUAL
@@ -62,12 +83,8 @@ public final class TerrainShaderProof implements AutoCloseable {
                     pipeline.getLocation(),pipeline.getShaders(),proof,pipeline.getShaderDefines());
             }
         }
-        return new TerrainShaderProof(proof,stock(pipeline,source));
+        return new TerrainShaderProof(proof,FastTerrainMath.wanted() && relaxedTerrain(pipeline,source));
     }
-    /** Relaxed terrain math over the LOD-patched fragment text (-Dpuremetal.fastTerrainMath.allowLodPatched=true); not proven, off by default. */
-    private static final boolean ALLOW_LOD_PATCHED=Boolean.getBoolean("puremetal.fastTerrainMath.allowLodPatched");
-    /** RenderPipelines.ALPHA_CUTOUT_THRESHOLD_CUTOUT_TERRAIN of Minecraft 26.3 (private there; read from the class constant). Re-check on a version bump. */
-    private static final float VANILLA_CUTOUT_ALPHA=0.5F;
     private static boolean isFloat(Object value,float expected) {
         try {return Float.parseFloat(String.valueOf(value))==expected;} catch(NumberFormatException bad) {return false;}
     }
@@ -77,12 +94,11 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static int validate(RenderPipeline pipeline,ShaderSource borrowed) {
         try {
             ShaderSource source=LodTextureRepeat.originalSource(borrowed);
-            if(!pipeline.getShaderDefines().values().isEmpty()
-                || !java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN").containsAll(pipeline.getShaderDefines().flags())) return 0;
             Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
             boolean sodium=Identifier.fromNamespaceAndPath("sodium","blocks/block_layer_opaque").equals(vertex);
-            if(sodium && !pipeline.getShaderDefines().flags().contains("USE_VERTEX_COMPRESSION")) return 0;
             if(!sodium && !Identifier.fromNamespaceAndPath("minecraft","core/terrain").equals(vertex)) return 0;
+            if(!pipeline.getShaderDefines().values().isEmpty() || !KNOWN_FLAGS.containsAll(pipeline.getShaderDefines().flags())) return 0;
+            if(sodium && !pipeline.getShaderDefines().flags().contains("USE_VERTEX_COMPRESSION")) return 0;
             if(!hash(source.getShader(vertex,ShaderType.VERTEX),sodium?
                 "eb663f22c1be14a3a1e391601e466a77b420f8e087f2edf2b06c0c9e64342ce8":
                 "001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0")) return 0;
@@ -104,36 +120,50 @@ public final class TerrainShaderProof implements AutoCloseable {
             return sodium?2:1;
         } catch(Exception unsupported) {return 0;}
     }
-    /** Stock vanilla terrain shader (any define set the vanilla terrain pipelines use, including cutout and OIT), no resource pack or mod edits. */
-    private static boolean stock(RenderPipeline pipeline,ShaderSource borrowed) {
+    private static final java.util.Set<String> KNOWN_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN");
+    /** Sodium adds USE_SPHERICAL_FOG when its spherical fog option is on; it only selects an #ifdef inside the hash-proven sodium:fog.glsl. */
+    private static final java.util.Set<String> RELAXED_FLAGS=java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN","USE_SPHERICAL_FOG");
+    private static boolean includeMatches(ShaderSource source,Map.Entry<String,String> entry) throws Exception {
+        var include=source.getInclude(Identifier.parse(entry.getKey()));
+        if(include==null || include.includeResultPtr()==0) return false;
+        var result=ShadercIncludeResult.create(include.includeResultPtr());
+        long length=result.content_length();
+        long address=org.lwjgl.system.MemoryUtil.memGetAddress(result.address()+ShadercIncludeResult.CONTENT);
+        if(address==0 || length<=0 || length>1048576) return false;
+        var content=org.lwjgl.system.MemoryUtil.memByteBuffer(address,(int)length);
+        // shaderc includes have an explicit byte length; they need not be NUL terminated.
+        return content!=null && hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue());
+    }
+    /**
+     * Stock terrain shader of any family (vanilla terrain, Sodium terrain, vanilla block), with any define set those pipelines use (cutout, OIT, multidraw),
+     * and no resource pack, mod or Iris edit: both stages and every include are hashed. Pure Metal's own texture-repeat and RGSS early-out patch is accepted:
+     * it wraps the source, and the wrapper only patches text it has itself proven stock, so the hashes are checked on the unpatched original.
+     * Cheap for every other pipeline: the shader id is compared first.
+     */
+    private static boolean relaxedTerrain(RenderPipeline pipeline,ShaderSource borrowed) {
         try {
-            ShaderSource source=LodTextureRepeat.originalSource(borrowed);
-            // The LOD patch (and any other wrapper) compiles different fragment text than the hashes below prove: relaxed math only on it with explicit approval.
-            if(source!=borrowed && !ALLOW_LOD_PATCHED) return false;
             Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
-            if(!Identifier.fromNamespaceAndPath("minecraft","core/terrain").equals(vertex) || !vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return false;
+            if(vertex==null || !vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return false;
+            Family family=null;
+            for(Family candidate:FAMILIES) if(candidate.shader().equals(vertex)) family=candidate;
+            if(family==null) return false;
             for(String flag:pipeline.getShaderDefines().flags()) {
-                if(!(flag.startsWith("OIT_") || java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN").contains(flag))) return false;
+                if(!(flag.startsWith("OIT_") || RELAXED_FLAGS.contains(flag))) return false;
             }
             for(var define:pipeline.getShaderDefines().values().entrySet()) {
-                if(!define.getKey().equals("ALPHA_CUTOUT") || !isFloat(define.getValue(),VANILLA_CUTOUT_ALPHA)) return false;
+                if(!define.getKey().equals("ALPHA_CUTOUT")) return false;
+                boolean known=false;
+                for(float alpha:family.alphaCutouts()) known|=isFloat(define.getValue(),alpha);
+                if(!known) return false;
             }
-            if(!hash(source.getShader(vertex,ShaderType.VERTEX),"001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0")
-                || !hash(source.getShader(vertex,ShaderType.FRAGMENT),"e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9")) return false;
-            for(var group:java.util.List.of(VANILLA,OIT)) {
-                for(var entry:group.entrySet()) {
-                    var include=source.getInclude(Identifier.parse(entry.getKey()));
-                    if(include==null || include.includeResultPtr()==0) return false;
-                    var result=ShadercIncludeResult.create(include.includeResultPtr());
-                    long length=result.content_length();
-                    long address=org.lwjgl.system.MemoryUtil.memGetAddress(result.address()+ShadercIncludeResult.CONTENT);
-                    if(address==0 || length<=0 || length>1048576) return false;
-                    var content=org.lwjgl.system.MemoryUtil.memByteBuffer(address,(int)length);
-                    if(content==null || !hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue())) return false;
-                }
+            ShaderSource source=LodTextureRepeat.originalSource(borrowed);
+            if(!hash(source.getShader(vertex,ShaderType.VERTEX),family.vertexHash())
+                || !hash(source.getShader(vertex,ShaderType.FRAGMENT),family.fragmentHash())) return false;
+            for(var group:java.util.List.of(family.includes(),OIT)) {
+                for(var entry:group.entrySet()) if(!includeMatches(source,entry)) return false;
             }
             return true;
         } catch(Exception unsupported) {return false;}
     }
-    @Override public void close() {CURRENT.set(previous);STOCK.set(previousStock);}
+    @Override public void close() {CURRENT.set(previous);RELAXED.set(previousRelaxed);}
 }

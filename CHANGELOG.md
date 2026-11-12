@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.5 (draft, not released)
+
+**Improvements**
+- Terrain now compiles with relaxed shader math (vertex and fragment together, for vanilla and Sodium terrain), which cut terrain GPU time by about 40% in a same-session A/B on an M2 at 3420x2148 (13.9 to 8.5 ms per frame with Sodium, Metal 3). It applies only while the terrain shaders are the unmodified stock ones; resource packs, other mods and Iris that edit them keep strict math. `-Dpuremetal.fastTerrainMath=off` turns it off.
+
 ## 0.4.4.1
 
 - Improved recovery from Metal 4 presentation stutter after switching windows.
