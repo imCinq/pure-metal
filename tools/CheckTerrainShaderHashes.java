@@ -32,7 +32,9 @@ import java.util.zip.ZipFile;
 public final class CheckTerrainShaderHashes {
     private static final String DEFAULT_PROOF = "src/main/java/io/github/imcinq/puremetal/perf/TerrainShaderProof.java";
     private static final Pattern MAP = Pattern.compile("Map<String,String>\\s+(\\w+)\\s*=\\s*Map\\.of\\((.*?)\\);", Pattern.DOTALL);
-    private static final Pattern PAIR = Pattern.compile("\"([^\"]+)\"\\s*,\\s*\"([0-9a-f]{64})\"");
+    /** A Map.of key and value: each argument must be exactly one plain string literal (whitespace and comments aside). */
+    private static final Pattern KEY = Pattern.compile("\"([^\"\\\\]+)\"");
+    private static final Pattern HASH = Pattern.compile("\"([0-9a-f]{64})\"");
     private static final Pattern FAMILY = Pattern.compile("new Family\\(Identifier\\.fromNamespaceAndPath\\(\"([^\"]+)\",\"([^\"]+)\"\\)");
     private static final Pattern VARIANT = Pattern.compile("new Variant\\(\"([0-9a-f]{64})\",\"([0-9a-f]{64})\",(\\w+)\\)");
 
@@ -57,17 +59,10 @@ public final class CheckTerrainShaderHashes {
         Map<String, Map<String, String>> maps = new LinkedHashMap<>();
         Matcher maps0 = MAP.matcher(text);
         while (maps0.find()) {
-            Map<String, String> pairs = new LinkedHashMap<>();
-            Matcher pair = PAIR.matcher(maps0.group(2));
-            int parsed = 0;
-            while (pair.find()) {
-                parsed++;
-                pairs.put(pair.group(1), pair.group(2));
-            }
-            // Fail closed: every entry of the map must be a plain "id","hash" pair. One the regex skips (a concatenated hash, a constant, ...)
+            // Fail closed: every entry of the map must be a plain "id","hash" pair. Any other argument (a concatenated hash, a constant, ...)
             // leaves the map unreadable (empty), so a family that references it stops the tool instead of being checked without that file.
-            int declared = declaredEntries(maps0.group(2));
-            maps.put(maps0.group(1), parsed == declared && pairs.size() == declared ? pairs : Map.of());
+            Map<String, String> pairs = parsePairs(maps0.group(2));
+            maps.put(maps0.group(1), pairs == null ? Map.of() : pairs);
         }
         Map<String, String> oit = maps.get("OIT");
         List<Family> families;
@@ -140,40 +135,53 @@ public final class CheckTerrainShaderHashes {
         return families;
     }
 
-    /** Entries of a Map.of argument list: its top level commas (outside strings, comments and nested calls) separate keys and values. -1 if malformed. */
-    private static int declaredEntries(final String body) {
-        int commas = 0;
+    /**
+     * The pairs of a Map.of argument list, split at its top level commas (outside strings, comments and nested calls). Null unless every argument is
+     * exactly one string literal (keys) or one 64 digit hex literal (values), with nothing else around it but whitespace and comments.
+     */
+    private static Map<String, String> parsePairs(final String body) {
+        List<String> arguments = new ArrayList<>();
+        StringBuilder argument = new StringBuilder();
         int depth = 0;
-        boolean any = false;
         for (int i = 0; i < body.length(); i++) {
             char c = body.charAt(i);
             if (c == '"') {
-                any = true;
+                int open = i;
                 for (i++; i < body.length() && body.charAt(i) != '"'; i++) {
                     if (body.charAt(i) == '\\') {
                         i++;
                     }
                 }
+                argument.append(body, open, Math.min(i + 1, body.length()));
             } else if (c == '/' && body.startsWith("//", i)) {
                 int end = body.indexOf('\n', i);
                 i = end < 0 ? body.length() : end;
+                argument.append(' ');
             } else if (c == '/' && body.startsWith("/*", i)) {
                 int end = body.indexOf("*/", i + 2);
                 i = end < 0 ? body.length() : end + 1;
-            } else if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
+                argument.append(' ');
             } else if (c == ',' && depth == 0) {
-                commas++;
-            } else if (!Character.isWhitespace(c)) {
-                any = true;
+                arguments.add(argument.toString().strip());
+                argument.setLength(0);
+            } else {
+                depth += c == '(' ? 1 : c == ')' ? -1 : 0;
+                argument.append(c);
             }
         }
-        if (!any) {
-            return 0;
+        arguments.add(argument.toString().strip());
+        if (arguments.size() % 2 != 0) {
+            return null;
         }
-        return commas % 2 == 1 ? (commas + 1) / 2 : -1;
+        Map<String, String> pairs = new LinkedHashMap<>();
+        for (int i = 0; i < arguments.size(); i += 2) {
+            Matcher key = KEY.matcher(arguments.get(i));
+            Matcher hash = HASH.matcher(arguments.get(i + 1));
+            if (!key.matches() || !hash.matches() || pairs.put(key.group(1), hash.group(1)) != null) {
+                return null;
+            }
+        }
+        return pairs;
     }
 
     /** Jar path of a pinned file id: "ns:path.vsh|fsh" is a shader, "ns:name.glsl" an include. */

@@ -131,8 +131,12 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static Generation generation(Family family,ShaderSource original) {
         synchronized(family) {
             java.util.List<Generation> known=GENERATIONS.computeIfAbsent(family.shader(),id->new java.util.concurrent.CopyOnWriteArrayList<>());
-            // A collected source can never be compiled again; its state lives on in ACTIVE as long as it is needed.
-            known.removeIf(old->old.source.get()==null);
+            // A collected source can never be compiled again: retire its state first (it stays in ACTIVE only as long as it is needed), then forget it.
+            known.removeIf(old->{
+                if(old.source.get()!=null) return false;
+                old.state.retire();
+                return true;
+            });
             Generation current=null;
             for(Generation candidate:known) if(candidate.source.get()==original) current=candidate;
             if(current==null) {
