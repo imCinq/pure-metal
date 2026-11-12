@@ -19,7 +19,7 @@ import java.util.zip.ZipFile;
  * jar, and decides per family exactly like the runtime proof: some ONE variant must match completely (each file against its own pinned hash).
  * Mixing hashes of different variants, or a hash pinned for another file, does not pass. When no variant matches, the closest one is printed with the
  * files that differ and their current hashes, which is what to pin after reading the diff of those files. Until pinned, that version keeps standard
- * math, reported in F3 and the settings as "Terrain math: Standard (...)".
+ * math, reported in F3 and the settings as "Fast terrain: Off (...)".
  *
  * Usage (from the repository root, no classpath needed):
  *   java tools/CheckTerrainShaderHashes.java <minecraft-client.jar> [sodium.jar] [path/to/TerrainShaderProof.java]

@@ -4,12 +4,12 @@ import io.github.imcinq.puremetal.Lang;
 import io.github.imcinq.puremetal.backend.FastTerrainMath;
 import net.minecraft.network.chat.Component;
 
-/** The plain-words state of terrain shader math ("Fast" or "Standard (reason)") for the F3 screen and Pure Metal's settings. */
+/** The plain-words state of terrain shader math ("On" or "Off (reason)") for the F3 screen and Pure Metal's settings. */
 public final class TerrainMathStatus {
     private TerrainMathStatus() {
     }
 
-    /** "Terrain math: Fast" or "Terrain math: Standard (reason)". */
+    /** "Fast terrain: On" or "Fast terrain: Off (reason)". */
     public static Component line() {
         String off = FastTerrainMath.offReason();
         if (off != null) {
