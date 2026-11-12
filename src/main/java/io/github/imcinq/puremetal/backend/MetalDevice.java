@@ -264,7 +264,6 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.gpuName;
     }
 
-    /** True when this session encodes commands through Metal 4 (decided when the device was created). */
     /** Starts a new per-pass timing measurement: clears the native totals and discards command buffers still in flight. */
     static void resetPassTiming() {
         MetalDevice device = current;
@@ -277,6 +276,7 @@ final class MetalDevice implements GpuDeviceBackend {
         return device != null && device.metal4Encoding;
     }
 
+    /** True when this session encodes commands through Metal 4 (decided when the device was created). */
     boolean metal4Encoding() {
         return this.metal4Encoding;
     }
@@ -303,7 +303,7 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.compileFunction(msl, label, constantId, constantValue, false);
     }
 
-    /** Same; relaxed compiles this one function with relaxed math (fragment shaders of proven stock terrain only). */
+    /** Same; relaxed compiles this one function with relaxed math (vertex and fragment shaders of proven stock terrain only). */
     long compileFunction(final MetalShaderTranslator.Result msl, final String label, final int constantId, final int constantValue, final boolean relaxed) {
         if (Debug.DUMP_SHADERS) {
             Debug.dumpShader(label, msl.source());

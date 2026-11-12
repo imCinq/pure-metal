@@ -316,6 +316,16 @@ public final class TerrainShaderProof implements AutoCloseable {
         // shaderc includes have an explicit byte length; they need not be NUL terminated.
         return content!=null && hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue());
     }
+    /** Sodium versions whose shaders are pinned in the Sodium variants of FAMILIES (the build metadata after "+" is ignored). Add a version here when pinning it. */
+    private static final java.util.Set<String> PINNED_SODIUM_VERSIONS=java.util.Set.of("0.9.2","0.9.3-beta.1","0.9.3-beta.5");
+    private static boolean pinnedSodiumVersion() {
+        try {
+            return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sodium")
+                .map(container->container.getMetadata().getVersion().getFriendlyString())
+                .map(version->PINNED_SODIUM_VERSIONS.contains(version.split("\\+",2)[0]))
+                .orElse(true);
+        } catch(RuntimeException unavailable) {return true;}
+    }
     private static boolean sourceStock(Family family,ShaderSource source) throws Exception {
         Identifier id=family.shader();
         for(Variant variant:family.variants()) {
@@ -388,7 +398,8 @@ public final class TerrainShaderProof implements AutoCloseable {
                 } else if(!oitValue(key,define.getValue())) return "unknown define "+key+"="+define.getValue();
             }
             if(!generation.stock(family,source)) {
-                why[0]=generation.state.sodium ? Why.SODIUM_VERSION : Why.PACK;
+                // Sodium shaders that differ on a Sodium version we pin were changed by a pack or mod; "unknown Sodium version" only when the version itself is not pinned.
+                why[0]=generation.state.sodium && !pinnedSodiumVersion() ? Why.SODIUM_VERSION : Why.PACK;
                 return "shader sources are not the stock ones (resource pack, mod, Iris or an unknown version)";
             }
             return null;

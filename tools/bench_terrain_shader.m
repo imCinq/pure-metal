@@ -1,5 +1,5 @@
 // Headless GPU benchmark: SPIRV-Cross translation of Sodium's terrain shader vs the hand written MSL
-// (src/main/resources/assets/puremetal/shaders/sodium_terrain.metal). No Java, no game, no window.
+// (tools/sodium_terrain.metal). No Java, no game, no window.
 //
 //   clang -fobjc-arc -O2 -Wall -Wextra -framework Metal -framework Foundation tools/bench_terrain_shader.m -o build/bench_terrain_shader
 //   build/bench_terrain_shader TRANSLATED_DIR [fly|ground] [solid|cutout] [frames] [width height]
@@ -267,7 +267,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     NSString *tVS = readFile([dir stringByAppendingPathComponent:[base stringByAppendingString:@"-vertex.metal"]]);
     NSString *tFS = readFile([dir stringByAppendingPathComponent:[base stringByAppendingString:@"-fragment.metal"]]);
     NSString *eoFS = readFile([dir stringByAppendingPathComponent:[base stringByAppendingString:@"-eo-fragment.metal"]]);
-    NSString *nativePath = argc > 7 ? [NSString stringWithUTF8String:argv[7]] : @"src/main/resources/assets/puremetal/shaders/sodium_terrain.metal";
+    NSString *nativePath = argc > 7 ? [NSString stringWithUTF8String:argv[7]] : @"tools/sodium_terrain.metal";
     NSString *nativeSource = readFile(nativePath);
     NSString *cut = cutout ? @"#define PM_CUTOUT 0.5\n" : @"";
 

@@ -1,9 +1,12 @@
 # Changelog
 
-## 0.4.5 (draft, not released)
+## 0.4.5
 
 **Improvements**
-- Terrain now compiles with relaxed shader math (vertex and fragment together, for vanilla and Sodium terrain), which cut terrain GPU time by about 40% in a same-session A/B on an M2 at 3420x2148 (13.9 to 8.5 ms per frame with Sodium, Metal 3). It applies only while the terrain shaders are the unmodified stock ones; resource packs, other mods and Iris that edit them keep strict math. `-Dpuremetal.fastTerrainMath=off` turns it off.
+- Fast terrain: terrain shaders now compile with relaxed math, vertex and fragment together, for vanilla terrain and for Sodium 0.9.2, 0.9.3-beta.1 and 0.9.3-beta.5. In a same-session A/B on an M2 at 3420x2148 with Sodium on Metal 3, GPU time per frame dropped from 11.1 to 5.6 ms (157 to 294 FPS). Results depend on the Mac, the world and the settings.
+- It only applies while the terrain shaders are the unmodified stock ones. If a resource pack or another mod changes them, or the Sodium version is not one of the above, terrain keeps the exact math. Removing the pack and reloading resources turns it back on without a restart.
+- It is off by default on macOS 14 and older, which lack the relaxed math mode it needs. `-Dpuremetal.fastTerrainMath=off` turns it off on any macOS.
+- The F3 screen and the top of Pure Metal's settings (Video Settings and the Sodium page) show `Fast terrain: On` or `Fast terrain: Off (reason)`.
 
 ## 0.4.4.1
 
