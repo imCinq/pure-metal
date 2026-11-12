@@ -66,7 +66,20 @@ public final class TerrainShaderProof implements AutoCloseable {
         }
         public void removeOnStrict(Member member) {
             members.remove(member);
-            if(retired && members.isEmpty()) ACTIVE.remove(this);
+            dispose();
+        }
+        /** Compilations that took this state in generation() and have not finished yet (they may still register a member or request the switch). */
+        private final java.util.concurrent.atomic.AtomicInteger inFlight=new java.util.concurrent.atomic.AtomicInteger();
+        void releaseCompile() {
+            inFlight.decrementAndGet();
+            dispose();
+        }
+        /**
+         * Stops polling a retired state only when nothing can need it any more: no compilation in flight, no member, and no switch left to publish
+         * (a refused pipeline of the old generation may still wait for it, so a requested switch is published first).
+         */
+        private void dispose() {
+            if(retired && inFlight.get()==0 && members.isEmpty() && (!requested || published)) ACTIVE.remove(this);
         }
         synchronized void request(String reason,Why kind) {
             if(requested) return;
@@ -85,8 +98,9 @@ public final class TerrainShaderProof implements AutoCloseable {
             generation++;
             published=true;
             LOGGER.info("Pure Metal: terrain shader family {} is strict now (generation {}, {} relaxed pipeline(s) switched together)",shader,generation,members.size());
+            dispose();
         }
-        void retire() {retired=true;if(members.isEmpty()) ACTIVE.remove(this);}
+        void retire() {retired=true;dispose();}
     }
     /** Every family state that may still have to publish a switch (the current generations and retired ones that still have pipelines). */
     private static final java.util.concurrent.CopyOnWriteArrayList<FamilyState> ACTIVE=new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -112,6 +126,8 @@ public final class TerrainShaderProof implements AutoCloseable {
                 GENERATIONS.put(family.shader(),current);
                 ACTIVE.add(current.state);
             }
+            // Taken under the same lock as retire(): a state with a compilation in flight is never dropped from ACTIVE until that compilation ends.
+            current.state.inFlight.incrementAndGet();
             return current;
         }
     }
@@ -181,7 +197,11 @@ public final class TerrainShaderProof implements AutoCloseable {
             new Variant("35b6b4307e2254adf90205733b34f96945939643b9fb6f0d8f3d69826cf74451","db2e196489be7a6be867d8ebfdfe96b58580c6de2b002dcedc3aebbe1e201abc",SODIUM_BETA5)}),
         new Family(Identifier.fromNamespaceAndPath("minecraft","core/block"),VANILLA_ALPHAS,new Variant[] {
             new Variant("3c2508a469916fa10c37d1e368b7de8e7505e289bb87c2134aaaf5fed992a9ea","bb8c8bbbae9227219e68ea3f0dab4ef6586c1dd4f745cab16c635c1553ed2ca9",BLOCK)})};
-    private TerrainShaderProof(int value,Accepted relaxed) {previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);}
+    private final FamilyState held;
+    private TerrainShaderProof(int value,Accepted relaxed) {
+        previous=CURRENT.get();CURRENT.set(value);previousRelaxed=RELAXED.get();RELAXED.set(relaxed);
+        held=relaxed==null ? null : relaxed.family();
+    }
     /** True while compiling exactly this CreateInfo, whose shader sources proved to be stock terrain (vanilla, Sodium or block), up to Pure Metal's own patch. */
     public static boolean relaxedMath(CreateInfo info) {return relaxedFamily(info)!=null;}
     /** The family state of the pipeline being compiled for this exact CreateInfo when its sources proved stock terrain (it may compile relaxed), else null. */
@@ -344,5 +364,9 @@ public final class TerrainShaderProof implements AutoCloseable {
             return null;
         } catch(Exception unsupported) {return "proof failed: "+unsupported;}
     }
-    @Override public void close() {CURRENT.set(previous);RELAXED.set(previousRelaxed);}
+    @Override public void close() {
+        CURRENT.set(previous);RELAXED.set(previousRelaxed);
+        // The compilation is over: its pipeline is registered (relaxed) or holds the state (refused).
+        if(held!=null) held.releaseCompile();
+    }
 }

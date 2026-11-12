@@ -17,7 +17,8 @@ public final class TerrainMathStatus {
         }
         boolean relaxed = false;
         for (TerrainShaderProof.FamilyState state : TerrainShaderProof.currentStates()) {
-            if (state.requested()) {
+            // Only a published switch counts: until then every pipeline of the family still draws relaxed.
+            if (state.strict()) {
                 return standard(switch (state.why()) {
                     case PACK -> "puremetal.terrainMath.reason.pack";
                     case SODIUM_VERSION -> "puremetal.terrainMath.reason.sodium";
