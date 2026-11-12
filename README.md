@@ -2,6 +2,7 @@
 
 A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Apple's Metal API instead of OpenGL. Works with Sodium.
 
+- Fast Terrain renders terrain much faster on the GPU, on by default (macOS 15+)
 - Terrain LOD simplifies distant terrain, leaves, plants and water at render distance 16+
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
@@ -9,13 +10,13 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Experimental Smooth Frame Pacing with VSync tries to show frames at an even pace
 - With VSync off, Minecraft can render at a higher FPS without screen tearing by default
 - Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
-- A Pure Metal line on the F3 screen for bug reports
+- A Pure Metal line on the F3 screen for bug reports, including the Fast Terrain status
 
 ![Before and after](docs/gallery/1-before-after.webp)
 
 ## Requirements
 
-- macOS 14 or newer on Apple Silicon (tested on M2). The optional Metal 4 mode needs macOS 26.
+- macOS 14 or newer on Apple Silicon (tested on M2). Fast Terrain needs macOS 15. The optional Metal 4 mode needs macOS 26.
 - Minecraft 26.3 with Fabric Loader 0.19+
 - Java 25
 - Sodium (optional)
@@ -29,6 +30,16 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 ## Install
 
 Download the jar from the [releases page](https://github.com/imCinq/Pure-Metal/releases) and put it in your `mods` folder. Leave Graphics API on Default. Find Pure Metal settings in Video Settings or on its page in Sodium.
+
+## Fast Terrain
+
+On by default, needs macOS 15. Terrain renders much faster on the GPU and looks the same.
+
+- **Benefit:** the GPU does about half the work per frame. On a MacBook Air M2 at fullscreen, FPS went from 157 to 294 with Sodium and from 86 to 154 without it, measured with Fast Terrain switched on and off in the same session at the same spot.
+- **Resource packs:** if a pack or mod changes the terrain shaders, Fast Terrain turns off on its own. Remove the pack and it comes back.
+- **Status:** the F3 screen and Pure Metal's settings show `Fast terrain: On` or `Off`.
+
+To turn it off, add `-Dpuremetal.fastTerrainMath=off` to your launcher's JVM arguments.
 
 ## Distant Horizons
 
@@ -54,19 +65,35 @@ Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is bu
 
 ## Benchmarking
 
-![Benchmarks](docs/gallery/2-benchmarks.webp)
+MacBook Air M2 (fanless), render distance 16, VSync off, no FPS cap. Every run starts at the same spot and view: 8 seconds of warm-up, then 20 seconds measured. Medians of 3 runs in alternating order.
+
+*Measured on Pure Metal 0.4.5 with its default settings.*
+
+**With Sodium (fullscreen 3420x2148)**
+
+| Renderer | Avg FPS | 1-in-50 slowest frame (p98) |
+| --- | --- | --- |
+| Pure Metal | <strong>216</strong> | <strong>5.0 ms</strong> |
+| OpenGL | 111 | 14.2 ms |
+
+**Without Sodium (fullscreen 3420x2148)**
+
+| Renderer | Avg FPS | 1-in-50 slowest frame (p98) |
+| --- | --- | --- |
+| Pure Metal | <strong>147</strong> | <strong>7.1 ms</strong> |
+| OpenGL | 58 | 25.0 ms |
 
 **Pure Metal vs mcopt (1920x1080)**
 
 | Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
 | --- | --- | --- |
-| Pure Metal + Sodium, 50% scale | <strong>465</strong> | <strong>2.8 ms</strong> |
-| mcopt | 464 | 4.5 ms |
-| Pure Metal + Sodium | 298 | 4.2 ms |
-| Pure Metal | 247 | 4.9 ms |
-| OpenGL (no Sodium) | 91 | 20.0 ms |
+| Pure Metal + Sodium, 50% scale | <strong>453</strong> | <strong>3.0 ms</strong> |
+| mcopt | 438 | 3.2 ms |
+| Pure Metal + Sodium | 352 | 3.3 ms |
+| Pure Metal | 216 | 5.0 ms |
+| OpenGL (no Sodium) | 60 | 23.7 ms |
 
-*Separate test from the benchmark above: one 20-second flight per renderer, same world and path. Pure Metal 0.4.2, Sodium 0.9.3-beta.1, mcopt 0.3.0-alpha.2.*
+*mcopt runs without Sodium, since the two are incompatible.*
 
 **Pure Metal on different Macs (more coming soon)**
 
