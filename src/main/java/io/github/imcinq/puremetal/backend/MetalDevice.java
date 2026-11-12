@@ -153,6 +153,11 @@ final class MetalDevice implements GpuDeviceBackend {
             MetalNative.deviceWorkingSet(handle) >> 20);
         current = this;
         this.configureMetal4();
+        if (io.github.imcinq.puremetal.bench.PassTiming.ENABLED) {
+            int timing = MetalNative.passTimingEnable(handle);
+            LOGGER.info("Pure Metal: per-pass GPU timing {}", timing > 0 ? "enabled (every render pass is its own encoder)"
+                : timing < 0 ? "unsupported on Metal 4" : "unsupported (no stage-boundary timestamp counters)");
+        }
         if (io.github.imcinq.puremetal.bench.SubmissionProfile.ENABLED) {
             LOGGER.info("Pure Metal: GPU stage diagnostics {}", MetalNative.profileEnable(handle) != 0 ? "enabled" : "unsupported");
         }
@@ -236,6 +241,12 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     /** True when this session encodes commands through Metal 4 (decided when the device was created). */
+    /** Whether the device in use runs the Metal 4 command model (the bench labels its pass-timing line by it). */
+    static boolean metal4Active() {
+        MetalDevice device = current;
+        return device != null && device.metal4Encoding;
+    }
+
     boolean metal4Encoding() {
         return this.metal4Encoding;
     }

@@ -38,6 +38,7 @@ public final class MetalNative {
     private static MethodHandle H_traceEnable, H_traceMark, H_traceRead, H_encEnable, H_encTake;
     private static MethodHandle H_takeGpuNs, H_takeGpuFrames, H_takeStat, H_takeUploadGpuNs, H_takeUploadGpuCommands;
     private static MethodHandle H_profileEnable, H_takeProfileStat;
+    private static MethodHandle H_passTimingEnable, H_takePassTiming, H_takePassTimingDropped;
     private static MethodHandle H_probeEnable, H_takeProbeStats, H_passProbeQueries, H_takePassTrace, H_setOption, H_metal4Enable, H_metal4Encoding;
     private static MethodHandle H_submit, H_completed, H_waitSubmit, H_waitIdle;
     // Resources.
@@ -125,6 +126,9 @@ public final class MetalNative {
         H_takeUploadGpuCommands = fn("pm_take_upload_gpu_commands", true, L, L);
         H_profileEnable = fn("pm_profile_enable", false, I, L);
         H_takeProfileStat = fn("pm_take_profile_stat", true, L, L, I);
+        H_passTimingEnable = fn("pm_pass_timing_enable", false, I, L);
+        H_takePassTiming = fn("pm_take_pass_timing", false, I, L, L, I);
+        H_takePassTimingDropped = fn("pm_take_pass_timing_dropped", true, L, L);
         H_probeEnable = fn("pm_probe_enable", false, I, L, L);
         H_takeProbeStats = fn("pm_take_probe_stats", false, null, L, L);
         H_takePassTrace = fn("pm_take_pass_trace", false, I, L, L, I);
@@ -815,6 +819,18 @@ public final class MetalNative {
 
     static int profileEnable(final long device) {
         try { return (int) H_profileEnable.invokeExact(device); }
+        catch (Throwable t) { throw rethrow(t); }
+    }
+    static int passTimingEnable(final long device) {
+        try { return (int) H_passTimingEnable.invokeExact(device); }
+        catch (Throwable t) { throw rethrow(t); }
+    }
+    static int takePassTiming(final long device, final long out, final int capacity) {
+        try { return (int) H_takePassTiming.invokeExact(device, out, capacity); }
+        catch (Throwable t) { throw rethrow(t); }
+    }
+    static long takePassTimingDropped(final long device) {
+        try { return (long) H_takePassTimingDropped.invokeExact(device); }
         catch (Throwable t) { throw rethrow(t); }
     }
     static int probeEnable(long device,long source) {

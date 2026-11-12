@@ -13,6 +13,11 @@ import org.slf4j.Logger;
  */
 public final class EncodeProfile {
     private static final Logger LOGGER = LogUtils.getLogger();
+
+    /** Whether the device in use runs the Metal 4 command model (the bench labels its pass-timing line by it). */
+    public static boolean metal4Active() {
+        return MetalDevice.metal4Active();
+    }
     /** Native slot order: ns per category (pass, bind, draw, copy, upscale, submit, present, present thread), then counts (the last one: Metal 4 queue barriers encoded). */
     private static final String[] CATEGORIES = {"pass", "bind", "draw", "copy", "upscale", "submit", "present"};
     private static final int PRESENT_THREAD = 7, DRAWS = 8, BUFFER_BINDS = 9, TEXTURE_BINDS = 10, ENCODERS = 11, CBS_CREATED = 12,

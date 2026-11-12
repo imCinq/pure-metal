@@ -148,6 +148,7 @@ loom {
 			if (project.hasProperty("noPresent")) vmArgs "-Dpuremetal.noPresent=true"
 			if (project.hasProperty("jfr")) vmArgs "-XX:StartFlightRecording=settings=profile,delay=" + positiveSeconds("jfrDelay", "15") + "s,duration=" + positiveSeconds("jfrDuration", "25") + "s,filename=" + file("build/play.jfr").absolutePath
 			if (project.hasProperty("profile")) vmArgs "-Dpuremetal.profile=true"
+			if (project.hasProperty("passTiming")) vmArgs "-Dpuremetal.passTiming=true"
 			if (project.hasProperty("metal4")) vmArgs "-Dpuremetal.metal4=" + project.property("metal4")
 			if (project.hasProperty("terrainDiagnostics")) vmArgs "-Dpuremetal.terrainDiagnostics=true"
 			if (project.hasProperty("terrainOcclusionProbe")) vmArgs "-Dpuremetal.terrainOcclusionProbe=true", "-Dpuremetal.terrainDiagnostics=true", "-Dpuremetal.profile=true"

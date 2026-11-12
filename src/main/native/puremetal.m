@@ -321,6 +321,20 @@ typedef struct PMDiagPiece {
     _Atomic uint64_t ns, count;
 } PMDiagPiece;
 
+// Per-pass GPU timing (-Dpuremetal.passTiming, Metal 3): one entry per distinct "label WxH[+d]", filled from completion handlers.
+#define PM_PASS_KEYS 96
+#define PM_PASS_MAX 256 // timed render encoders per command buffer; each takes 4 samples
+typedef struct PMPassKey {
+    char name[72];
+    _Atomic uint64_t count, vertexNs, fragmentNs, spanNs;
+} PMPassKey;
+// The sample buffer and keys of one command buffer's timed encoders. Owned by the command buffer's completion handler after commit.
+typedef struct PMPassSamples {
+    void *buffer; // retained id<MTLCounterSampleBuffer>
+    int used;
+    uint16_t key[PM_PASS_MAX];
+} PMPassSamples;
+
 typedef struct PMProbeQuery { int32_t x0, y0, x1, y1; float nearest; uint32_t uncertain; } PMProbeQuery;
 // One observation's buffers. The pyramid follows the depth size; queries and results hold the 4096 queries a submit can carry.
 // `busy` is set when the slot is picked for a submit and cleared by that submit's completion, the only moment it can be reused.
@@ -581,6 +595,12 @@ typedef struct PMDevice {
     unsigned profileSamples;
     _Atomic uint64_t profileStats[6]; // Metal 3: vertex ns, fragment ns, in-frame blit ns, then sample counts; Metal 4: render
                                       // encoder span and its fragment tail, then compute/blit
+    int passTiming; // -Dpuremetal.passTiming: every logical render pass gets its own encoder and stage-boundary samples
+    PMPassKey passKeys[PM_PASS_KEYS];
+    atomic_int passKeyCount;
+    void *passSamplesCb;       // retained command buffer that passSamples belongs to (compared by identity, never dereferenced)
+    PMPassSamples *passSamples; // the open command buffer's samples; only valid while passSamplesCb is the current buffer
+    _Atomic uint64_t passTimingDropped;
     void *probeRead, *probeReduce, *probeQuery;
     PMProbeSlot probeSlots[PM_PROBE_SLOTS]; // pooled per in-flight submission, reused only after its commit has finished
     PMProbeSlot *probeCur;                  // the slot encoded for the submit being recorded, handed to its completion in pm_submit
@@ -2142,6 +2162,155 @@ static id<MTLCounterSampleBuffer> profile_render(PMDevice *d, MTLRenderPassDescr
     return buffer;
 }
 
+// Opt-in per-pass timing: 1 enabled, 0 counters unavailable, -1 Metal 4 (not supported). Implies the stage-boundary counters.
+PM_EXPORT int pm_pass_timing_enable(PMDevice *d) {
+    @autoreleasepool {
+        if (d->m4) return -1;
+        if (!pm_profile_enable(d)) return 0;
+        d->passTiming = 1;
+        return 1;
+    }
+}
+
+static bool pass_ts_valid(uint64_t t) { return t != 0 && t != MTLCounterErrorValue; }
+
+// Completion of a command buffer: resolves its timed encoders into the per-key totals (and the vertex/fragment profile bins).
+static void pass_time_resolve(PMDevice *d, PMPassSamples *ps, bool completed) {
+    if (completed && ps->used > 0) {
+        NSUInteger n = (NSUInteger)ps->used * 4;
+        NSData *data = [PM_OBJ(id<MTLCounterSampleBuffer>, ps->buffer) resolveCounterRange:NSMakeRange(0, n)];
+        if (data.length >= n * sizeof(MTLCounterResultTimestamp)) {
+            const MTLCounterResultTimestamp *t = data.bytes;
+            for (int i = 0; i < ps->used; i++) {
+                uint64_t v0 = t[i * 4].timestamp, v1 = t[i * 4 + 1].timestamp, f0 = t[i * 4 + 2].timestamp, f1 = t[i * 4 + 3].timestamp;
+                uint64_t vertex = pass_ts_valid(v0) && pass_ts_valid(v1) && v1 >= v0 ? v1 - v0 : 0;
+                uint64_t fragment = pass_ts_valid(f0) && pass_ts_valid(f1) && f1 >= f0 ? f1 - f0 : 0;
+                uint64_t lo = UINT64_MAX, hi = 0;
+                const uint64_t all[4] = { v0, v1, f0, f1 };
+                for (int k = 0; k < 4; k++) {
+                    if (!pass_ts_valid(all[k])) continue;
+                    if (all[k] < lo) lo = all[k];
+                    if (all[k] > hi) hi = all[k];
+                }
+                uint64_t span = hi > lo ? hi - lo : 0;
+                PMPassKey *key = &d->passKeys[ps->key[i]];
+                atomic_fetch_add(&key->count, 1);
+                atomic_fetch_add(&key->vertexNs, vertex);
+                atomic_fetch_add(&key->fragmentNs, fragment);
+                atomic_fetch_add(&key->spanNs, span);
+                if (vertex) { atomic_fetch_add(&d->profileStats[0], vertex); atomic_fetch_add(&d->profileStats[3], 1); }
+                if (fragment) { atomic_fetch_add(&d->profileStats[1], fragment); atomic_fetch_add(&d->profileStats[4], 1); }
+            }
+        }
+    }
+    pm_release(ps->buffer);
+    free(ps);
+}
+
+// The samples of the command buffer being recorded; a new buffer starts a new sample set whose completion handler resolves it.
+static PMPassSamples *pass_samples_for(PMDevice *d, id<MTLCommandBuffer> cb) {
+    if (d->passSamples && d->passSamplesCb == (__bridge void *)cb) return d->passSamples;
+    static atomic_flag warned = ATOMIC_FLAG_INIT;
+    MTLCounterSampleBufferDescriptor *desc = [MTLCounterSampleBufferDescriptor new];
+    desc.counterSet = PM_OBJ(id<MTLCounterSet>, d->profileCounterSet);
+    desc.storageMode = MTLStorageModeShared;
+    desc.sampleCount = (NSUInteger)PM_PASS_MAX * 4;
+    NSError *error = nil;
+    id<MTLCounterSampleBuffer> buffer = [DEV_MTL(d) newCounterSampleBufferWithDescriptor:desc error:&error];
+    PMPassSamples *ps = buffer ? calloc(1, sizeof(PMPassSamples)) : NULL;
+    if (!ps) {
+        if (!atomic_flag_test_and_set(&warned)) NSLog(@"Pure Metal: pass timing could not create a counter sample buffer (%@); passes go untimed", error.localizedDescription);
+        return NULL;
+    }
+    ps->buffer = pm_retain(buffer);
+    pm_release(d->passSamplesCb);
+    d->passSamplesCb = pm_retain(cb);
+    d->passSamples = ps;
+    atomic_fetch_add(&d->handlers, 1);
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        @autoreleasepool {
+            pass_time_resolve(d, ps, done.status == MTLCommandBufferStatusCompleted);
+            atomic_fetch_sub(&d->handlers, 1);
+        }
+    }];
+    return ps;
+}
+
+// Index of the entry for "label WxH[+d]" (render thread only inserts); the last entry collects overflow.
+static int pass_time_key(PMDevice *d, const char *label, int width, int height, bool depth) {
+    char name[72];
+    char clean[48];
+    const char *src = label && label[0] ? label : "pass";
+    size_t n = 0;
+    for (; src[n] && n < sizeof(clean) - 1; n++) {
+        unsigned char c = (unsigned char)src[n];
+        clean[n] = c < 32 || c == 127 || c == '|' ? '_' : (char)c;
+    }
+    clean[n] = 0;
+    snprintf(name, sizeof(name), "%s %dx%d%s", clean, width, height, depth ? "+d" : "");
+    int count = atomic_load(&d->passKeyCount);
+    for (int i = 0; i < count; i++) if (strcmp(d->passKeys[i].name, name) == 0) return i;
+    if (count < PM_PASS_KEYS - 1) {
+        snprintf(d->passKeys[count].name, sizeof(d->passKeys[count].name), "%s", name);
+        atomic_store(&d->passKeyCount, count + 1);
+        return count;
+    }
+    if (count == PM_PASS_KEYS - 1) {
+        snprintf(d->passKeys[count].name, sizeof(d->passKeys[count].name), "(more passes)");
+        atomic_store(&d->passKeyCount, count + 1);
+    }
+    return PM_PASS_KEYS - 1;
+}
+
+// Attaches this encoder's four stage-boundary samples to `rp`. Returns whether a sample slot was taken; if the encoder then fails
+// to open, call pass_time_undo.
+static bool pass_time_begin(PMDevice *d, id<MTLCommandBuffer> cb, MTLRenderPassDescriptor *rp, const char *label, int width, int height,
+                            bool depth) {
+    PMPassSamples *ps = cb ? pass_samples_for(d, cb) : NULL;
+    if (!ps) return false;
+    if (ps->used >= PM_PASS_MAX) {
+        atomic_fetch_add(&d->passTimingDropped, 1);
+        return false;
+    }
+    int slot = ps->used++;
+    ps->key[slot] = (uint16_t)pass_time_key(d, label, width, height, depth);
+    MTLRenderPassSampleBufferAttachmentDescriptor *a = rp.sampleBufferAttachments[0];
+    a.sampleBuffer = PM_OBJ(id<MTLCounterSampleBuffer>, ps->buffer);
+    NSUInteger base = (NSUInteger)slot * 4;
+    a.startOfVertexSampleIndex = base;
+    a.endOfVertexSampleIndex = base + 1;
+    a.startOfFragmentSampleIndex = base + 2;
+    a.endOfFragmentSampleIndex = base + 3;
+    return true;
+}
+
+static void pass_time_undo(PMDevice *d) {
+    if (d->passSamples && d->passSamples->used > 0) d->passSamples->used--;
+}
+
+// Writes "name\tcount\tvertexNs\tfragmentNs\tspanNs" lines for the keys seen since the last call and resets them. Returns the length.
+PM_EXPORT int pm_take_pass_timing(PMDevice *d, char *out, int cap) {
+    int n = 0, count = atomic_load(&d->passKeyCount);
+    for (int i = 0; i < count; i++) {
+        PMPassKey *k = &d->passKeys[i];
+        uint64_t c = atomic_exchange(&k->count, 0);
+        if (!c) continue;
+        uint64_t v = atomic_exchange(&k->vertexNs, 0), f = atomic_exchange(&k->fragmentNs, 0), sp = atomic_exchange(&k->spanNs, 0);
+        int w = snprintf(out + n, (size_t)(cap - n), "%s\t%llu\t%llu\t%llu\t%llu\n", k->name, (unsigned long long)c,
+                         (unsigned long long)v, (unsigned long long)f, (unsigned long long)sp);
+        if (w < 0 || n + w >= cap) {
+            // No room: put the entry back so the next call reports it.
+            atomic_fetch_add(&k->count, c); atomic_fetch_add(&k->vertexNs, v);
+            atomic_fetch_add(&k->fragmentNs, f); atomic_fetch_add(&k->spanNs, sp);
+            break;
+        }
+        n += w;
+    }
+    return n;
+}
+
+PM_EXPORT uint64_t pm_take_pass_timing_dropped(PMDevice *d) { return atomic_exchange(&d->passTimingDropped, 0); }
+
 PM_EXPORT int pm_probe_enable(PMDevice *d, const char *source) {
     @autoreleasepool {
         if (d->probeQuery) return 1;
@@ -2620,8 +2789,10 @@ static void encode_clear(PMDevice *d, id<MTLTexture> t, NSUInteger level, NSUInt
         rp.colorAttachments[0].clearColor = MTLClearColorMake(color[0], color[1], color[2], color[3]);
     }
     id<MTLCommandBuffer> cb = raw_cb(d);
-    id<MTLCounterSampleBuffer> samples = profile_render(d, rp);
+    bool timed = d->passTiming && pass_time_begin(d, cb, rp, "clear", (int)t.width, (int)t.height, is_depth_format(t.pixelFormat));
+    id<MTLCounterSampleBuffer> samples = d->passTiming ? nil : profile_render(d, rp);
     id<MTLRenderCommandEncoder> encoder = new_render_encoder_kind(d, cb, rp, 1, "clear");
+    if (!encoder && timed) pass_time_undo(d);
     if (encoder) {
         PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
         profile_completion(d, cb, samples, true);
@@ -3086,6 +3257,7 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
         pm_release(d->txMotionPipeline);
         pm_release(d->txHandPipeline);
         pm_release(d->profileCounterSet);
+        pm_release(d->passSamplesCb);
         pm_release(d->probeRead);
         pm_release(d->probeReduce);
         pm_release(d->probeQuery);
@@ -3776,12 +3948,12 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         bool onlyDepthClear = depth && (depthLoad == 1 || foldDepth);
         for (int i = 0; i < colorCount && i < PM_MAX_COLOR; i++)
             if (usedColors[i] && (colorLoad[i] == 1 || foldColor[i])) onlyDepthClear = false;
-        if (d->parked && onlyDepthClear && d->clearCount == 0 && depth == d->parkedDepth
+        if (d->parked && !d->passTiming && onlyDepthClear && d->clearCount == 0 && depth == d->parkedDepth
                 && width == d->parkedWidth && height == d->parkedHeight
                 && memcmp(usedColors, d->parkedColors, sizeof(usedColors)) == 0
                 && fold_depth_clear(d, usedColors, depth, foldDepth ? foldDepthValue : clearDepth, width, height)) clears = 0;
         // Other pending clears must land before this pass (it may sample those textures), so no merging then.
-        if (d->parked && !clears && d->clearCount == 0 && depth == d->parkedDepth && width == d->parkedWidth && height == d->parkedHeight
+        if (d->parked && !d->passTiming && !clears && d->clearCount == 0 && depth == d->parkedDepth && width == d->parkedWidth && height == d->parkedHeight
                 && memcmp(usedColors, d->parkedColors, sizeof(usedColors)) == 0) {
             // Same attachments, nothing recorded in between and nothing to clear: keep drawing in the open encoder.
             d->stats[1]++;
@@ -3854,9 +4026,12 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
             }
         }
         id<MTLCommandBuffer> cb = current_cb(d);
-        id<MTLCounterSampleBuffer> samples = profile_render(d, rp);
+        // -Dpuremetal.passTiming: this logical pass is its own encoder (merging is off above) with its own samples.
+        bool timed = d->passTiming && pass_time_begin(d, cb, rp, label, width, height, depth != NULL);
+        id<MTLCounterSampleBuffer> samples = d->passTiming ? nil : profile_render(d, rp);
         id<MTLRenderCommandEncoder> enc = new_render_encoder(d, cb, rp, label);
         if (!enc) {
+            if (timed) pass_time_undo(d);
             if (backdropSrc) { // keep the stretch pending: the next pass or the frame's end lands it
                 d->bgSrc = backdropSrc;
                 d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(colors[backdropColor])));
@@ -4547,7 +4722,10 @@ static void flush_backdrop(PMDevice *d) {
         rp.colorAttachments[0].texture = dst;
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> e = new_render_encoder(d, raw_cb(d), rp, "Pure Metal upscale");
+        id<MTLCommandBuffer> bcb = raw_cb(d);
+        bool timed = d->passTiming && pass_time_begin(d, bcb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
+        id<MTLRenderCommandEncoder> e = new_render_encoder(d, bcb, rp, "Pure Metal upscale");
+        if (!e && timed) pass_time_undo(d);
         if (e) {
             e.label = @"Pure Metal upscale";
             d->stats[0]++;
@@ -5140,7 +5318,9 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
         rp.colorAttachments[0].texture = dst;
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        bool timed = d->passTiming && pass_time_begin(d, cb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
         id<MTLRenderCommandEncoder> e = new_render_encoder(d, cb, rp, "Pure Metal upscale");
+        if (!e && timed) pass_time_undo(d);
         if (!e) { set_error(d, @"could not create the upscale encoder"); return -1; }
         e.label = @"Pure Metal upscale";
         d->stats[0]++;

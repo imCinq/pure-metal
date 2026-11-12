@@ -192,6 +192,18 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 io.github.imcinq.puremetal.bench.Bench.surfaceBlockedNs += MetalNative.takeStat(this.handle(), 35);
                 io.github.imcinq.puremetal.bench.Bench.surfaceBlockedWaits += MetalNative.takeStat(this.handle(), 36);
                 io.github.imcinq.puremetal.bench.Bench.profileDroppedSamples += MetalNative.takeStat(this.handle(), 37);
+                if (io.github.imcinq.puremetal.bench.PassTiming.ENABLED) {
+                    io.github.imcinq.puremetal.bench.PassTiming.droppedPasses += MetalNative.takePassTimingDropped(this.handle());
+                    try (MemoryStack stack = MemoryStack.stackPush()) {
+                        ByteBuffer timing = stack.calloc(16384);
+                        int length = MetalNative.takePassTiming(this.handle(), MemoryUtil.memAddress(timing), timing.capacity());
+                        if (length > 0) {
+                            byte[] bytes = new byte[length];
+                            timing.get(0, bytes);
+                            io.github.imcinq.puremetal.bench.PassTiming.add(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+                        }
+                    }
+                }
                 try (MemoryStack stack = MemoryStack.stackPush()) {
                     ByteBuffer trace = stack.calloc(32768);
                     int length = MetalNative.takePassTrace(this.handle(), MemoryUtil.memAddress(trace), trace.capacity());
