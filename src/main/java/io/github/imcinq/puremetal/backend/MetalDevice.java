@@ -73,6 +73,8 @@ final class MetalDevice implements GpuDeviceBackend {
 
     /** Selects the terrain RGSS early-out shader variant (bit-identical either way); off only for the A/B tool. */
     volatile boolean rgssEarlyOut = true;
+    /** Use the hand written terrain shader where a pipeline has one (only switchable at run time in the nativeTerrain A/B). */
+    volatile boolean nativeTerrain = io.github.imcinq.puremetal.perf.NativeTerrainShader.ENABLED;
     /** Present the main target straight from its texture (it rotates to a spare) instead of through a staging copy. */
     volatile boolean directPresent = !"false".equals(System.getProperty("puremetal.directPresent"));
     /** Set once direct presenting proved unsafe or slow in this session; it stays off (the A/B switch can't revive it). */
@@ -110,6 +112,7 @@ final class MetalDevice implements GpuDeviceBackend {
         this.handle = handle;
         io.github.imcinq.puremetal.bench.Bench.registerAB("directPresent", on -> this.directPresent = on);
         io.github.imcinq.puremetal.bench.Bench.registerAB("rgssEarlyOut", on -> this.rgssEarlyOut = on);
+        io.github.imcinq.puremetal.bench.Bench.registerAB("nativeTerrain", on -> this.nativeTerrain = on);
         io.github.imcinq.puremetal.bench.Bench.registerAB("depthClearFold", on -> MetalNative.setOption(handle, 0, on ? 1 : 0));
         if (Boolean.getBoolean("puremetal.m4FullBarriers")) {
             MetalNative.setOption(handle, 1, 1); // Metal 4 only: every encoder waits for the whole queue (A/B against tracked barriers)

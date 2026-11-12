@@ -38,11 +38,14 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final long fragmentFunction;
     /** Fragment variant with the RGSS early-out specialized off; 0 unless the shader has it and the A/B tool is active. */
     private final long fragmentFunctionOff;
+    /** Hand written terrain shader pair, alternate to the translated one; only built for the nativeTerrain A/B (otherwise it is the primary pair). */
+    private final long nativeVertexFunction;
+    private final long nativeFragmentFunction;
     private final long depthState;
     private final int[] descriptor;
-    /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
-    private final long[][] states = new long[2][MetalConst.FORMAT_NAMES.size() + 1];
-    private final boolean[][] failedStates = new boolean[2][MetalConst.FORMAT_NAMES.size() + 1];
+    /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. Variant 0 primary, 1 RGSS early-out off, 2 native terrain. */
+    private final long[][] states = new long[3][MetalConst.FORMAT_NAMES.size() + 1];
+    private final boolean[][] failedStates = new boolean[3][MetalConst.FORMAT_NAMES.size() + 1];
     final int primitive;
     final boolean triangleFan;
     final boolean cull;
@@ -98,9 +101,12 @@ final class MetalPipeline implements BackendRenderPipeline {
         }
     }
 
-    private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff) {
+    private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
+                          final long nativeVertexFunction, final long nativeFragmentFunction) {
         this.device = device;
         this.fragmentFunctionOff = fragmentFunctionOff;
+        this.nativeVertexFunction = nativeVertexFunction;
+        this.nativeFragmentFunction = nativeFragmentFunction;
         this.name = info.name();
         this.uniforms = List.copyOf(info.uniforms());
         this.bindings = bindings;
@@ -128,58 +134,114 @@ final class MetalPipeline implements BackendRenderPipeline {
             : device.acquireDepthState(1, MetalConst.compare(depth.depthTest()), depth.writeDepth() ? 1 : 0);
     }
 
-    /** Compiles everything on the calling (worker) thread. Returns null, with a logged reason, if it can't. */
+    /**
+     * Compiles everything on the calling (worker) thread. Returns null, with a logged reason, if it can't. A pipeline proven to be
+     * the pinned Sodium solid terrain shader first tries the hand written MSL and falls back to the translation on any failure.
+     */
     static @Nullable MetalPipeline compile(final MetalDevice device, final CreateInfo info) {
+        if (io.github.imcinq.puremetal.perf.NativeTerrainShader.proven()) {
+            MetalPipeline pipeline = compile(device, info, true);
+            if (pipeline != null) {
+                return pipeline;
+            }
+        }
+        return compile(device, info, false);
+    }
+
+    private static @Nullable MetalPipeline compile(final MetalDevice device, final CreateInfo info, final boolean tryNative) {
         long vertexFunction = 0L;
         long fragmentFunction = 0L;
         long fragmentFunctionOff = 0L;
+        long nativeVertex = 0L;
+        long nativeFragment = 0L;
         MetalPipeline pipeline = null;
+        boolean nativePrimary = false;
         try {
             Bindings bindings = Bindings.of(info.uniforms());
             boolean points = info.primitiveTopology() == PrimitiveTopology.POINTS;
-            for (CreateInfo.Shader shader : info.shaders()) {
-                MetalShaderTranslator.Result msl = MetalShaderTranslator.translate(shader, bindings, points && shader.module().type() == ShaderType.VERTEX);
-                String label = info.name() + " (" + shader.name() + ") " + shader.module().type();
-                int constant = shader.module().type() != ShaderType.VERTEX
-                    && msl.source().contains("function_constant(" + io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID + ")")
-                    ? io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID : -1;
-                long function = constant >= 0 ? device.compileFunction(msl, label, constant, 1) : device.compileFunction(msl, label);
-                if (shader.module().type() == ShaderType.VERTEX) {
-                    device.releaseFunction(vertexFunction);
-                    vertexFunction = function;
-                } else {
-                    device.releaseFunction(fragmentFunction);
-                    fragmentFunction = function;
+            String nativeSource = tryNative && !points ? NativeTerrain.source(info, bindings) : null;
+            if (nativeSource != null) {
+                try {
+                    String label = info.name() + " (native terrain)";
+                    nativeVertex = device.compileFunction(new MetalShaderTranslator.Result(nativeSource, NativeTerrain.VERTEX_ENTRY), label + " VERTEX");
+                    nativeFragment = device.compileFunction(new MetalShaderTranslator.Result(nativeSource, NativeTerrain.FRAGMENT_ENTRY), label + " FRAGMENT");
+                } catch (RuntimeException e) {
+                    LOGGER.warn("Pure Metal: native terrain shader rejected for {}, the translated shader stays: {}", info.name(), Redact.home(e.getMessage()));
+                    device.releaseFunction(nativeVertex);
+                    device.releaseFunction(nativeFragment);
+                    nativeVertex = 0L;
+                    nativeFragment = 0L;
                 }
-                if (constant >= 0 && io.github.imcinq.puremetal.bench.Bench.abRequested()) {
-                    device.releaseFunction(fragmentFunctionOff);
-                    fragmentFunctionOff = 0L;
-                    fragmentFunctionOff = device.compileFunction(msl, label, constant, 0);
-                    LOGGER.info("Pure Metal: RGSS early-out A/B variants built for {}", info.name());
+            }
+            // Without the nativeTerrain A/B the hand written pair is the only one; with it both pairs are built and the device flag picks.
+            nativePrimary = nativeVertex != 0L && !io.github.imcinq.puremetal.perf.NativeTerrainShader.AB;
+            if (nativePrimary) {
+                vertexFunction = nativeVertex;
+                fragmentFunction = nativeFragment;
+                nativeVertex = 0L;
+                nativeFragment = 0L;
+                LOGGER.info("Pure Metal: native terrain shader built for {}", info.name());
+            } else {
+                if (nativeVertex != 0L) {
+                    LOGGER.info("Pure Metal: native terrain A/B variant built for {}", info.name());
+                }
+                for (CreateInfo.Shader shader : info.shaders()) {
+                    MetalShaderTranslator.Result msl = MetalShaderTranslator.translate(shader, bindings, points && shader.module().type() == ShaderType.VERTEX);
+                    String label = info.name() + " (" + shader.name() + ") " + shader.module().type();
+                    int constant = shader.module().type() != ShaderType.VERTEX
+                        && msl.source().contains("function_constant(" + io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID + ")")
+                        ? io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID : -1;
+                    long function = constant >= 0 ? device.compileFunction(msl, label, constant, 1) : device.compileFunction(msl, label);
+                    if (shader.module().type() == ShaderType.VERTEX) {
+                        device.releaseFunction(vertexFunction);
+                        vertexFunction = function;
+                    } else {
+                        device.releaseFunction(fragmentFunction);
+                        fragmentFunction = function;
+                    }
+                    if (constant >= 0 && io.github.imcinq.puremetal.bench.Bench.abRequested()) {
+                        device.releaseFunction(fragmentFunctionOff);
+                        fragmentFunctionOff = 0L;
+                        fragmentFunctionOff = device.compileFunction(msl, label, constant, 0);
+                        LOGGER.info("Pure Metal: RGSS early-out A/B variants built for {}", info.name());
+                    }
                 }
             }
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff);
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, nativeVertex, nativeFragment);
             // Build the variants up front so the render thread never stalls on a first draw. Vanilla only uses
             // D32_FLOAT depth targets; pipelines without depth testing still get drawn into passes that have one.
             int d32 = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.D32_FLOAT);
-            for (int variant = 0; variant < (fragmentFunctionOff != 0L ? 2 : 1); variant++) {
-                pipeline.state(info.depthStencilState() != null ? d32 : NO_DEPTH, variant);
+            for (int variant = 0; variant < 3; variant++) {
+                if ((variant == 1 && fragmentFunctionOff == 0L) || (variant == 2 && nativeVertex == 0L)) {
+                    continue;
+                }
+                long state = pipeline.state(info.depthStencilState() != null ? d32 : NO_DEPTH, variant);
                 if (info.depthStencilState() == null) {
-                    pipeline.state(d32, variant);
+                    state = pipeline.state(d32, variant);
+                }
+                if ((nativePrimary || variant == 2) && state == 0L) {
+                    // Metal refused the hand written pair in this pipeline (its reason is logged above): use the translation.
+                    throw new IllegalStateException("native terrain pipeline state rejected");
                 }
             }
             return pipeline;
         } catch (RuntimeException e) {
-            LOGGER.error("Pure Metal couldn't compile pipeline {}: {}", info.name(), Redact.home(e.getMessage()));
+            if (nativePrimary || nativeVertex != 0L) {
+                LOGGER.warn("Pure Metal: native terrain shader unusable for {}, the translated shader stays: {}", info.name(), Redact.home(e.getMessage()));
+            } else {
+                LOGGER.error("Pure Metal couldn't compile pipeline {}: {}", info.name(), Redact.home(e.getMessage()));
+            }
             if (pipeline != null) {
                 pipeline.close();
             } else {
                 device.releaseFunction(vertexFunction);
                 device.releaseFunction(fragmentFunction);
                 device.releaseFunction(fragmentFunctionOff);
+                device.releaseFunction(nativeVertex);
+                device.releaseFunction(nativeFragment);
             }
             return null;
         }
@@ -234,6 +296,9 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
+        if (this.nativeVertexFunction != 0L && this.device.nativeTerrain) {
+            return this.state(depthFormat, 2);
+        }
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);
     }
 
@@ -250,7 +315,8 @@ final class MetalPipeline implements BackendRenderPipeline {
             ByteBuffer label = stack.UTF8(this.name);
             ByteBuffer err = stack.calloc(1024);
             state = MetalNative.pipelineCreate(
-                this.device.handle(), this.vertexFunction, variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
+                this.device.handle(), variant == 2 ? this.nativeVertexFunction : this.vertexFunction,
+                variant == 2 ? this.nativeFragmentFunction : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
                 org.lwjgl.system.MemoryUtil.memAddress(desc), org.lwjgl.system.MemoryUtil.memAddress(label),
                 org.lwjgl.system.MemoryUtil.memAddress(err), err.capacity()
             );
@@ -298,6 +364,8 @@ final class MetalPipeline implements BackendRenderPipeline {
             this.device.releaseFunction(this.vertexFunction);
             this.device.releaseFunction(this.fragmentFunction);
             this.device.releaseFunction(this.fragmentFunctionOff);
+            this.device.releaseFunction(this.nativeVertexFunction);
+            this.device.releaseFunction(this.nativeFragmentFunction);
         }
     }
 }
