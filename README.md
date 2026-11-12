@@ -97,13 +97,14 @@ MacBook Air M2 (fanless), render distance 16, VSync off, no FPS cap. Every run s
 
 **Pure Metal on different Macs (more coming soon)**
 
-| Mac | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
-| --- | --- | --- | --- |
-| M5 Max, 48 GB | <strong>940.9</strong> | <strong>1.9 ms</strong> | <strong>3.8 ms</strong> |
-| M3 Max, 36 GB | 551.6 | 3.2 ms | 6.3 ms |
-| M2 Air, 16 GB | 154.6 | 11.8 ms | 22.6 ms |
+| Mac | Pure Metal | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
+| --- | --- | --- | --- | --- |
+| M5 Max, 48 GB | 0.4.5 | <strong>1043.4</strong> | <strong>1.4 ms</strong> | <strong>3.2 ms</strong> |
+| M5 Max, 48 GB | 0.4.4.1 | 940.9 | 1.9 ms | 3.8 ms |
+| M3 Max, 36 GB | 0.4.4.1 | 551.6 | 3.2 ms | 6.3 ms |
+| M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
 
-*Pure Metal 0.4.4.1, Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers.*
+*Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers.*
 
 `tools/bench.py` compares graphics APIs on your own Mac:
 
