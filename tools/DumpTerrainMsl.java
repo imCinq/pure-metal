@@ -20,8 +20,11 @@ import org.lwjgl.util.spvc.SpvcReflectedResource;
  * Sodium terrain shaders, using the same shaderc options as the frontend's GlslCompiler and the same SPIRV-Cross options
  * as MetalShaderTranslator. Needs only the LWJGL core, shaderc and spvc jars (plus macOS natives) on the class path.
  *
- * java -cp lwjgl.jar:lwjgl-shaderc.jar:lwjgl-spvc.jar:natives... tools/DumpTerrainMsl.java SODIUM_SHADER_DIR MC_INCLUDE_DIR OUT_DIR
+ * java -cp lwjgl.jar:lwjgl-shaderc.jar:lwjgl-spvc.jar:natives... tools/DumpTerrainMsl.java SODIUM_SHADER_DIR MC_INCLUDE_DIR OUT_DIR [vanilla]
  *   SODIUM_SHADER_DIR = assets/sodium/shaders extracted from the Sodium jar; MC_INCLUDE_DIR = directory holding oit.glsl.
+ *   With "vanilla" the first argument is assets/minecraft/shaders (core/terrain.vsh/fsh, from the Minecraft client jar) and the
+ *   second its include directory; that is what Pure Metal draws terrain with. Bindings: Globals 0, Projection 1, TerrainUniform 2,
+ *   Fog 3 (buffers); Sampler0 texture 0 / sampler 0, Sampler2 texture 1 / sampler 1.
  */
 public final class DumpTerrainMsl {
     /** The unified uniform order the frontend would produce for the Sodium terrain pipeline (vertex first, then fragment). */
@@ -32,7 +35,40 @@ public final class DumpTerrainMsl {
     record Variant(String name, Map<String, String> defines, boolean earlyOut) {
     }
 
+    private static boolean vanilla;
+
+    /** Vanilla core/terrain with MULTIDRAW_TERRAIN (chunk position and visibility are vertex attributes), plain and with the RGSS early-out. */
+    private static void mainVanilla(final Path shaders, final Path include, final Path out) throws Exception {
+        String flags = "MULTIDRAW_TERRAIN,USE_FOG";
+        List<Variant> variants = List.of(
+            new Variant("vsolid", def(flags), false), new Variant("vsolid-eo", def(flags), true),
+            new Variant("vcutout", def(flags + ",ALPHA_CUTOUT=0.5"), false), new Variant("vcutout-eo", def(flags + ",ALPHA_CUTOUT=0.5"), true));
+        for (Variant v : variants) {
+            for (boolean fragment : new boolean[] {false, true}) {
+                String source = inline(Files.readString(shaders.resolve("core/terrain." + (fragment ? "fsh" : "vsh"))), shaders, include);
+                if (fragment && v.earlyOut()) {
+                    String early = Files.readString(Path.of("src/main/resources/assets/puremetal/shaders/rgss_early_out_vanilla.glsl"));
+                    String old = "(UseRgss == 1 ? sampleRGSS(Sampler0, texCoord0, 1.0f / TextureSize) : sampleNearest(Sampler0, texCoord0, 1.0f / TextureSize))";
+                    if (!source.contains(old)) {
+                        throw new IllegalStateException("vanilla sample expression not found");
+                    }
+                    source = source.replace("void main() {", early + "\nvoid main() {").replace(old, old.replace("sampleRGSS(", "pmSampleRGSS("));
+                }
+                byte[] spirv = compile(source, fragment, v.defines());
+                Files.writeString(out.resolve(v.name() + (fragment ? "-fragment.metal" : "-vertex.metal")), translate(spirv, fragment));
+            }
+            System.out.println("dumped " + v.name());
+        }
+    }
+
     public static void main(final String[] args) throws Exception {
+        if (args.length > 3 && args[3].equals("vanilla")) {
+            vanilla = true;
+            Path out = Path.of(args[2]);
+            Files.createDirectories(out);
+            mainVanilla(Path.of(args[0]), Path.of(args[1]), out);
+            return;
+        }
         Path sodium = Path.of(args[0]);
         Path mc = Path.of(args[1]);
         Path out = Path.of(args[2]);
@@ -97,7 +133,7 @@ public final class DumpTerrainMsl {
             Shaderc.shaderc_compile_options_add_macro_definition(options, e.getKey(), e.getValue());
         }
         long result = Shaderc.shaderc_compile_into_spv(compiler, source, fragment ? Shaderc.shaderc_glsl_fragment_shader : Shaderc.shaderc_glsl_vertex_shader,
-            "block_layer_opaque", "main", options);
+            vanilla ? "terrain" : "block_layer_opaque", "main", options);
         if (Shaderc.shaderc_result_get_compilation_status(result) != Shaderc.shaderc_compilation_status_success) {
             throw new IllegalStateException(Shaderc.shaderc_result_get_error_message(result));
         }
@@ -148,14 +184,16 @@ public final class DumpTerrainMsl {
                     SpvcReflectedResource r = SpvcReflectedResource.create(ptr.get(0) + (long) i * SpvcReflectedResource.SIZEOF);
                     String name = r.nameString();
                     int glslangBinding = Spvc.spvc_compiler_get_decoration(compiler, r.id(), 33);
-                    int unified = ORDER.indexOf(name);
-                    if (unified < 0) {
+                    if (vanilla) {
+                        System.out.println("  " + (fragment ? "fragment" : "vertex") + " resource " + name + " glslang binding " + glslangBinding);
+                    } else if (ORDER.indexOf(name) < 0) {
                         throw new IllegalStateException("unexpected resource " + name);
                     }
                     // Counters like MetalPipeline.Bindings.of: buffers, textures (incl. texel buffers) and samplers count separately.
-                    int buffer = 0;
-                    int texture = textureIndex(name);
-                    int sampler = samplerIndex(name);
+                    boolean ubo = type == Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER;
+                    int buffer = vanilla && ubo ? vanillaBuffer(name) : 0;
+                    int texture = vanilla ? (ubo ? 0 : vanillaTexture(name)) : textureIndex(name);
+                    int sampler = vanilla ? (ubo ? 0 : vanillaTexture(name)) : samplerIndex(name);
                     Spvc.spvc_msl_resource_binding_init(binding);
                     binding.stage(model).desc_set(0).binding(glslangBinding).msl_buffer(buffer).msl_texture(texture).msl_sampler(sampler);
                     check(Spvc.spvc_compiler_msl_add_resource_binding(compiler, binding));
@@ -174,6 +212,24 @@ public final class DumpTerrainMsl {
             }
             MemoryUtil.memFree(raw);
         }
+    }
+
+    private static int vanillaBuffer(final String name) {
+        return switch (name) {
+            case "Globals" -> 0;
+            case "Projection" -> 1;
+            case "TerrainUniform" -> 2;
+            case "Fog" -> 3;
+            default -> throw new IllegalStateException("unexpected uniform buffer " + name);
+        };
+    }
+
+    private static int vanillaTexture(final String name) {
+        return switch (name) {
+            case "Sampler0" -> 0;
+            case "Sampler2" -> 1;
+            default -> throw new IllegalStateException("unexpected sampler " + name);
+        };
     }
 
     /** u_Globals is the only uniform buffer (buffer 0); textures are numbered in ORDER among non-buffer uniforms. */
