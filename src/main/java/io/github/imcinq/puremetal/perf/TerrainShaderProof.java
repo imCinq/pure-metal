@@ -19,6 +19,15 @@ import org.lwjgl.util.shaderc.ShadercIncludeResult;
 public final class TerrainShaderProof implements AutoCloseable {
     private static final ThreadLocal<Integer> CURRENT=ThreadLocal.withInitial(()->0);
     private final int previous;
+    private final boolean previousStock;
+    private static final ThreadLocal<Boolean> STOCK=ThreadLocal.withInitial(()->false);
+    /** The extra includes the OIT variants pull in; with VANILLA they cover everything minecraft:core/terrain can reach. */
+    private static final Map<String,String> OIT=Map.of(
+        "minecraft:oit_common.glsl","bd5f404aea0c8b75f32471e763332fdfa81a30106dfd1318a3fec0a82e1c7720",
+        "minecraft:oit_depth_sample.glsl","fcf65ad828e0a079652096ceea20da9367ef38c53d77e88da74a7f00718e8b90",
+        "minecraft:oit_depth_bounds.glsl","892f076e405e784f44da5f1a59c4aedeffe45b6a1b56ef733ff515c3218c4a04",
+        "minecraft:oit_add_transmittance.glsl","79f5b662a4550428757bac08b9e725dae775d9efc73416b96940009c8ae2a8f4",
+        "minecraft:oit_sample.glsl","92c2735235ac4c7122230baeac027b24784d0d2d4cc0b3740c2ca97855832b90");
     private static final Map<String,String> VANILLA=Map.of(
         "minecraft:chunksection.glsl","8bcd0bc9365f6d5cf44254a27247737ed88637b9a917ebf9a574ab8fdd9af4ae",
         "minecraft:terrainglobals.glsl","92fce71e096e2bab975c192b0b52c433a1fe2694c13259e2d4654bde3814aac9",
@@ -34,7 +43,9 @@ public final class TerrainShaderProof implements AutoCloseable {
         "sodium:globals.glsl","59ab558e82d31ea2a0a2b2d95b6a63e4cf960d676cc73c309b7c17e47d02d057",
         "sodium:chunk_material.glsl","456e00dc7904a2e003fe4e1f06b2023bc3189cb7259fec77ba3e854fc4f7a452",
         "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
-    private TerrainShaderProof(int value) {previous=CURRENT.get();CURRENT.set(value);}
+    private TerrainShaderProof(int value,boolean stock) {previous=CURRENT.get();CURRENT.set(value);previousStock=STOCK.get();STOCK.set(stock);}
+    /** True while compiling a pipeline whose vertex and fragment shaders and every include are byte identical to stock vanilla terrain. */
+    public static boolean stockTerrain() {return STOCK.get();}
     public static int current() {return CURRENT.get();}
     public static boolean eligibleShape(DepthStencilState depth,PrimitiveTopology topology,PolygonMode polygon) {
         return depth!=null && depth.writeDepth() && (depth.depthTest()==CompareOp.LESS_THAN || depth.depthTest()==CompareOp.LESS_THAN_OR_EQUAL
@@ -51,7 +62,7 @@ public final class TerrainShaderProof implements AutoCloseable {
                     pipeline.getLocation(),pipeline.getShaders(),proof,pipeline.getShaderDefines());
             }
         }
-        return new TerrainShaderProof(proof);
+        return new TerrainShaderProof(proof,stock(pipeline,source));
     }
     private static boolean hash(String value,String expected) throws Exception {
         return value!=null && HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))).equals(expected);
@@ -86,5 +97,32 @@ public final class TerrainShaderProof implements AutoCloseable {
             return sodium?2:1;
         } catch(Exception unsupported) {return 0;}
     }
-    @Override public void close() {CURRENT.set(previous);}
+    /** Stock vanilla terrain shader (any define set the vanilla terrain pipelines use, including cutout and OIT), no resource pack or mod edits. */
+    private static boolean stock(RenderPipeline pipeline,ShaderSource borrowed) {
+        try {
+            ShaderSource source=LodTextureRepeat.originalSource(borrowed);
+            Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
+            if(!Identifier.fromNamespaceAndPath("minecraft","core/terrain").equals(vertex) || !vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return false;
+            for(String flag:pipeline.getShaderDefines().flags()) {
+                if(!(flag.startsWith("OIT_") || java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN").contains(flag))) return false;
+            }
+            if(!java.util.Set.of("ALPHA_CUTOUT").containsAll(pipeline.getShaderDefines().values().keySet())) return false;
+            if(!hash(source.getShader(vertex,ShaderType.VERTEX),"001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0")
+                || !hash(source.getShader(vertex,ShaderType.FRAGMENT),"e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9")) return false;
+            for(var group:java.util.List.of(VANILLA,OIT)) {
+                for(var entry:group.entrySet()) {
+                    var include=source.getInclude(Identifier.parse(entry.getKey()));
+                    if(include==null || include.includeResultPtr()==0) return false;
+                    var result=ShadercIncludeResult.create(include.includeResultPtr());
+                    long length=result.content_length();
+                    long address=org.lwjgl.system.MemoryUtil.memGetAddress(result.address()+ShadercIncludeResult.CONTENT);
+                    if(address==0 || length<=0 || length>1048576) return false;
+                    var content=org.lwjgl.system.MemoryUtil.memByteBuffer(address,(int)length);
+                    if(content==null || !hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue())) return false;
+                }
+            }
+            return true;
+        } catch(Exception unsupported) {return false;}
+    }
+    @Override public void close() {CURRENT.set(previous);STOCK.set(previousStock);}
 }

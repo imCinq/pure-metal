@@ -75,7 +75,10 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return (Boolean.getBoolean("puremetal.terrainDiagnostics") || Boolean.getBoolean("puremetal.terrainOcclusionProbe"))
                 && (mixinClassName.contains(".diagnostics.sodium.") == SODIUM);
         }
-        if (mixinClassName.endsWith(".perf.TerrainShaderProofMixin")) return Boolean.getBoolean("puremetal.terrainOcclusionProbe");
+        // The proof also gates relaxed terrain fragment math (FastTerrainMath), which is on by default.
+        if (mixinClassName.endsWith(".perf.TerrainShaderProofMixin")) {
+            return Boolean.getBoolean("puremetal.terrainOcclusionProbe") || !"off".equalsIgnoreCase(System.getProperty("puremetal.fastTerrainMath"));
+        }
         if (mixinClassName.endsWith(".perf.PalettedContainerMixin")) {
             return !Boolean.getBoolean("puremetal.disablePaletteScratch");
         }

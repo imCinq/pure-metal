@@ -38,11 +38,15 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final long fragmentFunction;
     /** Fragment variant with the RGSS early-out specialized off; 0 unless the shader has it and the A/B tool is active. */
     private final long fragmentFunctionOff;
+    /** Fragment variant with relaxed math, alternate to the safe one; only built (stock terrain, allowlisted) for the fastTerrain A/B. */
+    private final long fragmentFunctionFast;
+    /** FastTerrainMath group of this pipeline (1 opaque, 2 translucent), used to pick the A/B variant. */
+    private final int fastGroup;
     private final long depthState;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
-    private final long[][] states = new long[2][MetalConst.FORMAT_NAMES.size() + 1];
-    private final boolean[][] failedStates = new boolean[2][MetalConst.FORMAT_NAMES.size() + 1];
+    private final long[][] states = new long[3][MetalConst.FORMAT_NAMES.size() + 1];
+    private final boolean[][] failedStates = new boolean[3][MetalConst.FORMAT_NAMES.size() + 1];
     final int primitive;
     final boolean triangleFan;
     final boolean cull;
@@ -98,9 +102,12 @@ final class MetalPipeline implements BackendRenderPipeline {
         }
     }
 
-    private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff) {
+    private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
+                          final long fragmentFunctionFast, final int fastGroup) {
         this.device = device;
         this.fragmentFunctionOff = fragmentFunctionOff;
+        this.fragmentFunctionFast = fragmentFunctionFast;
+        this.fastGroup = fastGroup;
         this.name = info.name();
         this.uniforms = List.copyOf(info.uniforms());
         this.bindings = bindings;
@@ -133,7 +140,13 @@ final class MetalPipeline implements BackendRenderPipeline {
         long vertexFunction = 0L;
         long fragmentFunction = 0L;
         long fragmentFunctionOff = 0L;
+        long fragmentFunctionFast = 0L;
         MetalPipeline pipeline = null;
+        // Relaxed fragment math only for allowlisted terrain pipelines whose shader sources proved to be the stock ones.
+        int group = FastTerrainMath.group(info.name());
+        boolean stock = group != 0 && io.github.imcinq.puremetal.perf.TerrainShaderProof.stockTerrain();
+        boolean ab = stock && FastTerrainMath.AB;
+        boolean relaxedPrimary = stock && !ab && FastTerrainMath.configured(group);
         try {
             Bindings bindings = Bindings.of(info.uniforms());
             boolean points = info.primitiveTopology() == PrimitiveTopology.POINTS;
@@ -143,13 +156,22 @@ final class MetalPipeline implements BackendRenderPipeline {
                 int constant = shader.module().type() != ShaderType.VERTEX
                     && msl.source().contains("function_constant(" + io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID + ")")
                     ? io.github.imcinq.puremetal.lod.LodTextureRepeat.EARLY_OUT_CONSTANT_ID : -1;
-                long function = constant >= 0 ? device.compileFunction(msl, label, constant, 1) : device.compileFunction(msl, label);
+                boolean fragment = shader.module().type() != ShaderType.VERTEX;
+                long function = constant >= 0
+                    ? device.compileFunction(msl, label, constant, 1, relaxedPrimary && fragment)
+                    : device.compileFunction(msl, label, -1, 0, relaxedPrimary && fragment);
                 if (shader.module().type() == ShaderType.VERTEX) {
                     device.releaseFunction(vertexFunction);
                     vertexFunction = function;
                 } else {
                     device.releaseFunction(fragmentFunction);
                     fragmentFunction = function;
+                }
+                if (ab && fragment) {
+                    device.releaseFunction(fragmentFunctionFast);
+                    fragmentFunctionFast = 0L;
+                    fragmentFunctionFast = constant >= 0 ? device.compileFunction(msl, label, constant, 1, true) : device.compileFunction(msl, label, -1, 0, true);
+                    LOGGER.info("Pure Metal: relaxed math A/B variant built for {} (group {})", info.name(), group);
                 }
                 if (constant >= 0 && io.github.imcinq.puremetal.bench.Bench.abRequested()) {
                     device.releaseFunction(fragmentFunctionOff);
@@ -161,11 +183,17 @@ final class MetalPipeline implements BackendRenderPipeline {
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff);
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, group);
+            if (relaxedPrimary) {
+                LOGGER.info("Pure Metal: relaxed fragment math for {} (group {})", info.name(), group);
+            }
             // Build the variants up front so the render thread never stalls on a first draw. Vanilla only uses
             // D32_FLOAT depth targets; pipelines without depth testing still get drawn into passes that have one.
             int d32 = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.D32_FLOAT);
-            for (int variant = 0; variant < (fragmentFunctionOff != 0L ? 2 : 1); variant++) {
+            for (int variant = 0; variant < 3; variant++) {
+                if ((variant == 1 && fragmentFunctionOff == 0L) || (variant == 2 && fragmentFunctionFast == 0L)) {
+                    continue;
+                }
                 pipeline.state(info.depthStencilState() != null ? d32 : NO_DEPTH, variant);
                 if (info.depthStencilState() == null) {
                     pipeline.state(d32, variant);
@@ -180,6 +208,7 @@ final class MetalPipeline implements BackendRenderPipeline {
                 device.releaseFunction(vertexFunction);
                 device.releaseFunction(fragmentFunction);
                 device.releaseFunction(fragmentFunctionOff);
+                device.releaseFunction(fragmentFunctionFast);
             }
             return null;
         }
@@ -234,6 +263,9 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
+        if (this.fragmentFunctionFast != 0L && (this.fastGroup == 1 ? this.device.fastTerrainOpaque : this.fastGroup == 2 && this.device.fastTerrainTranslucent)) {
+            return this.state(depthFormat, 2);
+        }
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);
     }
 
@@ -250,7 +282,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             ByteBuffer label = stack.UTF8(this.name);
             ByteBuffer err = stack.calloc(1024);
             state = MetalNative.pipelineCreate(
-                this.device.handle(), this.vertexFunction, variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
+                this.device.handle(), this.vertexFunction, variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
                 org.lwjgl.system.MemoryUtil.memAddress(desc), org.lwjgl.system.MemoryUtil.memAddress(label),
                 org.lwjgl.system.MemoryUtil.memAddress(err), err.capacity()
             );
@@ -298,6 +330,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             this.device.releaseFunction(this.vertexFunction);
             this.device.releaseFunction(this.fragmentFunction);
             this.device.releaseFunction(this.fragmentFunctionOff);
+            this.device.releaseFunction(this.fragmentFunctionFast);
         }
     }
 }

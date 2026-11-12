@@ -41,8 +41,9 @@ import org.slf4j.Logger;
 
 final class MetalDevice implements GpuDeviceBackend {
     /**
-     * Strict IEEE shader math (GLSL semantics). -Dpuremetal.safeMath=false compiles with relaxed math instead; measured
-     * no faster on an M2, so safe stays the default.
+     * Strict IEEE shader math (GLSL semantics) for every shader. -Dpuremetal.safeMath=false compiles everything with relaxed
+     * math instead, which is too risky for post effects, sky, fog and GUI; the stock terrain fragment shaders get relaxed math
+     * selectively, see {@link FastTerrainMath} (-Dpuremetal.fastTerrainMath=off|opaque|all).
      */
     private static final boolean SAFE_MATH = !"false".equals(System.getProperty("puremetal.safeMath"));
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -73,6 +74,10 @@ final class MetalDevice implements GpuDeviceBackend {
 
     /** Selects the terrain RGSS early-out shader variant (bit-identical either way); off only for the A/B tool. */
     volatile boolean rgssEarlyOut = true;
+    /** Fragment shaders of the opaque terrain pipelines (solid, cutout) use relaxed math; set by -Dpuremetal.fastTerrainMath, or by the fastTerrain A/B. */
+    volatile boolean fastTerrainOpaque = !FastTerrainMath.AB && FastTerrainMath.MODE != FastTerrainMath.Mode.OFF;
+    /** Same for the translucent and OIT terrain pipelines (the second group; only the "all" mode and the fastTerrainAll A/B). */
+    volatile boolean fastTerrainTranslucent = !FastTerrainMath.AB && FastTerrainMath.MODE == FastTerrainMath.Mode.ALL;
     /** Present the main target straight from its texture (it rotates to a spare) instead of through a staging copy. */
     volatile boolean directPresent = !"false".equals(System.getProperty("puremetal.directPresent"));
     /** Set once direct presenting proved unsafe or slow in this session; it stays off (the A/B switch can't revive it). */
@@ -110,6 +115,14 @@ final class MetalDevice implements GpuDeviceBackend {
         this.handle = handle;
         io.github.imcinq.puremetal.bench.Bench.registerAB("directPresent", on -> this.directPresent = on);
         io.github.imcinq.puremetal.bench.Bench.registerAB("rgssEarlyOut", on -> this.rgssEarlyOut = on);
+        io.github.imcinq.puremetal.bench.Bench.registerAB("fastTerrain", on -> {
+            this.fastTerrainOpaque = on;
+            this.fastTerrainTranslucent = false;
+        });
+        io.github.imcinq.puremetal.bench.Bench.registerAB("fastTerrainAll", on -> {
+            this.fastTerrainOpaque = on;
+            this.fastTerrainTranslucent = on;
+        });
         io.github.imcinq.puremetal.bench.Bench.registerAB("depthClearFold", on -> MetalNative.setOption(handle, 0, on ? 1 : 0));
         if (Boolean.getBoolean("puremetal.m4FullBarriers")) {
             MetalNative.setOption(handle, 1, 1); // Metal 4 only: every encoder waits for the whole queue (A/B against tracked barriers)
@@ -271,11 +284,16 @@ final class MetalDevice implements GpuDeviceBackend {
 
     /** Compiles one MSL entry point. The MSL source can be large, so it goes through the heap, not the stack. */
     long compileFunction(final MetalShaderTranslator.Result msl, final String label) {
-        return this.compileFunction(msl, label, -1, 0);
+        return this.compileFunction(msl, label, -1, 0, false);
     }
 
     /** Same, specializing one bool function constant (constantId >= 0). */
     long compileFunction(final MetalShaderTranslator.Result msl, final String label, final int constantId, final int constantValue) {
+        return this.compileFunction(msl, label, constantId, constantValue, false);
+    }
+
+    /** Same; relaxed compiles this one function with relaxed math (fragment shaders of proven stock terrain only). */
+    long compileFunction(final MetalShaderTranslator.Result msl, final String label, final int constantId, final int constantValue, final boolean relaxed) {
         if (Debug.DUMP_SHADERS) {
             Debug.dumpShader(label, msl.source());
         }
@@ -285,7 +303,8 @@ final class MetalDevice implements GpuDeviceBackend {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
-        return this.functions.acquire(new ShaderKey(hash, msl.entryPoint(), SAFE_MATH, constantId, constantValue), () -> this.compileFunctionUncached(msl, label, constantId, constantValue));
+        return this.functions.acquire(new ShaderKey(hash, msl.entryPoint(), SAFE_MATH && !relaxed, constantId, constantValue),
+            () -> this.compileFunctionUncached(msl, label, constantId, constantValue, SAFE_MATH && !relaxed));
     }
 
     void releaseFunction(final long function) {
@@ -301,11 +320,11 @@ final class MetalDevice implements GpuDeviceBackend {
         this.depthStates.release(state);
     }
 
-    private long compileFunctionUncached(final MetalShaderTranslator.Result msl, final String label, final int constantId, final int constantValue) {
+    private long compileFunctionUncached(final MetalShaderTranslator.Result msl, final String label, final int constantId, final int constantValue, final boolean safeMath) {
         ByteBuffer source = MemoryUtil.memUTF8(msl.source());
         try (MemoryStack stack = MemoryStack.stackPush()) {
             ByteBuffer err = stack.calloc(2048);
-            long library = MetalNative.libraryCreate(this.handle, MemoryUtil.memAddress(source), MemoryUtil.memAddress(err), err.capacity(), SAFE_MATH ? 1 : 0);
+            long library = MetalNative.libraryCreate(this.handle, MemoryUtil.memAddress(source), MemoryUtil.memAddress(err), err.capacity(), safeMath ? 1 : 0);
             if (library == 0L) {
                 throw new IllegalStateException("Metal rejected the translated shader " + label + ": " + MemoryUtil.memUTF8(MemoryUtil.memAddress(err)));
             }
