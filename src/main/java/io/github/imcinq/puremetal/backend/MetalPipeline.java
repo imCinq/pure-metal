@@ -35,6 +35,10 @@ final class MetalPipeline implements BackendRenderPipeline {
     private final List<BindGroupLayout.UniformDescription> uniforms;
     private final Bindings bindings;
     private final long vertexFunction;
+    /** Vertex variant with relaxed math, only built for the diagnostic fastMath A/B (see {@link MathGroups}); 0 otherwise. */
+    private final long vertexFunctionFast;
+    /** {@link MathGroups.Group} ordinal of this pipeline. */
+    private final int mathGroup;
     private final long fragmentFunction;
     /** Fragment variant with the RGSS early-out specialized off; 0 unless the shader has it and the A/B tool is active. */
     private final long fragmentFunctionOff;
@@ -103,8 +107,11 @@ final class MetalPipeline implements BackendRenderPipeline {
     }
 
     private MetalPipeline(final MetalDevice device, final CreateInfo info, final Bindings bindings, final long vertexFunction, final long fragmentFunction, final long fragmentFunctionOff,
-                          final long fragmentFunctionFast, final int fastGroup) {
+                          final long fragmentFunctionFast, final int fastGroup,
+                          final long vertexFunctionFast, final int mathGroup) {
         this.device = device;
+        this.vertexFunctionFast = vertexFunctionFast;
+        this.mathGroup = mathGroup;
         this.fragmentFunctionOff = fragmentFunctionOff;
         this.fragmentFunctionFast = fragmentFunctionFast;
         this.fastGroup = fastGroup;
@@ -141,12 +148,20 @@ final class MetalPipeline implements BackendRenderPipeline {
         long fragmentFunction = 0L;
         long fragmentFunctionOff = 0L;
         long fragmentFunctionFast = 0L;
+        long vertexFunctionFast = 0L;
         MetalPipeline pipeline = null;
         // Relaxed fragment math only for allowlisted terrain pipelines whose shader sources proved to be the stock ones.
         int group = FastTerrainMath.group(info.name());
         boolean stock = group != 0 && io.github.imcinq.puremetal.perf.TerrainShaderProof.stockTerrain();
         boolean ab = stock && FastTerrainMath.AB;
-        boolean relaxedPrimary = stock && !ab && FastTerrainMath.configured(group);
+        // Diagnostic fastMath A/B: relaxed vertex and fragment variants for every pipeline of the selected groups, whatever the stock proof says.
+        List<String> shaderNames = info.shaders().stream().map(s -> String.valueOf(s.name())).toList();
+        MathGroups.Group mathGroup = MathGroups.classify(info.name(), shaderNames);
+        boolean mathAb = MathGroups.AB && MathGroups.isSelected(mathGroup);
+        boolean relaxedPrimary = stock && !ab && !MathGroups.AB && FastTerrainMath.configured(group);
+        if (MathGroups.AB) {
+            MathGroups.record(mathGroup, info.name(), shaderNames);
+        }
         try {
             Bindings bindings = Bindings.of(info.uniforms());
             boolean points = info.primitiveTopology() == PrimitiveTopology.POINTS;
@@ -167,11 +182,16 @@ final class MetalPipeline implements BackendRenderPipeline {
                     device.releaseFunction(fragmentFunction);
                     fragmentFunction = function;
                 }
-                if (ab && fragment) {
-                    device.releaseFunction(fragmentFunctionFast);
-                    fragmentFunctionFast = 0L;
-                    fragmentFunctionFast = constant >= 0 ? device.compileFunction(msl, label, constant, 1, true) : device.compileFunction(msl, label, -1, 0, true);
-                    LOGGER.info("Pure Metal: relaxed math A/B variant built for {} (group {})", info.name(), group);
+                if (fragment ? ab || mathAb : mathAb) {
+                    long fast = constant >= 0 ? device.compileFunction(msl, label, constant, 1, true) : device.compileFunction(msl, label, -1, 0, true);
+                    if (fragment) {
+                        device.releaseFunction(fragmentFunctionFast);
+                        fragmentFunctionFast = fast;
+                        LOGGER.info("Pure Metal: relaxed math A/B variant built for {} (terrain group {}, math group {})", info.name(), group, mathGroup);
+                    } else {
+                        device.releaseFunction(vertexFunctionFast);
+                        vertexFunctionFast = fast;
+                    }
                 }
                 if (constant >= 0 && io.github.imcinq.puremetal.bench.Bench.abRequested()) {
                     device.releaseFunction(fragmentFunctionOff);
@@ -183,7 +203,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             if (vertexFunction == 0L) {
                 throw new IllegalStateException("no vertex shader");
             }
-            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, group);
+            pipeline = new MetalPipeline(device, info, bindings, vertexFunction, fragmentFunction, fragmentFunctionOff, fragmentFunctionFast, group, vertexFunctionFast, mathGroup.ordinal());
             if (relaxedPrimary) {
                 LOGGER.info("Pure Metal: relaxed fragment math for {} (group {})", info.name(), group);
             }
@@ -209,6 +229,7 @@ final class MetalPipeline implements BackendRenderPipeline {
                 device.releaseFunction(fragmentFunction);
                 device.releaseFunction(fragmentFunctionOff);
                 device.releaseFunction(fragmentFunctionFast);
+                device.releaseFunction(vertexFunctionFast);
             }
             return null;
         }
@@ -263,7 +284,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 
     /** The pipeline state for a pass whose depth attachment has this format code (-1 = none); 0 if it can't be built. */
     long state(final int depthFormat) {
-        if (this.fragmentFunctionFast != 0L && (this.fastGroup == 1 ? this.device.fastTerrainOpaque : this.fastGroup == 2 && this.device.fastTerrainTranslucent)) {
+        if (this.fragmentFunctionFast != 0L && this.device.fastVariantOn(this.fastGroup, this.mathGroup)) {
             return this.state(depthFormat, 2);
         }
         return this.state(depthFormat, this.fragmentFunctionOff != 0L && !this.device.rgssEarlyOut ? 1 : 0);
@@ -282,7 +303,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             ByteBuffer label = stack.UTF8(this.name);
             ByteBuffer err = stack.calloc(1024);
             state = MetalNative.pipelineCreate(
-                this.device.handle(), this.vertexFunction, variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
+                this.device.handle(), variant == 2 && this.vertexFunctionFast != 0L ? this.vertexFunctionFast : this.vertexFunction, variant == 2 ? this.fragmentFunctionFast : variant == 1 ? this.fragmentFunctionOff : this.fragmentFunction,
                 org.lwjgl.system.MemoryUtil.memAddress(desc), org.lwjgl.system.MemoryUtil.memAddress(label),
                 org.lwjgl.system.MemoryUtil.memAddress(err), err.capacity()
             );
@@ -331,6 +352,7 @@ final class MetalPipeline implements BackendRenderPipeline {
             this.device.releaseFunction(this.fragmentFunction);
             this.device.releaseFunction(this.fragmentFunctionOff);
             this.device.releaseFunction(this.fragmentFunctionFast);
+            this.device.releaseFunction(this.vertexFunctionFast);
         }
     }
 }

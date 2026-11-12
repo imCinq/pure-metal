@@ -64,6 +64,13 @@ public final class TerrainShaderProof implements AutoCloseable {
         }
         return new TerrainShaderProof(proof,stock(pipeline,source));
     }
+    /** Relaxed terrain math over the LOD-patched fragment text (-Dpuremetal.fastTerrainMath.allowLodPatched=true); not proven, off by default. */
+    private static final boolean ALLOW_LOD_PATCHED=Boolean.getBoolean("puremetal.fastTerrainMath.allowLodPatched");
+    /** RenderPipelines.ALPHA_CUTOUT_THRESHOLD_CUTOUT_TERRAIN of Minecraft 26.3 (private there; read from the class constant). Re-check on a version bump. */
+    private static final float VANILLA_CUTOUT_ALPHA=0.5F;
+    private static boolean isFloat(Object value,float expected) {
+        try {return Float.parseFloat(String.valueOf(value))==expected;} catch(NumberFormatException bad) {return false;}
+    }
     private static boolean hash(String value,String expected) throws Exception {
         return value!=null && HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))).equals(expected);
     }
@@ -101,12 +108,16 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static boolean stock(RenderPipeline pipeline,ShaderSource borrowed) {
         try {
             ShaderSource source=LodTextureRepeat.originalSource(borrowed);
+            // The LOD patch (and any other wrapper) compiles different fragment text than the hashes below prove: relaxed math only on it with explicit approval.
+            if(source!=borrowed && !ALLOW_LOD_PATCHED) return false;
             Identifier vertex=pipeline.getShaders().get(ShaderType.VERTEX);
             if(!Identifier.fromNamespaceAndPath("minecraft","core/terrain").equals(vertex) || !vertex.equals(pipeline.getShaders().get(ShaderType.FRAGMENT))) return false;
             for(String flag:pipeline.getShaderDefines().flags()) {
                 if(!(flag.startsWith("OIT_") || java.util.Set.of("MULTIDRAW_TERRAIN","USE_FOG","USE_VERTEX_COMPRESSION","VULKAN").contains(flag))) return false;
             }
-            if(!java.util.Set.of("ALPHA_CUTOUT").containsAll(pipeline.getShaderDefines().values().keySet())) return false;
+            for(var define:pipeline.getShaderDefines().values().entrySet()) {
+                if(!define.getKey().equals("ALPHA_CUTOUT") || !isFloat(define.getValue(),VANILLA_CUTOUT_ALPHA)) return false;
+            }
             if(!hash(source.getShader(vertex,ShaderType.VERTEX),"001120e03dd7b9d690d3c98a1563334497c465f79ce14dc557d3d4caa02299a0")
                 || !hash(source.getShader(vertex,ShaderType.FRAGMENT),"e440d13f0c3c3aa0ae584a7e006410e4318922c5bc3c94a7a1be28b89b221bf9")) return false;
             for(var group:java.util.List.of(VANILLA,OIT)) {

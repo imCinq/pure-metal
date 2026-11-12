@@ -6,7 +6,7 @@ import java.util.Set;
  * Per pipeline relaxed shader math for the stock terrain fragment shader. Relaxed math is a large GPU win on terrain but is not
  * safe for post effects, sky, fog, OIT resolve or GUI, so only an allowlist of pipelines gets it, and only when the terrain
  * shader sources are the unmodified stock ones. Vertex shaders always keep safe math, so positions and depth never change.
- * -Dpuremetal.fastTerrainMath=off|opaque|all (default opaque).
+ * -Dpuremetal.fastTerrainMath=off|opaque|all (default off: no measured gain in game; the fastTerrain A/B and the fastMath A/B in {@link MathGroups} are the diagnostics).
  */
 final class FastTerrainMath {
     enum Mode { OFF, OPAQUE, ALL }
@@ -32,12 +32,13 @@ final class FastTerrainMath {
 
     private static Mode parse(final String value) {
         if (value == null) {
-            return Mode.OPAQUE;
+            return Mode.OFF;
         }
         return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "off" -> Mode.OFF;
             case "all" -> Mode.ALL;
-            default -> Mode.OPAQUE;
+            case "opaque" -> Mode.OPAQUE;
+            default -> Mode.OFF;
         };
     }
 

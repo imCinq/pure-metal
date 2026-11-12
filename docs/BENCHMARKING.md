@@ -31,6 +31,30 @@ Your own vsync, fullscreen, pause-on-focus-loss and graphics API options in `run
 
 Auto Render Scale stays inactive during a benchmark, so runs use the saved Render Scale.
 
+## In-session A/B of shader math (`-PbenchAB`)
+
+`-PbenchAB=<switch>` toggles one runtime switch every 2 s inside the same launch (A = off, B = on) and prints `BENCH-AB <switch> A(off)` / `B(on)` lines with FPS, frame times and `gpuMs/f`. One switch per launch. The `fastMath` switches compare strict (safe) shader math against relaxed math, vertex and fragment, like `-Dpuremetal.safeMath=false` does globally, but per pipeline group:
+
+| Switch | Pipelines relaxed in B |
+|---|---|
+| `fastMathAll` | every group (should reproduce the global relaxed-math gain) |
+| `fastMathTerrain` | solid and cutout terrain, `solid_block`, `cutout_block` |
+| `fastMathTerrainTranslucent` | translucent terrain and the OIT terrain passes |
+| `fastMathEntity` | entity, armor, item, glint, eyes, beacon beam, lightning, end portal and similar |
+| `fastMathSky` | sky, end sky, sunrise/sunset, stars, celestial |
+| `fastMathClouds` | clouds, flat clouds |
+| `fastMathWeather` | rain and snow |
+| `fastMathParticles` | opaque and translucent particles |
+| `fastMathWater` | water mask |
+| `fastMathPost` | OIT composite, depth blits, outline blits, post effect chains (guessed from shader names) |
+| `fastMathGui` | gui, text, crosshair, vignette, screen effects |
+| `fastMathLines` | lines, debug shapes, wireframe |
+| `fastMathOther` | everything that matches no group (the table below names them) |
+
+In an A/B launch the log prints one table `math group table` (group to pipeline names, `Other` entries with their shader names) when B first switches on. Only the selected groups build a second (relaxed) vertex and fragment function, so startup compiles those pipelines twice and keeps one extra pipeline state each in memory. This ignores the stock-terrain proof on purpose: it is diagnostic and can change pixels. Outside an A/B launch nothing changes.
+
+`fastTerrain` / `fastTerrainAll` compare relaxed fragment math of the proven stock terrain pipelines only. They need `-Dpuremetal.fastTerrainMath.allowLodPatched=true` when Terrain LOD textures or the RGSS early-out patch are active, because the proof refuses the patched fragment text otherwise. `-Dpuremetal.fastTerrainMath` itself defaults to `off`.
+
 ## Terrain LOD
 
 Terrain LOD is on by default at render distance 16 and above, with an 80% full-detail radius. With default settings Pure Metal therefore draws less distant terrain than OpenGL does, so the runs are not the same rendering workload. For a like-for-like comparison, turn Terrain LOD off in Pure Metal's settings, or state the setting next to any numbers you publish.

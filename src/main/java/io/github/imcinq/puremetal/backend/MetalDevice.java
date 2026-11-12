@@ -75,9 +75,15 @@ final class MetalDevice implements GpuDeviceBackend {
     /** Selects the terrain RGSS early-out shader variant (bit-identical either way); off only for the A/B tool. */
     volatile boolean rgssEarlyOut = true;
     /** Fragment shaders of the opaque terrain pipelines (solid, cutout) use relaxed math; set by -Dpuremetal.fastTerrainMath, or by the fastTerrain A/B. */
-    volatile boolean fastTerrainOpaque = !FastTerrainMath.AB && FastTerrainMath.MODE != FastTerrainMath.Mode.OFF;
+    volatile boolean fastTerrainOpaque = !FastTerrainMath.AB && !MathGroups.AB && FastTerrainMath.MODE != FastTerrainMath.Mode.OFF;
     /** Same for the translucent and OIT terrain pipelines (the second group; only the "all" mode and the fastTerrainAll A/B). */
-    volatile boolean fastTerrainTranslucent = !FastTerrainMath.AB && FastTerrainMath.MODE == FastTerrainMath.Mode.ALL;
+    volatile boolean fastTerrainTranslucent = !FastTerrainMath.AB && !MathGroups.AB && FastTerrainMath.MODE == FastTerrainMath.Mode.ALL;
+    /** Diagnostic fastMath A/B: bit per {@link MathGroups.Group} whose pipelines draw with the relaxed (vertex and fragment) variant. */
+    volatile int fastMathMask;
+
+    boolean fastVariantOn(final int terrainGroup, final int mathGroup) {
+        return terrainGroup == 1 && this.fastTerrainOpaque || terrainGroup == 2 && this.fastTerrainTranslucent || (this.fastMathMask >> mathGroup & 1) != 0;
+    }
     /** Present the main target straight from its texture (it rotates to a spare) instead of through a staging copy. */
     volatile boolean directPresent = !"false".equals(System.getProperty("puremetal.directPresent"));
     /** Set once direct presenting proved unsafe or slow in this session; it stays off (the A/B switch can't revive it). */
@@ -123,6 +129,20 @@ final class MetalDevice implements GpuDeviceBackend {
             this.fastTerrainOpaque = on;
             this.fastTerrainTranslucent = on;
         });
+        io.github.imcinq.puremetal.bench.Bench.registerAB(MathGroups.PREFIX + "All", on -> {
+            if (on) {
+                MathGroups.logTable();
+            }
+            this.fastMathMask = on ? MathGroups.ALL_MASK : 0;
+        });
+        for (MathGroups.Group group : MathGroups.Group.values()) {
+            io.github.imcinq.puremetal.bench.Bench.registerAB(group.switchName, on -> {
+                if (on) {
+                    MathGroups.logTable();
+                }
+                this.fastMathMask = on ? group.bit() : 0;
+            });
+        }
         io.github.imcinq.puremetal.bench.Bench.registerAB("depthClearFold", on -> MetalNative.setOption(handle, 0, on ? 1 : 0));
         if (Boolean.getBoolean("puremetal.m4FullBarriers")) {
             MetalNative.setOption(handle, 1, 1); // Metal 4 only: every encoder waits for the whole queue (A/B against tracked barriers)
