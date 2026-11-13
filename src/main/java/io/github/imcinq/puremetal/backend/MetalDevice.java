@@ -487,7 +487,13 @@ final class MetalDevice implements GpuDeviceBackend {
 
     @Override
     public GpuBuffer createBuffer(final @Nullable Supplier<String> label, final @GpuBuffer.Usage int usage, final long size) {
+        long t0 = Bench.SPIKE_LOG ? System.nanoTime() : 0L;
         MetalBuffer buffer = new MetalBuffer(this, usage, size, this.debugLabels && label != null ? label.get() : null);
+        if (Bench.SPIKE_LOG && size >= 8L << 20) {
+            long t1 = System.nanoTime();
+            LOGGER.info("BENCH-BIGBUF t={}ms label={} sizeMB={} allocMs={} thread={}", t1 / 1_000_000L, label != null ? label.get() : "?",
+                size >> 20, String.format("%.2f", (t1 - t0) / 1e6), Thread.currentThread().getName());
+        }
         if (Bench.SECONDS > 0 && label != null) buffer.benchLabel = label.get();
         buffer.enableShadow();
         return buffer;

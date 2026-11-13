@@ -20,6 +20,8 @@ import org.slf4j.Logger;
 public final class Bench {
     private static final Logger LOGGER = LogUtils.getLogger();
     public static final int SECONDS = Integer.getInteger("puremetal.bench", 0);
+    /** -Dpuremetal.benchSpikeLog=true: log recorded frames over 20 ms and buffer allocations of 8 MB or more, with times. */
+    public static final boolean SPIKE_LOG = Boolean.getBoolean("puremetal.benchSpikeLog");
     private static final long WARMUP_NS = (long)(Double.parseDouble(System.getProperty("puremetal.benchWarmup", "10")) * 1e9);
     /** Optional commands run once on joining, separated by ';' (e.g. "gamemode creative;tp @s 0 140 0 0 0"); the world needs cheats on. */
     private static final String COMMAND = System.getProperty("puremetal.benchCommand");
@@ -385,6 +387,9 @@ public final class Bench {
             prevPresentCount = presentGpuCount;
             if (abShotPhase == 0 && abSlot == 0 && now - recordStart >= 6_000_000_000L && now - sliceStart >= SETTLE_NS) {
                 // Three consecutive frames A, B, A of the same still scene: A1 vs A2 is the noise floor, A1 vs B the effect.
+        if (SPIKE_LOG && now - last > 20_000_000L) {
+            LOGGER.info("BENCH-SPIKE t={}ms frameMs={}", now / 1_000_000L, String.format("%.2f", (now - last) / 1e6));
+        }
                 abShotPhase = 1;
                 abGrab(minecraft, "ab-A1.png");
                 abHook.accept(true);

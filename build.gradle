@@ -144,6 +144,7 @@ loom {
 			if (project.hasProperty("benchScales")) vmArgs "-Dpuremetal.benchScales=" + project.property("benchScales")
 			if (project.hasProperty("benchGraphics")) vmArgs "-Dpuremetal.benchGraphics=" + project.property("benchGraphics")
 			if (project.hasProperty("benchAB")) vmArgs "-Dpuremetal.benchAB=" + project.property("benchAB")
+			if (project.hasProperty("benchSpikeLog")) vmArgs "-Dpuremetal.benchSpikeLog=true"
 			if (project.hasProperty("submitsInFlight")) vmArgs "-Dpuremetal.submitsInFlight=" + project.property("submitsInFlight")
 			if (project.hasProperty("noPresent")) vmArgs "-Dpuremetal.noPresent=true"
 			if (project.hasProperty("jfr")) vmArgs "-XX:StartFlightRecording=settings=profile,delay=" + positiveSeconds("jfrDelay", "15") + "s,duration=" + positiveSeconds("jfrDuration", "25") + "s,filename=" + file("build/play.jfr").absolutePath
