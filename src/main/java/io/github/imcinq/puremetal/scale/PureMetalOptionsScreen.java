@@ -33,6 +33,6 @@ public final class PureMetalOptionsScreen extends OptionsSubScreen {
         this.list.addSmall(io.github.imcinq.puremetal.perf.BatterySaverOptions.vanilla(), null);
         this.list.addHeader(Lang.text("puremetal.options.section.other"));
         this.list.addSmall(GenerationCapOptions.vanilla(), ScaleOptions.vanillaMetal4());
-        this.list.addSmall(io.github.imcinq.puremetal.perf.FramePacingOptions.vanilla(), null);
+        this.list.addSmall(io.github.imcinq.puremetal.perf.FramePacingOptions.vanilla(), io.github.imcinq.puremetal.perf.HdrHighlightsOptions.vanilla());
     }
 }

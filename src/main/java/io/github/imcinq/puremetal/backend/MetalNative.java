@@ -52,7 +52,7 @@ public final class MetalNative {
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
     // Surface.
-    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing;
+    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear;
     private static MethodHandle H_upscale, H_upscaleReset, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
 
     private MetalNative() {
@@ -179,9 +179,13 @@ public final class MetalNative {
         H_passDrawIndexedIndirect = fn("pm_pass_draw_indexed_indirect", false, null, L, I, L, L, I);
         H_passDrawIndirect = fn("pm_pass_draw_indirect", false, null, L, I, L, L, I);
 
-        H_surfaceCreate = fn("pm_surface_create", false, L, L, L);
+        H_surfaceCreate = fn("pm_surface_create", false, L, L, L, I);
         H_surfaceConfigure = fn("pm_surface_configure", false, null, L, I, I, I, I);
         H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I);
+        H_surfaceSetHdrBoost = fn("pm_surface_set_hdr_boost", false, null, L, F);
+        H_surfaceEdrHeadroom = fn("pm_surface_edr_headroom", false, F, L);
+        H_surfaceEdrMax = fn("pm_surface_edr_max", false, F, L);
+        H_surfaceHdrLinear = fn("pm_surface_hdr_linear", false, I, L);
         H_surfaceBlit = fn("pm_surface_blit", false, I, L, L, L, L, I, I);
         H_surfaceTextureBusy = fn("pm_surface_texture_busy", false, I, L, L);
         H_surfaceDestroy = fn("pm_surface_destroy", false, null, L);
@@ -627,9 +631,9 @@ public final class MetalNative {
         }
     }
 
-    static long surfaceCreate(final long a0, final long a1) {
+    static long surfaceCreate(final long a0, final long a1, final int a2) {
         try {
-            return (long) H_surfaceCreate.invokeExact(a0, a1);
+            return (long) H_surfaceCreate.invokeExact(a0, a1, a2);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -646,6 +650,38 @@ public final class MetalNative {
     static void surfaceSetPacing(final long a0, final long a1, final int a2) {
         try {
             H_surfaceSetPacing.invokeExact(a0, a1, a2);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void surfaceSetHdrBoost(final long a0, final float a1) {
+        try {
+            H_surfaceSetHdrBoost.invokeExact(a0, a1);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static float surfaceEdrMax(final long a0) {
+        try {
+            return (float) H_surfaceEdrMax.invokeExact(a0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static boolean surfaceHdrLinear(final long a0) {
+        try {
+            return (int) H_surfaceHdrLinear.invokeExact(a0) != 0;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static float surfaceEdrHeadroom(final long a0) {
+        try {
+            return (float) H_surfaceEdrHeadroom.invokeExact(a0);
         } catch (Throwable t) {
             throw rethrow(t);
         }

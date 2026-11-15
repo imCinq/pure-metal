@@ -105,7 +105,15 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setDefaultValue(false)
                         .setStorageHandler(() -> {
                         })
-                        .setBinding(io.github.imcinq.puremetal.perf.FramePacing::setEnabled, io.github.imcinq.puremetal.perf.FramePacing::enabled))));
+                        .setBinding(io.github.imcinq.puremetal.perf.FramePacing::setEnabled, io.github.imcinq.puremetal.perf.FramePacing::enabled))
+                    .addOption(builder.createBooleanOption(id("hdr_highlights"))
+                        .setName(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.name())
+                        .setTooltip(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.tooltip())
+                        .setImpact(OptionImpact.LOW)
+                        .setDefaultValue(false)
+                        .setStorageHandler(() -> {
+                        })
+                        .setBinding(io.github.imcinq.puremetal.perf.HdrHighlights::setEnabled, io.github.imcinq.puremetal.perf.HdrHighlights::enabled))));
     }
 
     private static Identifier id(final String path) {

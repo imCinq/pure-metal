@@ -36,6 +36,10 @@ public final class DebugLine implements DebugScreenEntry {
             displayer.addLine(line());
             if (MetalInfo.backend() != null) {
                 displayer.addLine(io.github.imcinq.puremetal.perf.TerrainMathStatus.line().getString());
+                String hdr = io.github.imcinq.puremetal.perf.HdrHighlights.debugLine();
+                if (hdr != null) {
+                    displayer.addLine(hdr);
+                }
             }
         } catch (Throwable t) {
             displayer.addLine("Pure Metal: unavailable");

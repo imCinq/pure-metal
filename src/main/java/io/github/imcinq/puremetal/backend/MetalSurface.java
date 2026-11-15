@@ -31,6 +31,11 @@ final class MetalSurface implements GpuSurfaceBackend {
     private int statsFrames;
     private int configuredWidth, configuredHeight;
     private boolean configuredVsync;
+    private long hdrCheckedNs;
+    private float hdrHeadroom = 1.0F;
+    private float hdrSentBoost = -1.0F;
+    private float hdrMaxHeadroom = 1.0F;
+    private boolean hdrLinear;
 
     MetalSurface(final MetalDevice device, final long windowHandle) {
         this.device = device;
@@ -40,7 +45,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             throw new IllegalStateException("SDL could not create a Metal view: " + SDLError.SDL_GetError());
         }
         long layer = SDLMetal.SDL_Metal_GetLayer(this.view);
-        this.surface = MetalNative.surfaceCreate(device.handle(), layer);
+        this.surface = MetalNative.surfaceCreate(device.handle(), layer, io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE ? (io.github.imcinq.puremetal.perf.HdrHighlights.COMPARE ? 3 : 1) : 0);
         if (this.surface == 0L) {
             SDLMetal.SDL_Metal_DestroyView(this.view);
             throw new IllegalStateException("Pure Metal could not set up presenting (see the log)");
@@ -84,6 +89,9 @@ final class MetalSurface implements GpuSurfaceBackend {
             MetalNative.surfaceSetPacing(this.surface, io.github.imcinq.puremetal.perf.FramePacing.refreshNs(),
                 io.github.imcinq.puremetal.perf.FramePacing.pacing());
         }
+        if (io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE) {
+            this.updateHdr();
+        }
         if (PRESENT_STATS) {
             this.logPresentStats();
         }
@@ -96,6 +104,23 @@ final class MetalSurface implements GpuSurfaceBackend {
             }
         }
         FrameTrace.mark(FrameTrace.FRAME, 0);
+    }
+
+    /** HDR highlights only: the screen's EDR headroom is read once a second, the boost cap is sent when it changes. */
+    private void updateHdr() {
+        long now = System.nanoTime();
+        if (this.hdrCheckedNs == 0L || now - this.hdrCheckedNs > io.github.imcinq.puremetal.perf.HdrHighlights.HEADROOM_RECHECK_NS) {
+            this.hdrCheckedNs = now;
+            this.hdrHeadroom = MetalNative.surfaceEdrHeadroom(this.surface);
+            this.hdrMaxHeadroom = MetalNative.surfaceEdrMax(this.surface);
+            this.hdrLinear = MetalNative.surfaceHdrLinear(this.surface);
+        }
+        float boost = io.github.imcinq.puremetal.perf.HdrHighlights.boost(this.hdrHeadroom);
+        if (boost != this.hdrSentBoost) {
+            this.hdrSentBoost = boost;
+            MetalNative.surfaceSetHdrBoost(this.surface, boost);
+        }
+        io.github.imcinq.puremetal.perf.HdrHighlights.publish(this.hdrHeadroom, this.hdrMaxHeadroom, boost, this.hdrLinear);
     }
 
     /** Once a second: frames rendered vs presented vs actually shown, and why the rest were not presented. */

@@ -6,6 +6,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <MetalFX/MetalFX.h>
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #include <pthread.h>
 #include <mach/mach_time.h>
@@ -4595,6 +4596,17 @@ typedef struct PMSurface {
     // (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
     pthread_mutex_t cfgLock;
     int cfgPending, cfgWidth, cfgHeight, cfgDisplaySync;
+    // HDR highlights (experimental, fixed at creation): the layer is a linear RGBA16Float extended-range surface and the
+    // present pass boosts bright pixels up to hdrBoost (1.0 = SDR look). Set by pm_surface_set_hdr_boost.
+    int hdr;
+    atomic_uint hdrBoostBits;         // float bits of the boost cap, 1.0f when off or no headroom
+    void *hdrWatcher;                 // PMHdrWatcher, retained; NULL on a normal layer. Owns the screen snapshot (main thread writes it)
+    atomic_int hdrLinear;             // the layer holds linear values in the display's own space (else sRGB passthrough); written by the present thread, read by it and by pm_surface_hdr_linear
+    uint32_t hdrPresentWidth;         // drawable width of the frame being presented (compare mode splits on this, not the source width)
+    int hdrCompare;                   // -Dpuremetal.hdrCompare: boost only the left half of the screen, with a divider (dev/debug)
+    // Chosen once at surface creation, so a normal layer runs exactly the code it always did and HDR adds nothing to it.
+    void (*applyConfig)(struct PMSurface *);
+    void (*bind)(struct PMSurface *, int, id<MTLRenderCommandEncoder>, id<MTLTexture>, uint32_t);
     void *staging[PM_PRESENT_SLOTS];          // id<MTLTexture>
     // The frame's own render target, retained, when it is presented without a staging copy (see pm_surface_blit).
     _Atomic(void *) direct[PM_PRESENT_SLOTS];
@@ -4658,11 +4670,51 @@ static NSString *const PRESENT_SHADER =
      "  return float4(src.read(uint2(c.x, h - 1 - c.y)).rgb, 1.0);\n"
      "}\n";
 
+// HDR highlights prototype. The drawable is RGBA16Float and tagged with the extended linear version of the current display's own
+// colorspace (see PMHdrWatcher), so the frame's 8-bit values are decoded with the sRGB curve and nothing else: the colors stay
+// display-native, as with the untagged BGRA8 layer, and only the transfer curve changes. When no such space can be made for the
+// display, p.z is 0 and the shader passes the encoded values through untouched (untagged layer, no boost).
+// The boost only touches pixels that are near clipping: white-ish light (the sun) and saturated orange or yellow at full
+// strength (lava, fire, glowing blocks). Constants: HDR_WHITE_START and HDR_WARM_START are where each ramp begins (0 to 1),
+// HDR_WARM_SAT the saturation a warm pixel needs. The warm mask needs red >= green >= blue and a hue past pure red (so green,
+// cyan, blue, magenta and pure red are never boosted).
+// p.x is the drawable height, p.y the boost cap (1.0 = off), p.z 1 for linear output, p.w the drawable width in compare mode, 0 otherwise (dev/debug: the boost
+// applies to the left half only, the right half is the same image with boost 1.0, and a 2 px divider is drawn between them).
+#define HDR_WHITE_START "0.90"
+#define HDR_WARM_START "0.85"
+#define HDR_WARM_SAT "0.45"
+// Appended to PRESENT_SHADER (same V and vertex function) only when the layer is HDR.
+static NSString *const PRESENT_HDR_SHADER =
+    @"float3 pm_srgb_decode(float3 c) {\n"
+     "  return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);\n"
+     "}\n"
+     "fragment float4 pm_present_hdr_fs(V in [[stage_in]], texture2d<float> src [[texture(0)]], constant float4 &p [[buffer(0)]]) {\n"
+     "  uint2 c = uint2(in.pos.xy);\n"
+     "  float3 rgb = src.read(uint2(c.x, uint(p.x) - 1 - c.y)).rgb;\n"
+     "  if (p.z < 0.5) return float4(rgb, 1.0);\n"
+     "  float mx = max(rgb.r, max(rgb.g, rgb.b)), mn = min(rgb.r, min(rgb.g, rgb.b));\n"
+     "  float sat = (mx - mn) / max(mx, 1e-4);\n"
+     "  float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));\n"
+     "  float white = smoothstep(" HDR_WHITE_START ", 1.0, luma) * (1.0 - smoothstep(0.15, 0.4, sat));\n"
+     "  float t = (rgb.g - rgb.b) / max(rgb.r - rgb.b, 1e-4);\n"
+     "  float hue = step(rgb.g, rgb.r) * step(rgb.b, rgb.g) * smoothstep(0.1, 0.3, t);\n"
+     "  float warm = smoothstep(" HDR_WARM_START ", 1.0, mx) * smoothstep(" HDR_WARM_SAT ", 0.75, sat) * hue;\n"
+     "  float w = max(white, warm);\n"
+     "  float cap = p.y;\n"
+     "  if (p.w > 0.5) {\n"
+     "    uint half_w = uint(p.w) / 2;\n"
+     "    if (c.x + 1 == half_w || c.x == half_w) return float4(1.0, 0.0, 1.0, 1.0);\n"
+     "    if (c.x >= half_w) cap = 1.0;\n"
+     "  }\n"
+     "  float3 lin = pm_srgb_decode(rgb);\n"
+     "  return float4(lin * mix(1.0, max(cap, 1.0), w), 1.0);\n"
+     "}\n";
+
 static int ensure_present_pipeline(PMDevice *d, MTLPixelFormat format, char *err, int errCap) {
     if (d->presentPipeline && d->presentFormat == format) return 1;
     NSError *error = nil;
     if (!d->presentLibrary) {
-        id<MTLLibrary> lib = pm_new_library(d, PRESENT_SHADER, nil, &error);
+        id<MTLLibrary> lib = pm_new_library(d, format == MTLPixelFormatRGBA16Float ? [PRESENT_SHADER stringByAppendingString:PRESENT_HDR_SHADER] : PRESENT_SHADER, nil, &error);
         if (!lib) { pm_copy_string(error.localizedDescription, err, errCap); return 0; }
         d->presentLibrary = pm_retain(lib);
     }
@@ -4670,7 +4722,7 @@ static int ensure_present_pipeline(PMDevice *d, MTLPixelFormat format, char *err
     MTLRenderPipelineDescriptor *p = [MTLRenderPipelineDescriptor new];
     p.label = @"Pure Metal present";
     p.vertexFunction = [lib newFunctionWithName:@"pm_present_vs"];
-    p.fragmentFunction = [lib newFunctionWithName:@"pm_present_fs"];
+    p.fragmentFunction = [lib newFunctionWithName:format == MTLPixelFormatRGBA16Float ? @"pm_present_hdr_fs" : @"pm_present_fs"];
     p.colorAttachments[0].pixelFormat = format;
     id<MTLRenderPipelineState> state = [DEV_MTL(d) newRenderPipelineStateWithDescriptor:p error:&error];
     if (!state) { pm_copy_string(error.localizedDescription, err, errCap); return 0; }
@@ -5414,7 +5466,118 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
     }
 }
 
-PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer) {
+// Forward declarations for the per-surface function pointers chosen in pm_surface_create.
+static void apply_layer_config(PMSurface *s);
+static void apply_layer_config_hdr(PMSurface *s);
+static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height);
+static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height);
+
+// HDR highlights: everything that reads AppKit (the window's screen, its colorspace and EDR headroom) runs here on the main
+// thread, from screen-change notifications and a 1 s timer (headroom moves with brightness without any notification). It
+// publishes a snapshot: the headroom as an atomic, and the extended linear colorspace of the display under a lock for the present
+// queue, which applies it to the layer (the layer must not change while that queue is inside nextDrawable). Nothing else
+// touches AppKit, and a normal layer never creates one.
+@interface PMHdrWatcher : NSObject {
+@public
+    pthread_mutex_t lock;
+    CGColorSpaceRef pendingSpace;     // extended linear space of the screen, retained; NULL = none could be made
+    int pending;                      // pendingSpace is new and not yet applied
+    atomic_uint headroomBits;         // float bits, 1.0f = no headroom
+    atomic_uint maxHeadroomBits;      // float bits, the most headroom the screen could ever offer (at full range of brightness)
+}
+- (instancetype)initWithLayer:(CAMetalLayer *)layer;
+- (void)refresh;
+- (void)stop;
+@end
+
+@implementation PMHdrWatcher {
+    __weak NSView *_view;
+    NSMutableArray *_observers;
+    dispatch_source_t _timer;
+    CGColorSpaceRef _lastSpace;       // main thread only
+    BOOL _published;                  // main thread only
+    atomic_int _stopped;
+}
+
+- (instancetype)initWithLayer:(CAMetalLayer *)layer {
+    if (!(self = [super init])) return nil;
+    pthread_mutex_init(&lock, NULL);
+    float one = 1.0f;
+    uint32_t oneBits;
+    memcpy(&oneBits, &one, sizeof(oneBits));
+    atomic_init(&headroomBits, oneBits);
+    atomic_init(&maxHeadroomBits, oneBits);
+    atomic_init(&_stopped, 0);
+    id delegate = layer.delegate;
+    _view = [delegate isKindOfClass:[NSView class]] ? (NSView *)delegate : nil;
+    __weak PMHdrWatcher *weakSelf = self;
+    _observers = [NSMutableArray array];
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    for (NSNotificationName name in @[ NSWindowDidChangeScreenNotification, NSWindowDidChangeScreenProfileNotification,
+                                       NSApplicationDidChangeScreenParametersNotification ]) {
+        [_observers addObject:[center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                                              usingBlock:^(NSNotification *note) { [weakSelf refresh]; }]];
+    }
+    _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 4);
+    dispatch_source_set_event_handler(_timer, ^{ [weakSelf refresh]; });
+    dispatch_resume(_timer);
+    if ([NSThread isMainThread]) [self refresh];
+    else dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
+    return self;
+}
+
+// Main thread.
+- (void)refresh {
+    if (atomic_load(&_stopped)) return;
+    @autoreleasepool {
+        NSScreen *screen = _view.window.screen ?: NSScreen.mainScreen;
+        CGFloat edr = screen ? screen.maximumExtendedDynamicRangeColorComponentValue : 1.0;
+        CGColorSpaceRef base = screen.colorSpace.CGColorSpace;
+        CGColorSpaceRef space = base ? CGColorSpaceCreateExtendedLinearized(base) : NULL;
+        // No extended linear version of this display's space: HDR stays off for it (no headroom, passthrough present).
+        float headroom = (space && edr >= 1.0) ? (float)edr : 1.0f;
+        CGFloat potential = screen ? screen.maximumPotentialExtendedDynamicRangeColorComponentValue : 1.0;
+        float maxHeadroom = potential >= 1.0 ? (float)potential : 1.0f;
+        uint32_t maxBits;
+        memcpy(&maxBits, &maxHeadroom, sizeof(maxBits));
+        atomic_store_explicit(&maxHeadroomBits, maxBits, memory_order_relaxed);
+        uint32_t bits;
+        memcpy(&bits, &headroom, sizeof(bits));
+        atomic_store_explicit(&headroomBits, bits, memory_order_relaxed);
+        bool changed = !_published || (space == NULL) != (_lastSpace == NULL) || (space && !CFEqual(space, _lastSpace));
+        if (changed) {
+            _published = YES;
+            if (_lastSpace) CGColorSpaceRelease(_lastSpace);
+            _lastSpace = space ? CGColorSpaceRetain(space) : NULL;
+            pthread_mutex_lock(&lock);
+            if (pendingSpace) CGColorSpaceRelease(pendingSpace);
+            pendingSpace = space ? CGColorSpaceRetain(space) : NULL;
+            pending = 1;
+            pthread_mutex_unlock(&lock);
+        }
+        if (space) CGColorSpaceRelease(space);
+    }
+}
+
+// Any thread. After this the callbacks do nothing; the surface releases its reference afterwards.
+- (void)stop {
+    if (atomic_exchange(&_stopped, 1)) return;
+    for (id token in _observers) [NSNotificationCenter.defaultCenter removeObserver:token];
+    [_observers removeAllObjects];
+    if (_timer) { dispatch_source_cancel(_timer); _timer = nil; }
+}
+
+- (void)dealloc {
+    if (_lastSpace) CGColorSpaceRelease(_lastSpace);
+    if (pendingSpace) CGColorSpaceRelease(pendingSpace);
+    pthread_mutex_destroy(&lock);
+}
+@end
+
+// hdr bit 1 asks for the experimental HDR highlights layer, bit 2 for its compare mode (RGBA16Float, extended linear version of the display's own colorspace,
+// EDR on); if its pipeline cannot be built the layer silently stays the normal BGRA8 one.
+PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
     @autoreleasepool {
         CAMetalLayer *l = PM_OBJ(CAMetalLayer *, layer);
         l.device = DEV_MTL(d);
@@ -5425,7 +5588,19 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer) {
         l.opaque = YES;
         l.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         char err[256];
-        if (!ensure_present_pipeline(d, l.pixelFormat, err, sizeof(err))) {
+        if (hdr) {
+            l.pixelFormat = MTLPixelFormatRGBA16Float;
+            if (ensure_present_pipeline(d, l.pixelFormat, err, sizeof(err))) {
+                // Untagged and SDR until the watcher's first snapshot is applied on the present queue.
+                l.wantsExtendedDynamicRangeContent = NO;
+                l.colorspace = nil;
+            } else {
+                NSLog(@"Pure Metal: HDR highlights unavailable, using the normal layer: %s", err);
+                l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+                hdr = 0;
+            }
+        }
+        if (!hdr && !ensure_present_pipeline(d, l.pixelFormat, err, sizeof(err))) {
             NSLog(@"Pure Metal: present pipeline failed: %s", err);
             return NULL;
         }
@@ -5451,6 +5626,15 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer) {
         s->layer = layer;
         s->device = d;
         s->vsync = 1;
+        s->hdr = hdr ? 1 : 0;
+        s->hdrCompare = (hdr & 2) ? 1 : 0;
+        float one = 1.0f;
+        uint32_t oneBits;
+        memcpy(&oneBits, &one, sizeof(oneBits));
+        atomic_init(&s->hdrBoostBits, oneBits);
+        s->applyConfig = hdr ? apply_layer_config_hdr : apply_layer_config;
+        s->bind = hdr ? present_bind_hdr : present_bind;
+        if (hdr) s->hdrWatcher = (__bridge_retained void *)[[PMHdrWatcher alloc] initWithLayer:l];
         pthread_mutex_init(&s->cfgLock, NULL);
         s->pipeline = pm_retain(PM_OBJ(id<MTLRenderPipelineState>, d->presentPipeline));
         s->dispatch = (__bridge_retained void *)q;
@@ -5498,6 +5682,27 @@ static void apply_layer_config(PMSurface *s) {
     l.drawableSize = CGSizeMake(width, height);
     l.displaySyncEnabled = displaySync ? YES : NO;
     if (timing) pm_atomic_max(&s->device->layerConfigureMaxNs, pm_now_ns() - start);
+}
+
+// HDR layers: the usual layer settings, then the screen snapshot the watcher published (colorspace of the display the window is
+// on). Same place and thread as apply_layer_config, so the layer never changes inside nextDrawable.
+static void apply_layer_config_hdr(PMSurface *s) {
+    apply_layer_config(s);
+    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    pthread_mutex_lock(&w->lock);
+    int pending = w->pending;
+    CGColorSpaceRef space = w->pendingSpace ? CGColorSpaceRetain(w->pendingSpace) : NULL;
+    w->pending = 0;
+    pthread_mutex_unlock(&w->lock);
+    if (!pending) {
+        if (space) CGColorSpaceRelease(space);
+        return;
+    }
+    CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
+    l.colorspace = space;
+    l.wantsExtendedDynamicRangeContent = space ? YES : NO;
+    atomic_store_explicit(&s->hdrLinear, space ? 1 : 0, memory_order_relaxed);
+    if (space) CGColorSpaceRelease(space);
 }
 
 PM_EXPORT void pm_surface_configure(PMSurface *s, int width, int height, int vsync, int allowTearing) {
@@ -5630,6 +5835,27 @@ static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, 
     [e setFragmentBytes:&height length:sizeof(height) atIndex:0];
 }
 
+// HDR layer: the shader reads a float4 (height, boost cap, linear flag).
+static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height) {
+    PMDevice *d = s->device;
+    int linear = atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
+    float params[4] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, s->hdrCompare ? (float)s->hdrPresentWidth : 0.0f };
+    if (linear) {
+        uint32_t bits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
+        memcpy(&params[1], &bits, sizeof(bits));
+    }
+    PM_IF_M4(d) {
+        id<MTL4ArgumentTable> table = PM_OBJ(id<MTL4ArgumentTable>, d->m4PresentTable);
+        id<MTLBuffer> constant = PM_OBJ(id<MTLBuffer>, d->m4PresentConst[slot]);
+        memcpy(constant.contents, params, sizeof(params));
+        [table setTexture:src.gpuResourceID atIndex:0];
+        [table setAddress:constant.gpuAddress atIndex:0];
+        return;
+    }
+    [e setFragmentTexture:src atIndex:0];
+    [e setFragmentBytes:params length:sizeof(params) atIndex:0];
+}
+
 // Presents `drawable` after `pcb`; finished(start, end, failure) runs when the GPU is done with it. Metal 4 orders the drawable with
 // queue waits and signals around the commit instead of a present call on the command buffer.
 // When the frame with this present sequence number should reach the screen (CACurrentMediaTime() seconds), or 0 for
@@ -5682,7 +5908,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
     @autoreleasepool {
         CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
         trace_ev(7, slot, 0, 0);
-        if (!atomic_load(&s->shutdown)) apply_layer_config(s);
+        if (!atomic_load(&s->shutdown)) s->applyConfig(s);
         bool timing = atomic_load_explicit(&g_traceOn, memory_order_relaxed);
         uint64_t drawableStart = timing ? pm_now_ns() : 0;
         id<CAMetalDrawable> drawable = atomic_load(&s->shutdown) ? nil : [l nextDrawable];
@@ -5727,7 +5953,8 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         [e setViewport:(MTLViewport){ 0.0, 0.0, (double)w, (double)h, 0.0, 1.0 }];
         [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, s->pipeline)];
         uint32_t height = (uint32_t)h;
-        present_bind(s, slot, e, src, height);
+        s->hdrPresentWidth = (uint32_t)dst.width;
+        s->bind(s, slot, e, src, height);
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [e endEncoding];
         double submitted = s->slotTime[slot];
@@ -5937,6 +6164,41 @@ PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacin
     atomic_store(&s->pacing, pacing && refreshNs ? 1 : 0);
 }
 
+// Boost cap for the HDR present pass (1.0 = SDR look). Cheap, any thread; ignored on a normal layer.
+PM_EXPORT void pm_surface_set_hdr_boost(PMSurface *s, float boost) {
+    if (!s->hdr) return;
+    uint32_t bits;
+    memcpy(&bits, &boost, sizeof(bits));
+    atomic_store_explicit(&s->hdrBoostBits, bits, memory_order_relaxed);
+}
+
+// 1 when the layer is tagged with the display's extended linear colorspace and EDR is on, 0 while it is untagged (passthrough).
+PM_EXPORT int pm_surface_hdr_linear(PMSurface *s) {
+    return atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
+}
+
+// The most EDR headroom the screen could ever offer (maximumPotentialExtendedDynamicRangeColorComponentValue), as last published
+// by the main-thread watcher. Any thread, no AppKit.
+PM_EXPORT float pm_surface_edr_max(PMSurface *s) {
+    if (!s->hdrWatcher) return 1.0f;
+    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    uint32_t bits = atomic_load_explicit(&w->maxHeadroomBits, memory_order_relaxed);
+    float v;
+    memcpy(&v, &bits, sizeof(v));
+    return v >= 1.0f ? v : 1.0f;
+}
+
+// The EDR headroom of the screen the window is on (1.0 = none), as last published by the main-thread watcher. Any thread,
+// no AppKit: just an atomic read.
+PM_EXPORT float pm_surface_edr_headroom(PMSurface *s) {
+    if (!s->hdrWatcher) return 1.0f;
+    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    uint32_t bits = atomic_load_explicit(&w->headroomBits, memory_order_relaxed);
+    float v;
+    memcpy(&v, &bits, sizeof(v));
+    return v >= 1.0f ? v : 1.0f;
+}
+
 // True while a present slot still references this texture (presented without a copy and not yet done with it).
 PM_EXPORT int pm_surface_texture_busy(PMSurface *s, void *texture) {
     for (int i = 0; i < PM_PRESENT_SLOTS; i++) {
@@ -5955,6 +6217,7 @@ PM_EXPORT void pm_surface_take_present_gpu(PMSurface *s, uint64_t *out) {
 PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     // From here on callbacks release their slots without presenting, so no new listener or presented handler work starts.
     atomic_store(&s->shutdown, 1);
+    if (s->hdrWatcher) [(__bridge PMHdrWatcher *)s->hdrWatcher stop];
     PMShownContext *shownContext = s->shownContext;
     if (shownContext) {
         pthread_mutex_lock(&shownContext->lock);
@@ -5996,6 +6259,7 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
         void *direct = atomic_exchange(&s->direct[i], NULL);
         if (direct) pm_release(direct);
     }
+    if (s->hdrWatcher) CFRelease(s->hdrWatcher);
     pm_release(s->pipeline);
     pm_release(s->presentQueue);
     pm_release(s->event);
