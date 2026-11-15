@@ -4674,8 +4674,11 @@ static NSString *const PRESENT_SHADER =
 // applies to the left half only, the right half is the same image with boost 1.0, and a 2 px divider is drawn between them).
 // q.x is the screen's CURRENT EDR headroom. macOS only grants headroom once content above 1.0 is presented, so the target (p.y)
 // comes from the potential headroom and can exceed what the screen offers right now (at rest it is 1.0). The boosted range is
-// then rolled off toward limit = max(current, HDR_TRIGGER): values up to a knee halfway between 1.0 and the limit pass
-// untouched, above it they approach the limit smoothly (exponential, slope-continuous), scaled as a whole so hue holds. The
+// then rolled off toward lim = min(max(current, HDR_TRIGGER), cap): values up to a knee halfway between 1.0 and lim pass
+// untouched, above it the segment [knee, cap] is mapped onto [knee, lim] with x / (1 + k x) (x = m - knee, k = (a - b) / (a b),
+// a = cap - knee, b = lim - knee): slope 1 at the knee, monotonic, exactly lim at m = cap, and exactly the identity (k = 0)
+// when limit >= cap. It is continuous in limit, cap and m, so no pop as headroom reaches the target or the menu fade moves cap.
+// The result is applied as a whole scale so hue holds. The
 // trigger keeps a little content above 1.0 even at headroom 1.0 (the system clamps it, which is the same as an SDR clip for these
 // near-white pixels) so macOS has a reason to allocate headroom; once it does, the limit follows the current value up.
 #define HDR_WHITE_START "0.90"
@@ -4711,12 +4714,13 @@ static NSString *const PRESENT_HDR_SHADER =
      "  float3 outc = lin * mix(1.0, cap, w);\n"
      "  float limit = max(q.x, " HDR_TRIGGER ");\n"
      "  float m = max(outc.r, max(outc.g, outc.b));\n"
-     "  if (limit < cap && m > 1.0) {\n"
-     "    float knee = 1.0 + 0.5 * (limit - 1.0);\n"
-     "    if (m > knee) {\n"
-     "      float span = limit - knee;\n"
-     "      outc *= (knee + span * (1.0 - exp(-(m - knee) / span))) / m;\n"
-     "    }\n"
+     "  float lim = min(limit, cap);\n"
+     "  float knee = 1.0 + 0.5 * (lim - 1.0);\n"
+     "  if (m > knee) {\n"
+     "    float a = max(cap - knee, 1e-4), b = max(lim - knee, 1e-4);\n"
+     "    float k = max(a - b, 0.0) / (a * b);\n"
+     "    float x = m - knee;\n"
+     "    outc *= (knee + x / (1.0 + k * x)) / m;\n"
      "  }\n"
      "  return float4(outc, 1.0);\n"
      "}\n";
