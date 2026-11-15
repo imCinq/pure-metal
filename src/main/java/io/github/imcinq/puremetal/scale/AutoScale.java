@@ -5,6 +5,7 @@ import com.mojang.blaze3d.platform.VideoMode;
 import com.mojang.blaze3d.platform.Window;
 import io.github.imcinq.puremetal.backend.MetalUpscaler;
 import io.github.imcinq.puremetal.bench.Bench;
+import io.github.imcinq.puremetal.perf.BatterySaver;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.Screen;
@@ -102,6 +103,12 @@ public final class AutoScale {
         long now = System.nanoTime();
         Window window = mc.getWindow();
         int fps = targetFps(mc, now);
+        // Battery Saver never changes the scale, but Auto should not chase a rate the cap will never show. A cap change changes
+        // fps, which goes through the same reset below.
+        int cap = BatterySaver.activeCap();
+        if (cap > 0) {
+            fps = Math.min(fps, cap);
+        }
         ScaleConfig.Upscaler kind = ScaleConfig.effectiveUpscaler();
         float output = ScaleConfig.temporalOutputScale();
         if (!active || fps != target || kind != upscaler || output != outputScale || window.getWidth() != width || window.getHeight() != height) {

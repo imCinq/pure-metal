@@ -4595,6 +4595,8 @@ typedef struct PMSurface {
     void *hdrWatcher;                 // PMHdrWatcher, retained; NULL on a normal layer. Owns the screen snapshot (main thread writes it)
     atomic_int hdrLinear;             // the layer holds linear values in the display's own space (else sRGB passthrough); written by the present thread, read by it and by pm_surface_hdr_linear
     uint32_t hdrPresentWidth;         // drawable width of the frame being presented (compare mode splits on this, not the source width)
+    float hdrSmoothed;                // headroom the present pass uses: eases toward the watcher's value (present thread only)
+    uint64_t hdrSmoothedNs;           // when hdrSmoothed was last updated, 0 = never
     int hdrCompare;                   // -Dpuremetal.hdrCompare: boost only the left half of the screen, with a divider (dev/debug)
     // Chosen once at surface creation, so a normal layer runs exactly the code it always did and HDR adds nothing to it.
     void (*applyConfig)(struct PMSurface *);
@@ -5512,6 +5514,10 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     dispatch_source_t _timer;
     CGColorSpaceRef _lastSpace;       // main thread only
     BOOL _published;                  // main thread only
+    float _lastHeadroom;              // main thread only
+    uint64_t _fastUntilNs;            // main thread only: poll every 100 ms until then
+    uint64_t _lastLogNs;              // main thread only
+    BOOL _fast;                       // main thread only
     atomic_int _stopped;
 }
 
@@ -5532,7 +5538,7 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     for (NSNotificationName name in @[ NSWindowDidChangeScreenNotification, NSWindowDidChangeScreenProfileNotification,
                                        NSApplicationDidChangeScreenParametersNotification ]) {
         [_observers addObject:[center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
-                                              usingBlock:^(NSNotification *note) { [weakSelf refresh]; }]];
+                                              usingBlock:^(NSNotification *note) { [weakSelf noteChange]; [weakSelf refresh]; }]];
     }
     _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 4);
@@ -5541,6 +5547,18 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     if ([NSThread isMainThread]) [self refresh];
     else dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
     return self;
+}
+
+// Main thread: polls every 100 ms for ~3 s after a change, then once a second.
+- (void)noteChange {
+    _fastUntilNs = pm_now_ns() + 3 * NSEC_PER_SEC;
+}
+
+- (void)setPollFast:(BOOL)fast {
+    if (!_timer || fast == _fast) return;
+    _fast = fast;
+    uint64_t interval = fast ? NSEC_PER_SEC / 10 : NSEC_PER_SEC;
+    dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, interval), interval, interval / 4);
 }
 
 // Main thread.
@@ -5561,9 +5579,20 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
         uint32_t bits;
         memcpy(&bits, &headroom, sizeof(bits));
         atomic_store_explicit(&headroomBits, bits, memory_order_relaxed);
+        if (headroom != _lastHeadroom) {
+            _lastHeadroom = headroom;
+            [self noteChange];
+        }
+        [self setPollFast:pm_now_ns() < _fastUntilNs];
         bool changed = !_published || (space == NULL) != (_lastSpace == NULL) || (space && !CFEqual(space, _lastSpace));
         if (changed) {
             _published = YES;
+            uint64_t nowNs = pm_now_ns();
+            if (nowNs - _lastLogNs >= NSEC_PER_SEC) {
+                _lastLogNs = nowNs;
+                NSString *name = space ? CFBridgingRelease(CGColorSpaceCopyName(space)) : nil;
+                NSLog(@"Pure Metal: HDR colorspace changed to %@", name ?: (space ? @"(unnamed)" : @"none"));
+            }
             if (_lastSpace) CGColorSpaceRelease(_lastSpace);
             _lastSpace = space ? CGColorSpaceRetain(space) : NULL;
             pthread_mutex_lock(&lock);
@@ -5866,7 +5895,19 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     if (linear) {
         uint32_t bits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
         memcpy(&params[1], &bits, sizeof(bits));
-        params[4] = pm_surface_edr_headroom(s);
+        // The watcher samples AppKit about once a second, so its value steps while macOS ramps EDR; ease toward it per present
+        // (time constant ~200 ms). No allocation, no locks.
+        float target = pm_surface_edr_headroom(s);
+        uint64_t nowNs = pm_now_ns();
+        if (s->hdrSmoothedNs == 0 || s->hdrSmoothed < 1.0f) {
+            s->hdrSmoothed = target;
+        } else {
+            float dt = (float)(nowNs - s->hdrSmoothedNs) * 1.0e-9f;
+            if (dt > 1.0f) dt = 1.0f;
+            s->hdrSmoothed += (target - s->hdrSmoothed) * (1.0f - expf(-dt / 0.2f));
+        }
+        s->hdrSmoothedNs = nowNs;
+        params[4] = s->hdrSmoothed >= 1.0f ? s->hdrSmoothed : 1.0f;
     }
     PM_IF_M4(d) {
         id<MTL4ArgumentTable> table = PM_OBJ(id<MTL4ArgumentTable>, d->m4PresentTable);

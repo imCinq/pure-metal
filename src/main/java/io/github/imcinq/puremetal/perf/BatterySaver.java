@@ -86,6 +86,11 @@ public final class BatterySaver {
         return cap > 0 ? Math.min(limit, cap) : limit;
     }
 
+    /** The active cap (60, or 30 when backing off, at most the refresh rate); 0 when Battery Saver is off or has not polled yet. */
+    public static int activeCap() {
+        return enabled ? cap : 0;
+    }
+
     /** For the F3 line: 0 off, 1 on, 2 on and backing off. */
     public static int debugState() {
         return !enabled ? 0 : backingOff ? 2 : 1;
