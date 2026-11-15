@@ -54,6 +54,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 | M5 Max, 48 GB | 0.4.4.1 | 940.9 | 1.9 ms | 3.8 ms |
 | M3 Max, 36 GB | 0.4.4.1 | 551.6 | 3.2 ms | 6.3 ms |
 | M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
+| M1 Air, 8 GB | 0.4.5 | 182.2 | 10.1 ms | 22.4 ms |
 
 To measure on your own Mac, see [Run your own benchmark](#run-your-own-benchmark).
 
