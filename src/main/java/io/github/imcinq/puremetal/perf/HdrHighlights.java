@@ -22,6 +22,12 @@ public final class HdrHighlights {
      */
     public static final boolean COMPARE = Boolean.getBoolean("puremetal.hdrCompare");
 
+    /** How long the boost takes to fade out when a screen opens, and back in when it closes. */
+    private static final long RAMP_NS = 200_000_000L;
+    /** 0 = no boost, 1 = full boost; moves toward the goal by the time passed since the last frame. */
+    private static float level = 1.0F;
+    private static long rampNs;
+
     private static volatile boolean enabled = readEnabled();
     /** What the surface was created with: true when the layer is the HDR one for this run. */
     public static final boolean ACTIVE = enabled;
@@ -82,12 +88,25 @@ public final class HdrHighlights {
 
     /**
      * The boost cap for the present pass, 1.0 meaning no change. The final image already has the HUD and menus in it and
-     * cannot tell them from the world, so the boost is off whenever a screen is open (the HUD still shows during play).
+     * cannot tell them from the world, so the boost fades out over RAMP_NS whenever a screen is open (the HUD still shows during
+     * play) and back in when it closes, instead of snapping. It is always 1.0 while Battery Saver is on. Render thread, once per
+     * frame; no allocation.
      */
     public static float boost(final float headroom) {
-        if (Minecraft.getInstance().gui.screen() != null) {
+        long now = System.nanoTime();
+        if (BatterySaver.enabled()) {
+            level = 0.0F;
+            rampNs = now;
             return 1.0F;
         }
-        return Math.max(1.0F, Math.min(headroom, MAX_BOOST));
+        float goal = Minecraft.getInstance().gui.screen() != null ? 0.0F : 1.0F;
+        if (rampNs != 0L && level != goal) {
+            float step = (float) ((now - rampNs) / (double) RAMP_NS);
+            level = goal > level ? Math.min(goal, level + step) : Math.max(goal, level - step);
+        } else if (rampNs == 0L) {
+            level = goal;
+        }
+        rampNs = now;
+        return 1.0F + (Math.max(1.0F, Math.min(headroom, MAX_BOOST)) - 1.0F) * level;
     }
 }

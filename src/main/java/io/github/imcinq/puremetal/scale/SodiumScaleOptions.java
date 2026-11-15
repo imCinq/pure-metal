@@ -110,6 +110,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setName(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.name())
                         .setTooltip(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.tooltip())
                         .setImpact(OptionImpact.LOW)
+                        .setFlags(OptionFlag.REQUIRES_GAME_RESTART)
                         .setDefaultValue(false)
                         .setStorageHandler(() -> {
                         })

@@ -443,7 +443,7 @@ typedef struct PMDevice {
     MTLPixelFormat upscaleDepthFormat;
     // Upscale result (temporal or bilinear/MetalFX spatial) still to be stretched into bgDst (the full-size target): folded into
     // the next pass that loads bgDst as that pass's first draw, or encoded as a pass of its own before anything else runs
-    // (flush_backdrop). PUREMETAL_UPSCALE_FOLD=0 makes pm_upscale encode its own pass again.
+    // (flush_backdrop). PUREMETAL_UPSCALE_FOLD=0 makes pm_upscale encode its own pass again and keep the scaled depth.
     void *bgDst, *bgSrc;     // id<MTLTexture> (root texture of the target / the image to stretch), retained while pending
     float bgSharp;           // sharpening amount of the pending stretch (0 = none)
     bool foldUpscale;
@@ -5415,7 +5415,8 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
         // The world pass that drew `src` is the last user of its depth: RenderScale.end runs after the world, its post effects and the
         // hand, this path reads only color (MetalFX Temporal has its own entry point and keeps depth), and the next frame clears the
         // world textures first. Same rule as the presented image's last pass; end_parked_actions still keeps depth for opt-in probes.
-        if (d->parked && d->parkedColors[0] && root_texture(d->parkedColors[0]) == root_texture(srcView)) end_parked_store(d, MTLStoreActionDontCare);
+        // PUREMETAL_UPSCALE_FOLD=0 turns this off too (one kill switch for the whole change).
+        if (d->foldUpscale && d->parked && d->parkedColors[0] && root_texture(d->parkedColors[0]) == root_texture(srcView)) end_parked_store(d, MTLStoreActionDontCare);
         id<MTLCommandBuffer> cb = current_cb(d);
         if (!cb) return -1;
         id<MTLTexture> src = PM_OBJ(id<MTLTexture>, srcView);
