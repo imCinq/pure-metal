@@ -10,7 +10,7 @@ int main(void) { @autoreleasepool {
         return 0;
     }
     CAMetalLayer *layer = [CAMetalLayer layer];
-    PMSurface *surface = pm_surface_create(device, (__bridge void *)layer);
+    PMSurface *surface = pm_surface_create(device, (__bridge void *)layer, 0);
     assert(surface && surface->shownContext);
     // Simulate a presented handler that has not arrived when the surface closes.
     PMShownContext *context = surface->shownContext;
