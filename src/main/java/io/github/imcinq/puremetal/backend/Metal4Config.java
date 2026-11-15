@@ -53,7 +53,7 @@ public final class Metal4Config {
         };
     }
 
-    static boolean effective() {
+    public static boolean effective() {
         Boolean override = override();
         return override != null ? override : enabled;
     }

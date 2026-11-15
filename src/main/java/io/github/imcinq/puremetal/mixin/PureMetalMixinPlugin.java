@@ -19,6 +19,7 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
     private static Boolean sodiumLodSupported;
     @Override
     public void onLoad(final String mixinPackage) {
+        io.github.imcinq.puremetal.bench.UserBench.apply();
     }
 
     @Override

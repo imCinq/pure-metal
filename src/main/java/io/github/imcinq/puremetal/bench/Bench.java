@@ -26,6 +26,11 @@ public final class Bench {
     /** Optional commands run once on joining, separated by ';' (e.g. "gamemode creative;tp @s 0 140 0 0 0"); the world needs cheats on. */
     private static final String COMMAND = System.getProperty("puremetal.benchCommand");
     private static boolean commandSent;
+    private static boolean lapReset;
+    private static boolean maxFpsForced;
+    private static int savedMaxFps;
+    private static boolean savedVsync;
+    private static net.minecraft.client.InactivityFpsLimit savedInactivity;
     /**
      * -Dpuremetal.benchGraphics=fast|fancy|fabulous: sets the graphics preset in memory for the run. A preset rewrites about seventeen
      * individual options (render distance, simulation distance, entity distance, ...), so every one of them is saved first and put back
@@ -288,6 +293,18 @@ public final class Bench {
             last = now;
             return;
         }
+        if (UserBench.enabled() && !maxFpsForced) {
+            // Player build: no frame limit, set only once the player is in the world (after vanilla's startup save) and put back
+            // before the quit. Saving is not held: holding it would also block the "started cleanly" save and make the next launch fall back to OpenGL.
+            maxFpsForced = true;
+            savedMaxFps = minecraft.options.framerateLimit().get();
+            savedInactivity = minecraft.options.inactivityFpsLimit().get();
+            minecraft.options.framerateLimit().set(260);
+            savedVsync = minecraft.options.enableVsync().get();
+            minecraft.options.enableVsync().set(false);
+            // The default "afk" limit drops the game to 30 FPS after about a minute without input, and the benchmark flies by itself.
+            minecraft.options.inactivityFpsLimit().set(net.minecraft.client.InactivityFpsLimit.MINIMIZED);
+        }
         if (SHOT != null) {
             if (!minecraft.gui.hud.isHidden()) {
                 minecraft.gui.hud.toggle();
@@ -321,6 +338,14 @@ public final class Bench {
         }
         if (recordStart == 0) {
             if (now - inWorldSince < WARMUP_NS) {
+                last = now;
+                return;
+            }
+            if (UserBench.enabled() && !lapReset && minecraft.player != null) {
+                // Player build: the warm-up flew the route and generated its terrain. Go back to the start and measure over that terrain.
+                lapReset = true;
+                minecraft.player.connection.sendCommand(UserBench.LAP_START);
+                inWorldSince = now - WARMUP_NS + UserBench.LAP_SETTLE_NS;
                 last = now;
                 return;
             }
@@ -362,6 +387,9 @@ public final class Bench {
             frames = Arrays.copyOf(frames, count * 2);
         }
         frames[count++] = now - last;
+        if (SPIKE_LOG && now - last > 20_000_000L) {
+            LOGGER.info("BENCH-SPIKE t={}ms frameMs={}", now / 1_000_000L, String.format("%.2f", (now - last) / 1e6));
+        }
         io.github.imcinq.puremetal.backend.EncodeProfile.frame(gpuNs);
         if (SHOT != null && !shotTaken && now - recordStart >= 3_000_000_000L) {
             shotTaken = true;
@@ -387,9 +415,6 @@ public final class Bench {
             prevPresentCount = presentGpuCount;
             if (abShotPhase == 0 && abSlot == 0 && now - recordStart >= 6_000_000_000L && now - sliceStart >= SETTLE_NS) {
                 // Three consecutive frames A, B, A of the same still scene: A1 vs A2 is the noise floor, A1 vs B the effect.
-        if (SPIKE_LOG && now - last > 20_000_000L) {
-            LOGGER.info("BENCH-SPIKE t={}ms frameMs={}", now / 1_000_000L, String.format("%.2f", (now - last) / 1e6));
-        }
                 abShotPhase = 1;
                 abGrab(minecraft, "ab-A1.png");
                 abHook.accept(true);
@@ -431,6 +456,11 @@ public final class Bench {
             } catch (RuntimeException e) {
                 LOGGER.error("BENCH report failed", e);
             } finally {
+                if (maxFpsForced) {
+                    minecraft.options.framerateLimit().set(savedMaxFps);
+                    minecraft.options.enableVsync().set(savedVsync);
+                    minecraft.options.inactivityFpsLimit().set(savedInactivity);
+                }
                 restoreGraphics(minecraft);
                 minecraft.stop();
             }
@@ -476,6 +506,9 @@ public final class Bench {
         Arrays.sort(sorted);
         double avgFps = count / (elapsed / 1e9);
         String backend = RenderSystem.getDevice().getDeviceInfo().backendName();
+        if (UserBench.enabled()) {
+            UserBench.write(minecraft, sorted, elapsed);
+        }
         LOGGER.info(
             "BENCH backend={} res={}x{} frames={} avgFps={} medianMs={} p98Ms={} p99.5Ms={} maxMs={} | submitWaitMs/f={} gpuMsPerFrame={} | submits/f={} passes/f={} draws/f={} metalDraws/f={} directFallbacks={}",
             backend, minecraft.getWindow().getWidth(), minecraft.getWindow().getHeight(), count, fmt(avgFps), ms(sorted[count / 2]), ms(pct(sorted, 0.98)), ms(pct(sorted, 0.995)), ms(sorted[count - 1]),
