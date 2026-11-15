@@ -4591,7 +4591,7 @@ typedef struct PMSurface {
     // HDR highlights (experimental, fixed at creation): the layer is a linear RGBA16Float extended-range surface and the
     // present pass boosts bright pixels up to hdrBoost (1.0 = SDR look). Set by pm_surface_set_hdr_boost.
     int hdr;
-    atomic_uint hdrBoostBits;         // float bits of the boost cap, 1.0f when off or no headroom
+    atomic_uint hdrBoostBits;         // float bits of the boost target (from the potential headroom), 1.0f when off
     void *hdrWatcher;                 // PMHdrWatcher, retained; NULL on a normal layer. Owns the screen snapshot (main thread writes it)
     atomic_int hdrLinear;             // the layer holds linear values in the display's own space (else sRGB passthrough); written by the present thread, read by it and by pm_surface_hdr_linear
     uint32_t hdrPresentWidth;         // drawable width of the frame being presented (compare mode splits on this, not the source width)
@@ -4670,17 +4670,25 @@ static NSString *const PRESENT_SHADER =
 // strength (lava, fire, glowing blocks). Constants: HDR_WHITE_START and HDR_WARM_START are where each ramp begins (0 to 1),
 // HDR_WARM_SAT the saturation a warm pixel needs. The warm mask needs red >= green >= blue and a hue past pure red (so green,
 // cyan, blue, magenta and pure red are never boosted).
-// p.x is the drawable height, p.y the boost cap (1.0 = off), p.z 1 for linear output, p.w the drawable width in compare mode, 0 otherwise (dev/debug: the boost
+// p.x is the drawable height, p.y the boost target (1.0 = off), p.z 1 for linear output, p.w the drawable width in compare mode, 0 otherwise (dev/debug: the boost
 // applies to the left half only, the right half is the same image with boost 1.0, and a 2 px divider is drawn between them).
+// q.x is the screen's CURRENT EDR headroom. macOS only grants headroom once content above 1.0 is presented, so the target (p.y)
+// comes from the potential headroom and can exceed what the screen offers right now (at rest it is 1.0). The boosted range is
+// then rolled off toward limit = max(current, HDR_TRIGGER): values up to a knee halfway between 1.0 and the limit pass
+// untouched, above it they approach the limit smoothly (exponential, slope-continuous), scaled as a whole so hue holds. The
+// trigger keeps a little content above 1.0 even at headroom 1.0 (the system clamps it, which is the same as an SDR clip for these
+// near-white pixels) so macOS has a reason to allocate headroom; once it does, the limit follows the current value up.
 #define HDR_WHITE_START "0.90"
 #define HDR_WARM_START "0.85"
 #define HDR_WARM_SAT "0.45"
+#define HDR_TRIGGER "1.25"
 // Appended to PRESENT_SHADER (same V and vertex function) only when the layer is HDR.
 static NSString *const PRESENT_HDR_SHADER =
     @"float3 pm_srgb_decode(float3 c) {\n"
      "  return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);\n"
      "}\n"
-     "fragment float4 pm_present_hdr_fs(V in [[stage_in]], texture2d<float> src [[texture(0)]], constant float4 &p [[buffer(0)]]) {\n"
+     "fragment float4 pm_present_hdr_fs(V in [[stage_in]], texture2d<float> src [[texture(0)]], constant float4 *pp [[buffer(0)]]) {\n"
+     "  float4 p = pp[0], q = pp[1];\n"
      "  uint2 c = uint2(in.pos.xy);\n"
      "  float3 rgb = src.read(uint2(c.x, uint(p.x) - 1 - c.y)).rgb;\n"
      "  if (p.z < 0.5) return float4(rgb, 1.0);\n"
@@ -4699,7 +4707,18 @@ static NSString *const PRESENT_HDR_SHADER =
      "    if (c.x >= half_w) cap = 1.0;\n"
      "  }\n"
      "  float3 lin = pm_srgb_decode(rgb);\n"
-     "  return float4(lin * mix(1.0, max(cap, 1.0), w), 1.0);\n"
+     "  cap = max(cap, 1.0);\n"
+     "  float3 outc = lin * mix(1.0, cap, w);\n"
+     "  float limit = max(q.x, " HDR_TRIGGER ");\n"
+     "  float m = max(outc.r, max(outc.g, outc.b));\n"
+     "  if (limit < cap && m > 1.0) {\n"
+     "    float knee = 1.0 + 0.5 * (limit - 1.0);\n"
+     "    if (m > knee) {\n"
+     "      float span = limit - knee;\n"
+     "      outc *= (knee + span * (1.0 - exp(-(m - knee) / span))) / m;\n"
+     "    }\n"
+     "  }\n"
+     "  return float4(outc, 1.0);\n"
      "}\n";
 
 static int ensure_present_pipeline(PMDevice *d, MTLPixelFormat format, char *err, int errCap) {
@@ -5694,6 +5713,12 @@ static void apply_layer_config_hdr(PMSurface *s) {
     CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
     l.colorspace = space;
     l.wantsExtendedDynamicRangeContent = space ? YES : NO;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    // macOS 26+: ask for full dynamic range on this layer only (the setting is new there; older systems use the flag above).
+    if (@available(macOS 26.0, *)) {
+        l.preferredDynamicRange = space ? CADynamicRangeHigh : CADynamicRangeStandard;
+    }
+#endif
     atomic_store_explicit(&s->hdrLinear, space ? 1 : 0, memory_order_relaxed);
     if (space) CGColorSpaceRelease(space);
 }
@@ -5828,14 +5853,16 @@ static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, 
     [e setFragmentBytes:&height length:sizeof(height) atIndex:0];
 }
 
-// HDR layer: the shader reads a float4 (height, boost cap, linear flag).
+PM_EXPORT float pm_surface_edr_headroom(PMSurface *s);
+// HDR layer: the shader reads two float4: (height, boost target, linear flag, compare width) and (current EDR headroom, 0, 0, 0).
 static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height) {
     PMDevice *d = s->device;
     int linear = atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
-    float params[4] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, s->hdrCompare ? (float)s->hdrPresentWidth : 0.0f };
+    float params[8] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, s->hdrCompare ? (float)s->hdrPresentWidth : 0.0f, 1.0f, 0.0f, 0.0f, 0.0f };
     if (linear) {
         uint32_t bits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
         memcpy(&params[1], &bits, sizeof(bits));
+        params[4] = pm_surface_edr_headroom(s);
     }
     PM_IF_M4(d) {
         id<MTL4ArgumentTable> table = PM_OBJ(id<MTL4ArgumentTable>, d->m4PresentTable);

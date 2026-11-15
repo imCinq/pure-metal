@@ -59,7 +59,7 @@ public final class HdrHighlights {
         long now = System.nanoTime();
         if (debugText.isEmpty() || now - debugBuiltNs >= HEADROOM_RECHECK_NS) {
             debugBuiltNs = now;
-            debugText = String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), boost %.2f, colorspace %s, compare %s",
+            debugText = String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), target boost %.2f, colorspace %s, compare %s",
                 shownHeadroom, shownMax, shownBoost, shownLinear ? "ok" : "untagged", COMPARE ? "on" : "off");
         }
         return debugText;
@@ -91,8 +91,11 @@ public final class HdrHighlights {
      * cannot tell them from the world, so the boost fades out over RAMP_NS whenever a screen is open (the HUD still shows during
      * play) and back in when it closes, instead of snapping. It is always 1.0 while Battery Saver is on. Render thread, once per
      * frame; no allocation.
+     * The target comes from the screen's potential (maximum) headroom, not its current one: macOS only grants EDR headroom once
+     * content above 1.0 is actually presented, so a target based on the current headroom (1.0 at rest) would never ask for any.
+     * The present shader rolls the boosted range off toward the current headroom, so the image stays right while it ramps up.
      */
-    public static float boost(final float headroom) {
+    public static float boost(final float maxHeadroom) {
         long now = System.nanoTime();
         if (BatterySaver.enabled()) {
             level = 0.0F;
@@ -107,6 +110,6 @@ public final class HdrHighlights {
             level = goal;
         }
         rampNs = now;
-        return 1.0F + (Math.max(1.0F, Math.min(headroom, MAX_BOOST)) - 1.0F) * level;
+        return 1.0F + (Math.max(1.0F, Math.min(maxHeadroom, MAX_BOOST)) - 1.0F) * level;
     }
 }

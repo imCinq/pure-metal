@@ -106,7 +106,7 @@ final class MetalSurface implements GpuSurfaceBackend {
         FrameTrace.mark(FrameTrace.FRAME, 0);
     }
 
-    /** HDR highlights only: the screen's EDR headroom is read once a second, the boost cap is sent when it changes. */
+    /** HDR highlights only: the screen's EDR headroom is read once a second, the boost target (from the potential headroom) is sent when it changes. */
     private void updateHdr() {
         long now = System.nanoTime();
         if (this.hdrCheckedNs == 0L || now - this.hdrCheckedNs > io.github.imcinq.puremetal.perf.HdrHighlights.HEADROOM_RECHECK_NS) {
@@ -115,7 +115,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             this.hdrMaxHeadroom = MetalNative.surfaceEdrMax(this.surface);
             this.hdrLinear = MetalNative.surfaceHdrLinear(this.surface);
         }
-        float boost = io.github.imcinq.puremetal.perf.HdrHighlights.boost(this.hdrHeadroom);
+        float boost = io.github.imcinq.puremetal.perf.HdrHighlights.boost(this.hdrMaxHeadroom);
         if (boost != this.hdrSentBoost) {
             this.hdrSentBoost = boost;
             MetalNative.surfaceSetHdrBoost(this.surface, boost);
