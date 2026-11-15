@@ -5,7 +5,6 @@
   "puremetal.options.section.terrain": "Terrain",
   "puremetal.options.section.misc": "Miscellaneous",
   "puremetal.options.section.experimental": "Experimental",
-  "puremetal.options.section.other": "Other",
   "puremetal.options.renderScale": "Render Scale",
   "puremetal.options.renderScale.native": "Native",
   "puremetal.options.renderScale.readout": "Draws the world at %1$s×%2$s, then enlarges it to fill your screen (%3$s×%4$s).",

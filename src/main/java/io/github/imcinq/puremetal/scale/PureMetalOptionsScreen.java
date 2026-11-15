@@ -9,7 +9,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.OptionsSubScreen;
 import net.minecraft.network.chat.Component;
 
-/** Pure Metal's own screen, opened from Video Settings: Resolution, Terrain and Other (Sodium's page groups the same options). */
+/** Pure Metal's own screen, opened from Video Settings: Resolution, Terrain, Miscellaneous and Experimental (Sodium's page groups the same options). */
 public final class PureMetalOptionsScreen extends OptionsSubScreen {
     public PureMetalOptionsScreen(final Screen lastScreen, final Options options) {
         super(lastScreen, options, Component.literal("Pure Metal"));
@@ -31,7 +31,7 @@ public final class PureMetalOptionsScreen extends OptionsSubScreen {
         this.list.addSmall(LodOptions.vanilla());
         this.list.addHeader(Lang.text("puremetal.options.section.misc"));
         this.list.addSmall(GenerationCapOptions.vanilla(), io.github.imcinq.puremetal.perf.BatterySaverOptions.vanilla());
-        this.list.addHeader(Lang.text("puremetal.options.section.other"));
+        this.list.addHeader(Lang.text("puremetal.options.section.experimental"));
         this.list.addSmall(ScaleOptions.vanillaMetal4(), io.github.imcinq.puremetal.perf.FramePacingOptions.vanilla());
         this.list.addSmall(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.vanilla(), null);
     }
