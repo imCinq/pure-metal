@@ -32,7 +32,7 @@ public final class MetalNative {
     private static SymbolLookup lookup;
 
     // Formats and device.
-    private static MethodHandle H_formatCount, H_pixelFormatSupported;
+    private static MethodHandle H_formatCount, H_pixelFormatSupported, H_powerState;
     private static MethodHandle H_deviceCheck, H_deviceCreate, H_deviceName, H_deviceMaxBufferLength, H_deviceWorkingSet;
     private static MethodHandle H_deviceLastError, H_deviceFailed, H_deviceDestroy, H_release, H_setLabel;
     private static MethodHandle H_traceEnable, H_traceMark, H_traceRead, H_encEnable, H_encTake;
@@ -100,6 +100,7 @@ public final class MetalNative {
     private static void bind() {
         final MemoryLayout I = JAVA_INT, L = JAVA_LONG, F = JAVA_FLOAT, D = JAVA_DOUBLE;
         H_formatCount = fn("pm_format_count", true, I);
+        H_powerState = fn("pm_power_state", false, I);
         H_pixelFormatSupported = fn("pm_pixel_format_supported", true, I, I);
         H_deviceCheck = fn("pm_device_check", false, I, L, I);
         H_deviceCreate = fn("pm_device_create", false, L, I, I);
@@ -192,6 +193,21 @@ public final class MetalNative {
         H_temporalPrepare = fn("pm_temporal_prepare", false, I, L, L, L, L, L);
         H_temporalUpscale = fn("pm_temporal_upscale", false, I, L, L, L, L, F, F, I);
         H_temporalInfo = fn("pm_temporal_info", false, I, L, L, I);
+    }
+
+    /**
+     * Battery Saver: the thermal state (0 nominal, 1 fair, 2 serious, 3 critical) in the low two bits plus 4 while Low Power
+     * Mode is on. 0 when the library is not loaded. Callers poll this about once a second.
+     */
+    public static int powerState() {
+        if (H_powerState == null) {
+            return 0;
+        }
+        try {
+            return (int) H_powerState.invokeExact();
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
     }
 
     static int formatCount() {

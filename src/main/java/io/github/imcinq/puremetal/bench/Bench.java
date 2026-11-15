@@ -62,6 +62,12 @@ public final class Bench {
      */
     private static final String AB = System.getProperty("puremetal.benchAB");
     private static final Map<String, java.util.function.Consumer<Boolean>> AB_HOOKS = new HashMap<>();
+
+    static {
+        // Battery Saver A/B: B turns it on in memory only (nothing is written to config), so its 60 FPS cap applies in B
+        // even when the dev options lift Max FPS. Combine with -PbatterySaverForceBackoff to test the 30 FPS backoff.
+        AB_HOOKS.put("batterySaver", io.github.imcinq.puremetal.perf.BatterySaver::setEnabledTransient);
+    }
     private static java.util.function.Consumer<Boolean> abHook;
     private static int abSlot = -1;
     private static final long[][] abFrames = new long[2][65536];
@@ -147,10 +153,12 @@ public final class Bench {
             long[] sorted = Arrays.copyOf(abFrames[i], n);
             Arrays.sort(sorted);
             LOGGER.info(
-                "BENCH-AB {} {} frames={} avgFps={} medianMs={} p98Ms={} p99.5Ms={} attachLoadMB/f={} attachStoreMB/f={} gpuMs/f={} presentGpuMs/cb={}",
+                "BENCH-AB {} {} frames={} avgFps={} medianMs={} p98Ms={} p99.5Ms={} attachLoadMB/f={} attachStoreMB/f={} gpuMs/f={} gpuBusy%={} presentGpuMs/cb={}",
                 AB, names[i], n, fmt(n / (abNs[i] / 1e9)), ms(sorted[n / 2]), ms(pct(sorted, 0.98)), ms(pct(sorted, 0.995)),
                 fmt(abLoad[i] / n), fmt(abStore[i] / n),
                 abGpuFrames[i] == 0 ? "n/a" : fmt(abGpuNs[i] / 1e6 / abGpuFrames[i]),
+                // Power proxy: GPU ms per frame x frames / wall ms x 100.
+                abGpuFrames[i] == 0 ? "n/a" : fmt(abGpuNs[i] / 1e6 / abGpuFrames[i] * n / (abNs[i] / 1e6) * 100.0),
                 abPresentCount[i] == 0 ? "n/a" : fmt(abPresentNs[i] / 1e6 / abPresentCount[i])
             );
         }

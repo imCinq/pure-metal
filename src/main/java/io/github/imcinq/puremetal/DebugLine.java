@@ -2,6 +2,7 @@ package io.github.imcinq.puremetal;
 
 import io.github.imcinq.puremetal.backend.DistantHorizonsExperiment;
 import io.github.imcinq.puremetal.backend.MetalInfo;
+import io.github.imcinq.puremetal.perf.BatterySaver;
 import io.github.imcinq.puremetal.scale.RenderScale;
 import io.github.imcinq.puremetal.scale.ScaleConfig;
 import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
@@ -21,6 +22,7 @@ public final class DebugLine implements DebugScreenEntry {
     private String gpu = "";
     private int scale = -1;
     private boolean auto;
+    private int battery;
     private ScaleConfig.@Nullable Upscaler upscaler;
     private String text = INACTIVE;
 
@@ -51,12 +53,14 @@ public final class DebugLine implements DebugScreenEntry {
         String name = MetalInfo.gpuName();
         int percent = ScaleConfig.scale();
         boolean autoScale = ScaleConfig.autoActive();
+        int batteryState = BatterySaver.debugState();
         ScaleConfig.Upscaler kind = RenderScale.lastUsedUpscaler();
-        if (!now.equals(this.backend) || !name.equals(this.gpu) || percent != this.scale || autoScale != this.auto || kind != this.upscaler) {
+        if (!now.equals(this.backend) || !name.equals(this.gpu) || percent != this.scale || autoScale != this.auto || batteryState != this.battery || kind != this.upscaler) {
             this.backend = now;
             this.gpu = name;
             this.scale = percent;
             this.auto = autoScale;
+            this.battery = batteryState;
             this.upscaler = kind;
             String scaler = percent >= ScaleConfig.MAX_SCALE || kind == null ? "Native" : switch (kind) {
                 case METALFX -> "Spatial";
@@ -64,7 +68,7 @@ public final class DebugLine implements DebugScreenEntry {
                 case BILINEAR -> "Bilinear";
             };
             String dh = DistantHorizonsExperiment.debugNote();
-            this.text = "Pure Metal: " + now + (name.isEmpty() ? "" : " | " + name) + " | " + scaler + (autoScale ? " Auto " : " ") + percent + "%" + (dh == null ? "" : " | " + dh);
+            this.text = "Pure Metal: " + now + (name.isEmpty() ? "" : " | " + name) + " | " + scaler + (autoScale ? " Auto " : " ") + percent + "%" + (batteryState == 0 ? "" : batteryState == 1 ? " | Battery Saver: on" : " | Battery Saver: backing off") + (dh == null ? "" : " | " + dh);
         }
         return this.text;
     }

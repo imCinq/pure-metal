@@ -144,6 +144,7 @@ loom {
 			if (project.hasProperty("benchScales")) vmArgs "-Dpuremetal.benchScales=" + project.property("benchScales")
 			if (project.hasProperty("benchGraphics")) vmArgs "-Dpuremetal.benchGraphics=" + project.property("benchGraphics")
 			if (project.hasProperty("benchAB")) vmArgs "-Dpuremetal.benchAB=" + project.property("benchAB")
+			if (project.hasProperty("batterySaverForceBackoff")) vmArgs "-Dpuremetal.batterySaverForceBackoff=true"
 			if (project.hasProperty("benchSpikeLog")) vmArgs "-Dpuremetal.benchSpikeLog=true"
 			if (project.hasProperty("submitsInFlight")) vmArgs "-Dpuremetal.submitsInFlight=" + project.property("submitsInFlight")
 			if (project.hasProperty("noPresent")) vmArgs "-Dpuremetal.noPresent=true"
