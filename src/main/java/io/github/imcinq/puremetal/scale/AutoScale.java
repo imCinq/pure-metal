@@ -13,7 +13,9 @@ import net.minecraft.client.gui.screens.Screen;
  * Auto Render Scale: steps the render scale between a few fixed values so the GPU keeps up with the FPS target (Max FPS, or the
  * display's refresh rate when unlimited). Every two seconds it compares the average GPU time per frame with the frame budget:
  * over budget steps down, enough headroom steps up, and at most one step changes every three seconds. It never limits FPS, and
- * when the CPU is the bottleneck the GPU time stays low, so it simply never steps down. Render thread only.
+ * when the CPU is the bottleneck the GPU time stays low, so it simply never steps down. A lower scale is not always faster (fixed
+ * costs such as vertex work and the upscale itself do not shrink): when a step down does not cut the GPU time by MIN_GAIN while
+ * still over budget, it steps back up and does not step down again for a while, longer after each repeat. Render thread only.
  */
 public final class AutoScale {
     private static final int[] STEPS = {100, 85, 70, 60};
@@ -22,6 +24,10 @@ public final class AutoScale {
     private static final long REFRESH_RECHECK_NS = 1_000_000_000L;
     /** Stepping up must leave this share of the budget unused, so it does not step straight back down. */
     private static final double HEADROOM = 0.9;
+    /** A step down must cut the GPU time per frame by at least this share (while still over budget), or it is undone. */
+    private static final double MIN_GAIN = 0.05;
+    private static final long BLOCK_MIN_NS = 30_000_000_000L;
+    private static final long BLOCK_MAX_NS = 300_000_000_000L;
     /** Vanilla treats this Max FPS and above as unlimited. */
     private static final int UNLIMITED = 260;
     /** The bench sets its own scale, and -Dpuremetal.profile's stage timing splits command buffers outside the GPU counters. */
@@ -33,6 +39,13 @@ public final class AutoScale {
     private static final int SETTLE_FRAMES = 5;
 
     private static int step;
+    /** Set after a step down: the next evaluation compares its GPU time with beforeMs. */
+    private static boolean checking;
+    private static double beforeMs;
+    /** Until blockUntilNs the lowest step allowed is maxStep (a step below it did not help); blockNs is the next block's length. */
+    private static int maxStep = STEPS.length - 1;
+    private static long blockUntilNs;
+    private static long blockNs = BLOCK_MIN_NS;
     private static boolean active;
     private static int settle;
     private static long gpuNs;
@@ -53,8 +66,17 @@ public final class AutoScale {
     /** Auto Render Scale was turned on or off: start again from 100%. */
     static void restart() {
         step = 0;
+        resetMemory();
         active = false;
         lastChangeNs = System.nanoTime() - COOLDOWN_NS;
+    }
+
+    /** Forgets what stepping down did: the conditions it was measured under changed. */
+    private static void resetMemory() {
+        checking = false;
+        maxStep = STEPS.length - 1;
+        blockUntilNs = 0L;
+        blockNs = BLOCK_MIN_NS;
     }
 
     /** The command encoder should read the GPU time this frame. */
@@ -89,6 +111,7 @@ public final class AutoScale {
             outputScale = output;
             width = window.getWidth();
             height = window.getHeight();
+            resetMemory();
             startWindow(now);
             return;
         }
@@ -108,8 +131,24 @@ public final class AutoScale {
             double gpuMs = Math.min(gpuNs, now - windowStartNs) / 1.0e6 / frames;
             double budgetMs = 1000.0 / target;
             int next = step;
-            if (gpuMs > budgetMs) {
-                next = Math.min(step + 1, STEPS.length - 1);
+            boolean blocked = blockUntilNs != 0L && now - blockUntilNs < 0L;
+            if (checking) {
+                checking = false;
+                if (gpuMs > budgetMs && gpuMs > beforeMs * (1.0 - MIN_GAIN) && step > 0) {
+                    // The smaller image did not make the frame meaningfully faster: go back and keep off this step for a while.
+                    next = step - 1;
+                    maxStep = next;
+                    blockUntilNs = now + blockNs;
+                    blockNs = Math.min(blockNs * 2L, BLOCK_MAX_NS);
+                } else {
+                    blockNs = BLOCK_MIN_NS;
+                }
+            } else if (gpuMs > budgetMs) {
+                next = Math.min(step + 1, blocked ? maxStep : STEPS.length - 1);
+                if (next != step) {
+                    checking = true;
+                    beforeMs = gpuMs;
+                }
             } else if (step > 0) {
                 // GPU time follows the pixel count, so it grows with the square of the size ratio.
                 double ratio = fraction(STEPS[step - 1]) / fraction(STEPS[step]);

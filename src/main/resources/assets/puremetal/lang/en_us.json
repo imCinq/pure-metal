@@ -10,7 +10,7 @@
   "puremetal.options.renderScale.native": "Native",
   "puremetal.options.renderScale.readout": "Draws the world at %1$s×%2$s, then enlarges it to fill your screen (%3$s×%4$s).",
   "puremetal.options.renderScale.readout.native": "Draws the world at your full screen size (%1$s×%2$s). No upscaling.",
-  "puremetal.options.renderScale.tooltip": "Fewer pixels = less GPU work = higher FPS. Menus and HUD stay sharp.",
+  "puremetal.options.renderScale.tooltip": "Fewer pixels = less GPU work = higher FPS. Menus and HUD stay sharp. Below 100%, MetalFX Temporal gives the steadiest image (less flicker on leaves and fences).",
   "puremetal.options.renderScale.auto": "Controlled by Auto Render Scale (now %s).",
   "puremetal.options.autoRenderScale": "Auto Render Scale",
   "puremetal.options.autoRenderScale.tooltip": "Automatically lowers Render Scale when your GPU can't keep up with your FPS target (Max FPS, or your display's refresh rate if unlimited), then raises it again when it can. Uses 100, 85, 70 and 60%.\n\nRender Scale is set for you while this is on.",

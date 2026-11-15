@@ -440,9 +440,12 @@ typedef struct PMDevice {
     void *upscaleSampler;    // id<MTLSamplerState>, linear clamp
     void *upscaleDepthPipeline; // the same pass for a target drawn with a Depth32Float attachment, keyed to upscaleDepthFormat
     MTLPixelFormat upscaleDepthFormat;
-    // Temporal upscale result still to be stretched into bgDst (the full-size target): folded into the next pass that loads
-    // bgDst as that pass's first draw, or encoded as a pass of its own before anything else runs (flush_backdrop).
-    void *bgDst, *bgSrc;     // id<MTLTexture> (root texture of the target / the scaler output), retained while pending
+    // Upscale result (temporal or bilinear/MetalFX spatial) still to be stretched into bgDst (the full-size target): folded into
+    // the next pass that loads bgDst as that pass's first draw, or encoded as a pass of its own before anything else runs
+    // (flush_backdrop). PUREMETAL_UPSCALE_FOLD=0 makes pm_upscale encode its own pass again.
+    void *bgDst, *bgSrc;     // id<MTLTexture> (root texture of the target / the image to stretch), retained while pending
+    float bgSharp;           // sharpening amount of the pending stretch (0 = none)
+    bool foldUpscale;
     void *fxScaler;          // id<MTLFXSpatialScaler> keyed to the fx* sizes and format below
     void *fxOut;             // id<MTLTexture>, the scaler's full-size output
     NSUInteger fxInW, fxInH, fxOutW, fxOutH;
@@ -629,7 +632,7 @@ typedef struct PMDevice {
 static void reset_temporal(PMDevice *d);
 static int ensure_upscale_pipeline(PMDevice *d, MTLPixelFormat format);
 static int ensure_upscale_depth_pipeline(PMDevice *d, MTLPixelFormat format);
-static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth);
+static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness);
 
 static void encode_probe(PMDevice *d, void *depth);
 #define DEV_MTL(d) PM_OBJ(id<MTLDevice>, (d)->device)
@@ -2562,6 +2565,8 @@ PM_EXPORT PMDevice *pm_device_create(int debugLabels, int metal4) {
         const char *fold = getenv("PUREMETAL_DEPTH_CLEAR_FOLD");
         // On by default (exactly equal output, one fewer pass break per depth clear); PUREMETAL_DEPTH_CLEAR_FOLD=0 turns it off.
         d->foldDepthClears = !(fold && strcmp(fold, "0") == 0);
+        const char *foldUp = getenv("PUREMETAL_UPSCALE_FOLD");
+        d->foldUpscale = !(foldUp && strcmp(foldUp, "0") == 0);
         // On by default; -Dpuremetal.m4Pipelines=false builds pipelines on Metal 3 while keeping Metal 4 command encoding.
         d->m4Pipelines = true;
         // -Dpuremetal.m4BarrierLog starts its window at PM_M4_LOG_SKIP unless -Dpuremetal.m4BarrierLogSkip moves it (option 10).
@@ -3954,6 +3959,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         // A pending temporal stretch of the one color target this pass loads becomes the pass's first draw: the target is
         // never stored and reloaded in between. Anything else (or any failure to set that up) flushes it as its own pass.
         void *backdropSrc = NULL;
+        float backdropSharp = 0.0f;
         int backdropColor = -1;
         if (d->bgDst && !d->parked) {
             int only = -1, used = 0;
@@ -3970,6 +3976,8 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
                     && width == (int)bt.width && height == (int)bt.height && depthOk
                     && (depth ? ensure_upscale_depth_pipeline(d, bt.pixelFormat) : ensure_upscale_pipeline(d, bt.pixelFormat))) {
                 backdropSrc = d->bgSrc;
+                backdropSharp = d->bgSharp;
+                d->bgSharp = 0.0f;
                 backdropColor = only;
                 d->bgSrc = NULL;
                 pm_release(d->bgDst);
@@ -4067,6 +4075,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
             if (timed) pass_time_undo(d);
             if (backdropSrc) { // keep the stretch pending: the next pass or the frame's end lands it
                 d->bgSrc = backdropSrc;
+                d->bgSharp = backdropSharp;
                 d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(colors[backdropColor])));
             }
             return 0;
@@ -4098,7 +4107,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         }
         if (label && d->debugLabels) enc.label = [NSString stringWithUTF8String:label];
         if (backdropSrc) {
-            draw_stretch(d, enc, PM_OBJ(id<MTLTexture>, backdropSrc), width, height, depth != NULL);
+            draw_stretch(d, enc, PM_OBJ(id<MTLTexture>, backdropSrc), width, height, depth != NULL, backdropSharp);
             pm_release(backdropSrc);
         }
         MTLViewport vp = { 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 };
@@ -4732,23 +4741,25 @@ static int ensure_upscale_depth_pipeline(PMDevice *d, MTLPixelFormat format) {
 }
 
 // Bilinear stretch of `src` over the whole of a `width`x`height` target; the pipeline must already exist.
-static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth) {
+static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness) {
     [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, withDepth ? d->upscaleDepthPipeline : d->upscalePipeline)];
     [e setViewport:(MTLViewport){ 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 }];
     [e setScissorRect:(MTLScissorRect){ 0, 0, (NSUInteger)width, (NSUInteger)height }];
     [e setCullMode:MTLCullModeNone];
     bind_texture(d, e, PM_STAGE_FRAGMENT, src, 0);
     bind_sampler(d, e, PM_STAGE_FRAGMENT, PM_OBJ(id<MTLSamplerState>, d->upscaleSampler), 0);
-    float params[4] = { 1.0f / (float)width, 1.0f / (float)height, 0.0f, 0.0f };
+    float params[4] = { 1.0f / (float)width, 1.0f / (float)height, sharpness, 0.0f };
     bind_bytes(d, e, PM_STAGE_FRAGMENT, params, sizeof(params), 0);
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 }
 
-// Encodes the pending temporal stretch as a pass of its own (nothing folded it into a pass that loads the target).
+// Encodes the pending stretch as a pass of its own (nothing folded it into a pass that loads the target).
 static void flush_backdrop(PMDevice *d) {
     if (!d->bgDst) return;
     void *dstHandle = d->bgDst, *srcHandle = d->bgSrc;
+    float sharp = d->bgSharp;
     d->bgDst = d->bgSrc = NULL;
+    d->bgSharp = 0.0f;
     id<MTLTexture> dst = PM_OBJ(id<MTLTexture>, dstHandle);
     if (ensure_upscale_pipeline(d, dst.pixelFormat)) {
         MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
@@ -4764,7 +4775,7 @@ static void flush_backdrop(PMDevice *d) {
             d->stats[0]++;
             PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
             d->stats[5] += dst.allocatedSize;
-            draw_stretch(d, e, PM_OBJ(id<MTLTexture>, srcHandle), (int)dst.width, (int)dst.height, false);
+            draw_stretch(d, e, PM_OBJ(id<MTLTexture>, srcHandle), (int)dst.width, (int)dst.height, false, sharp);
             PM_IF_M4(d) m4_ts_render_close(d, (id<MTL4RenderCommandEncoder>)e);
             [e endEncoding];
         } else {
@@ -5328,6 +5339,7 @@ PM_EXPORT int pm_temporal_upscale(PMDevice *d, void *srcView, void *handDepthVie
         if (d->bgDst) current_cb(d); // an earlier stretch nothing consumed: land it first
         d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(dstView)));
         d->bgSrc = pm_retain(PM_OBJ(id<MTLTexture>, d->txOut));
+        d->bgSharp = 0.0f;
         return 1;
     }
 }
@@ -5341,12 +5353,27 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
         if (!metalfx) reset_metalfx(d);
         reset_temporal(d);
         end_blit(d);
+        // The world pass that drew `src` is the last user of its depth: RenderScale.end runs after the world, its post effects and the
+        // hand, this path reads only color (MetalFX Temporal has its own entry point and keeps depth), and the next frame clears the
+        // world textures first. Same rule as the presented image's last pass; end_parked_actions still keeps depth for opt-in probes.
+        if (d->parked && d->parkedColors[0] && root_texture(d->parkedColors[0]) == root_texture(srcView)) end_parked_store(d, MTLStoreActionDontCare);
         id<MTLCommandBuffer> cb = current_cb(d);
         if (!cb) return -1;
         id<MTLTexture> src = PM_OBJ(id<MTLTexture>, srcView);
         id<MTLTexture> dst = PM_OBJ(id<MTLTexture>, dstView);
         id<MTLTexture> fx = metalfx ? metalfx_upscale(d, cb, src, dst) : nil;
         if (!ensure_upscale_pipeline(d, dst.pixelFormat)) return -1;
+        // Fold the stretch into the next pass that loads the full-size target (the HUD) as its first draw, so the target is not stored
+        // and reloaded in between. Only a plain whole-texture target qualifies (the fold matches by root texture and format); anything
+        // else, or a frame where no such pass follows, falls back to a pass of its own (flush_backdrop).
+        if (d->foldUpscale && !d->bgDst && dst.textureType == MTLTextureType2D && dst.sampleCount == 1 && dst.mipmapLevelCount == 1
+                && (!dst.parentTexture || (dst.parentTexture.width == dst.width && dst.parentTexture.height == dst.height
+                    && dst.parentTexture.pixelFormat == dst.pixelFormat && dst.parentTexture.mipmapLevelCount == 1))) {
+            d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(dstView)));
+            d->bgSrc = pm_retain(fx ? fx : src);
+            d->bgSharp = sharpness;
+            return fx ? 1 : 0;
+        }
         MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
         rp.colorAttachments[0].texture = dst;
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
