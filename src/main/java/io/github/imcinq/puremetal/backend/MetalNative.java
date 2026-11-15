@@ -200,8 +200,8 @@ public final class MetalNative {
     }
 
     /**
-     * Battery Saver: the thermal state (0 nominal, 1 fair, 2 serious, 3 critical) in the low two bits plus 4 while Low Power
-     * Mode is on. 0 when the library is not loaded. Callers poll this about once a second.
+     * Battery Saver: the thermal state (0 nominal, 1 fair, 2 serious, 3 critical). 0 when the library is not loaded.
+     * Callers poll this about once a second.
      */
     public static int powerState() {
         if (H_powerState == null) {

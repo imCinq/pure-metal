@@ -38,7 +38,7 @@
   "puremetal.options.generationFpsCap": "Faster World Generation",
   "puremetal.options.generationFpsCap.tooltip": "Loads new terrain faster in singleplayer.\n\nThe game draws frames and builds chunks on the same CPU. While chunks near you are still missing, FPS is limited to twice your refresh rate, so the CPU time saved goes to building chunks.\n\nNormal FPS returns once they have loaded.",
   "puremetal.options.batterySaver": "Battery Saver",
-  "puremetal.options.batterySaver.tooltip": "Saves battery and keeps your Mac cooler: caps FPS at 60 and lowers resolution when Auto Render Scale is on. Backs off more (30 FPS, even lower resolution) when your Mac gets hot or Low Power Mode is on.\n\nRender Scale is only changed while Auto Render Scale is on. A lower Max FPS you set is kept.",
+  "puremetal.options.batterySaver.tooltip": "Saves battery and keeps your Mac cooler by capping FPS at 60. If your Mac gets hot, drops to 30 FPS until it cools down.\n\nA lower Max FPS you set is kept. Render Scale is not changed.",
   "puremetal.options.hdrHighlights": "HDR Highlights (Experimental)",
   "puremetal.options.hdrHighlights.tooltip": "Lets the sun, lava and glowing blocks shine brighter than normal white on Mac screens that support it.\n\nOnly very bright and fiery colors are boosted. Menus are never boosted, but the on-screen HUD can be if it is bright enough.\n\nNeeds a restart to take effect. May use a little more GPU.\n\nExperimental.",
   "puremetal.options.smoothFramePacing": "Smooth Frame Pacing",

@@ -8,11 +8,11 @@ import java.util.Properties;
 import net.minecraft.client.Minecraft;
 
 /**
- * Optional Battery Saver: caps FPS at 60 (or the display's refresh rate when that is lower) and, with Auto Render Scale on,
- * lets it trade sharpness for power. When macOS reports a serious or critical thermal state, or Low Power Mode is on, it backs
- * off further (30 FPS, lower Auto Render Scale) and only returns to normal after about ten calm seconds. A lower Max FPS the
- * player set is never raised. Off by default; toggled in Pure Metal's settings (stored as batterySaver in
- * config/puremetal.properties), or forced at startup with -Dpuremetal.batterySaver=true|false.
+ * Optional Battery Saver: only caps FPS, at 60 (or the display's refresh rate when that is lower). When macOS reports a serious
+ * or critical thermal state it backs off to 30 FPS and only returns to normal after about ten calm seconds. Low Power Mode does
+ * nothing. It never touches Render Scale or Auto Render Scale. A lower Max FPS the player set is never raised. Off by default;
+ * toggled in Pure Metal's settings (stored as batterySaver in config/puremetal.properties), or forced at startup with
+ * -Dpuremetal.batterySaver=true|false.
  * While off, the only cost is reading one flag. Render thread only, except the flag.
  */
 public final class BatterySaver {
@@ -21,11 +21,6 @@ public final class BatterySaver {
     private static final long POLL_NS = 1_000_000_000L;
     /** How long the Mac must be calm before backing off ends. */
     private static final long CALM_NS = 10_000_000_000L;
-    /** Share of the frame time Auto Render Scale tolerates for GPU work (1 = all of it): a lower share picks a lower scale. */
-    private static final double NORMAL_BUDGET = 0.75;
-    private static final double BACKOFF_BUDGET = 0.5;
-    /** Backing off measures its share against the 60 FPS frame time, never the 30 FPS cap, so its budget stays below normal. */
-    private static final double BACKOFF_FRAME_MS = 1000.0 / NORMAL_CAP;
 
     /** Debug: -Dpuremetal.batterySaverForceBackoff=true acts as if the thermal state were serious, to test the 30 FPS backoff. */
     private static final boolean FORCE_BACKOFF = Boolean.getBoolean("puremetal.batterySaverForceBackoff");
@@ -91,34 +86,12 @@ public final class BatterySaver {
         return cap > 0 ? Math.min(limit, cap) : limit;
     }
 
-    /** Auto Render Scale's FPS target, held to the cap while Battery Saver is on. */
-    public static int capFps(final int fps) {
-        return enabled && cap > 0 ? Math.min(fps, cap) : fps;
-    }
-
-    /** Backing off for heat or Low Power Mode right now. */
-    public static boolean backingOff() {
-        return enabled && backingOff;
-    }
-
-    /**
-     * The GPU time in milliseconds Auto Render Scale may use per frame at the given FPS target: the whole frame time when off,
-     * 75% of it when on, and while backing off 50% of the 60 FPS frame time at most (always below the normal budget).
-     */
-    public static double budgetMs(final int targetFps) {
-        double frameMs = 1000.0 / targetFps;
-        if (!enabled) {
-            return frameMs;
-        }
-        return backingOff ? Math.min(frameMs, BACKOFF_FRAME_MS) * BACKOFF_BUDGET : frameMs * NORMAL_BUDGET;
-    }
-
     /** For the F3 line: 0 off, 1 on, 2 on and backing off. */
     public static int debugState() {
         return !enabled ? 0 : backingOff ? 2 : 1;
     }
 
-    /** At most once a second: reads the thermal state and Low Power Mode, the display's refresh rate, and recomputes the cap. */
+    /** At most once a second: reads the thermal state, the display's refresh rate, and recomputes the cap. */
     private static void poll() {
         long now = System.nanoTime();
         if (polledNs != 0L && now - polledNs < POLL_NS) {
@@ -126,7 +99,7 @@ public final class BatterySaver {
         }
         polledNs = now;
         int state = MetalNative.powerState();
-        boolean hot = FORCE_BACKOFF || (state & 3) >= 2 || (state & 4) != 0;
+        boolean hot = FORCE_BACKOFF || state >= 2;
         if (hot) {
             backingOff = true;
             calm = false;

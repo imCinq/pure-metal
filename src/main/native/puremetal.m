@@ -2547,18 +2547,10 @@ static void encode_probe(PMDevice *d, void *depthPtr) {
 }
 
 
-/**
- * The Mac's power situation for Battery Saver: NSProcessInfo.thermalState (0 nominal, 1 fair, 2 serious, 3 critical) in
- * the low two bits, plus 4 when Low Power Mode is on. Both are plain property reads on the shared process info.
- */
+/** NSProcessInfo.thermalState for Battery Saver: 0 nominal, 1 fair, 2 serious, 3 critical. A plain property read. */
 PM_EXPORT int pm_power_state(void) {
     @autoreleasepool {
-        NSProcessInfo *info = [NSProcessInfo processInfo];
-        int state = (int)info.thermalState & 3;
-        if (info.lowPowerModeEnabled) {
-            state |= 4;
-        }
-        return state;
+        return (int)[NSProcessInfo processInfo].thermalState & 3;
     }
 }
 
