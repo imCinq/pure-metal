@@ -116,12 +116,27 @@ public final class UserBench {
             for (String command : commands.split(";")) {
                 try {
                     server.getCommands().getDispatcher().execute(command.trim(), source);
-                } catch (com.mojang.brigadier.exceptions.CommandSyntaxException | RuntimeException e) {
-                    return "/" + command.trim().split(" ")[0] + " was rejected";
+                } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                    if (isAlreadyAtTime(e)) {
+                        continue; // the clock is already where the setup wants it (a reused world), not a failure
+                    }
+                    String detail = e.getMessage();
+                    LOGGER.error("BENCH-USER setup command '{}' failed: {}", command.trim(), detail);
+                    return "/" + command.trim().split(" ")[0] + " was rejected: " + detail;
+                } catch (RuntimeException e) {
+                    LOGGER.error("BENCH-USER setup command '{}' threw", command.trim(), e);
+                    return "/" + command.trim().split(" ")[0] + " was rejected: " + e;
                 }
             }
             return null;
         }));
+    }
+
+    /** /time set refuses when the clock is already at the target (26.x), which is the state the setup wants. */
+    private static boolean isAlreadyAtTime(final com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+        net.minecraft.network.chat.Component message = net.minecraft.network.chat.ComponentUtils.fromMessage(e.getRawMessage());
+        return message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents translatable
+            && translatable.getKey().startsWith("commands.time.set.already_at_time");
     }
 
     /** The reason a setup command failed, or null while all went fine so far. */
