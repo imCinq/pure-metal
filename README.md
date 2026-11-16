@@ -7,7 +7,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
 - Battery Saver caps FPS at 60 (30 FPS while your Mac is hot) to save power and heat (optional)
-- Experimental HDR Highlights make the sun, lava and glowing blocks brighter on Mac screens with HDR headroom (needs a restart)
+- Experimental HDR Highlights make the sun, bright sky and white highlights brighter on Mac screens with HDR headroom (needs a restart)
 - Experimental Metal 4 mode (macOS 26+)
 - Experimental Smooth Frame Pacing with VSync tries to show frames at an even pace
 - With VSync off, Minecraft can render at a higher FPS without screen tearing by default

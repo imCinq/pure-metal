@@ -4,12 +4,13 @@
 
 **New**
 - Battery Saver (off by default): caps FPS at 60, or your display's refresh rate if that is lower. If your Mac gets hot, it drops to 30 FPS and returns to normal after about 10 calm seconds. A lower Max FPS you set is kept, and Render Scale is not changed.
-- HDR Highlights (Experimental, off by default): lets the sun, lava, fire and glowing blocks shine brighter than normal white on Mac screens with extra brightness headroom. Needs a restart to take effect. Screens without much headroom get a smaller boost. On a screen with no HDR at all, such as an external SDR monitor, it turns itself off and the settings tooltip and F3 say so. Menus fade back to normal brightness while a screen is open. It is off while Battery Saver is on.
+- HDR Highlights (Experimental, off by default): lets the sun, bright sky and white highlights, plus the brightest yellow parts of lava and fire, shine brighter than normal white on Mac screens with extra brightness headroom. Needs a restart to take effect. Screens without much headroom get a smaller boost. On a screen with no HDR at all, such as an external SDR monitor, it turns itself off and the settings tooltip and F3 say so. Menus fade back to normal brightness while a screen is open. It is off while Battery Saver is on.
 
 **Improvements**
 - Render Scale below 100% is faster: the upscale is now merged into the next pass instead of being drawn on its own, and the scaled depth is no longer stored.
 - Auto Render Scale no longer keeps stepping down when a lower size does not make the game faster. It goes back up and waits a while before trying again.
 - The Render Scale tooltip now recommends MetalFX Temporal below 100%, which gives the steadiest image.
+- Settings are regrouped: Faster World Generation and Battery Saver are under Miscellaneous; Metal 4, Smooth Frame Pacing and HDR Highlights are under Experimental, on both Pure Metal's settings and the Sodium page.
 
 ## 0.4.5
 
