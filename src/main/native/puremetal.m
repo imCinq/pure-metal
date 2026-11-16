@@ -4586,6 +4586,7 @@ typedef struct PMSurface {
     _Atomic uint64_t targetSize; // packed drawable width/height, read by GPU completion callbacks
     uint64_t eventValue;   // last value signalled (render thread)
     int vsync;             // render thread
+    int allowTearing;      // render thread: 1 never syncs with vsync off, 0 always does, -1 decides by the refresh rate
     // Layer settings requested by pm_surface_configure, applied on the present queue before the next drawable is taken
     // (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
     pthread_mutex_t cfgLock;
@@ -5764,17 +5765,31 @@ static void apply_layer_config_hdr(PMSurface *s) {
     if (space) CGColorSpaceRelease(space);
 }
 
+// With vsync off, frames that miss a refresh are skipped (like Vulkan's MAILBOX) instead of tearing, which needs display
+// sync. That only works while a present can follow a returned drawable within one refresh. At 240 Hz it mostly cannot:
+// frames alternated between one and two refreshes and about 170 reached the screen per second. From 200 Hz up the layer
+// stops syncing instead, which showed about 235.
+#define PM_MAILBOX_MIN_REFRESH_NS 5000000ULL
+
+// Render thread.
+static int surface_display_sync(PMSurface *s) {
+    if (s->vsync || s->allowTearing == 0) return 1;
+    if (s->allowTearing > 0) return 0;
+    uint64_t refresh = atomic_load(&s->refreshNs);
+    return !(refresh && refresh < PM_MAILBOX_MIN_REFRESH_NS);
+}
+
 PM_EXPORT void pm_surface_configure(PMSurface *s, int width, int height, int vsync, int allowTearing) {
     // Only records the layer settings: the present queue can be blocked in a semaphore wait or nextDrawable, and the
     // render thread (the caller) must not wait for it. The present queue applies them before it next takes a drawable.
     s->vsync = vsync;
+    s->allowTearing = allowTearing;
     atomic_store(&s->targetSize, ((uint64_t)(uint32_t)width << 32) | (uint32_t)height);
     pthread_mutex_lock(&s->cfgLock);
     s->cfgWidth = width;
     s->cfgHeight = height;
-    // Display sync stays on even with vsync off: frames that miss a refresh are skipped (like Vulkan's
-    // MAILBOX) instead of tearing. Vsync only decides whether the render thread waits for a free slot.
-    s->cfgDisplaySync = (vsync || !allowTearing) ? 1 : 0;
+    // Vsync only decides whether the render thread waits for a free slot; see surface_display_sync for the layer.
+    s->cfgDisplaySync = surface_display_sync(s);
     s->cfgPending = 1;
     pthread_mutex_unlock(&s->cfgLock);
     // A free slot's stale staging texture is dropped now; busy ones are dropped when they are released.
@@ -6234,6 +6249,14 @@ PM_EXPORT void pm_surface_take_stats(PMSurface *s, uint64_t *out) {
 PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacing) {
     atomic_store(&s->refreshNs, refreshNs);
     atomic_store(&s->pacing, pacing && refreshNs ? 1 : 0);
+    // The refresh rate arrives after the first configure and changes when the window moves to another display.
+    int displaySync = surface_display_sync(s);
+    pthread_mutex_lock(&s->cfgLock);
+    if (s->cfgWidth > 0 && s->cfgDisplaySync != displaySync) {
+        s->cfgDisplaySync = displaySync;
+        s->cfgPending = 1;
+    }
+    pthread_mutex_unlock(&s->cfgLock);
 }
 
 // Boost cap for the HDR present pass (1.0 = SDR look). Cheap, any thread; ignored on a normal layer.
