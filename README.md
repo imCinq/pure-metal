@@ -22,17 +22,17 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 **With Sodium (fullscreen 3420x2148)**
 
-| Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
+| Renderer | Avg FPS | 1-in-50 slowest frame (p98) |
 | --- | --- | --- |
-| Pure Metal | <strong>216</strong> | <strong>5.1 ms</strong> |
-| OpenGL | 111 | 18.2 ms |
+| Pure Metal | <strong>216</strong> | <strong>5.0 ms</strong> |
+| OpenGL | 111 | 14.2 ms |
 
 **Without Sodium (fullscreen 3420x2148)**
 
-| Renderer | Avg FPS | 1-in-200 slowest frame (p99.5) |
+| Renderer | Avg FPS | 1-in-50 slowest frame (p98) |
 | --- | --- | --- |
-| Pure Metal | <strong>147</strong> | <strong>7.2 ms</strong> |
-| OpenGL | 58 | 28.0 ms |
+| Pure Metal | <strong>147</strong> | <strong>7.1 ms</strong> |
+| OpenGL | 58 | 25.0 ms |
 
 **Pure Metal vs mcopt (1920x1080)**
 
@@ -80,6 +80,28 @@ On by default, needs macOS 15. Terrain renders much faster on the GPU and looks 
 - **Status:** the F3 screen and Pure Metal's settings show `Fast terrain: On` or `Off`.
 
 To turn it off, see [JVM options](#jvm-options).
+
+## Render Scale
+
+Optional, off by default. Draws the 3D world at fewer pixels and scales it up. Menus, chat and the HUD stay sharp.
+
+- **Render Scale:** Native, or 50 to 100%. Since 0.5.0 the upscale is merged into the next pass, so lower scales cost less extra work.
+- **Auto Render Scale:** off by default. Lowers the scale when your GPU can't reach your FPS target and raises it when it can (100, 85, 70 or 60%). If a lower step doesn't make the game faster, it goes back up and waits before trying again.
+- **Upscaler:** Bilinear (fastest), MetalFX Spatial (sharper) or MetalFX Temporal (sharpest, steadiest image below 100%, may ghost on fast motion).
+
+## More options
+
+- **Terrain LOD** (on at render distance 16+): simplifies distant terrain, leaves, plants and water.
+- **F3 screen:** shows the renderer, GPU, render scale, Fast Terrain, HDR status and the Distant Horizons path.
+
+Miscellaneous:
+- **Faster World Generation** (singleplayer): caps FPS while nearby chunks are still loading, so they build faster.
+- **Battery Saver:** caps FPS at 60, or 30 while your Mac is hot.
+
+Experimental:
+- **Metal 4** (macOS 26): Metal 3 is currently faster.
+- **Smooth Frame Pacing** (needs VSync): shows frames at an even pace.
+- **HDR Highlights** (needs a restart): makes the sun, bright sky and white highlights brighter on screens with HDR headroom. Turns itself off on screens without HDR and while Battery Saver is on.
 
 ## Distant Horizons
 
