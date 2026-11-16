@@ -117,8 +117,8 @@ public final class UserBench {
                 try {
                     server.getCommands().getDispatcher().execute(command.trim(), source);
                 } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
-                    if (isAlreadyAtTime(e)) {
-                        continue; // the clock is already where the setup wants it (a reused world), not a failure
+                    if (isAlreadyReached(e)) {
+                        continue; // the state is already what the setup wants (a reused world), not a failure
                     }
                     String detail = e.getMessage();
                     LOGGER.error("BENCH-USER setup command '{}' failed: {}", command.trim(), detail);
@@ -132,11 +132,18 @@ public final class UserBench {
         }));
     }
 
-    /** /time set refuses when the clock is already at the target (26.x), which is the state the setup wants. */
-    private static boolean isAlreadyAtTime(final com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+    /**
+     * 26.x commands throw when the target state is already reached. That is what the setup wants, so it is not a failure.
+     * Keys seen in 26.3: /gamerule commands.gamerule.not_set, /time commands.time.set.already_at_time(_marker),
+     * commands.time.pause.already_*, commands.time.rate.already_same. /gamemode, /weather and /tp have none.
+     */
+    private static boolean isAlreadyReached(final com.mojang.brigadier.exceptions.CommandSyntaxException e) {
         net.minecraft.network.chat.Component message = net.minecraft.network.chat.ComponentUtils.fromMessage(e.getRawMessage());
-        return message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents translatable
-            && translatable.getKey().startsWith("commands.time.set.already_at_time");
+        if (!(message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents translatable)) {
+            return false;
+        }
+        String key = translatable.getKey();
+        return key.equals("commands.gamerule.not_set") || key.contains(".already_");
     }
 
     /** The reason a setup command failed, or null while all went fine so far. */
