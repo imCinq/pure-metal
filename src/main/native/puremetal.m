@@ -5555,10 +5555,11 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
 }
 
 - (void)setPollFast:(BOOL)fast {
-    if (!_timer || fast == _fast) return;
+    dispatch_source_t timer = _timer;
+    if (atomic_load(&_stopped) || !timer || fast == _fast) return;
     _fast = fast;
     uint64_t interval = fast ? NSEC_PER_SEC / 10 : NSEC_PER_SEC;
-    dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, interval), interval, interval / 4);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, interval), interval, interval / 4);
 }
 
 // Main thread.
@@ -5605,12 +5606,21 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     }
 }
 
-// Any thread. After this the callbacks do nothing; the surface releases its reference afterwards.
-- (void)stop {
-    if (atomic_exchange(&_stopped, 1)) return;
+// Main thread: observer removal and timer cancel/clear run here, serialized with setPollFast.
+- (void)teardownOnMain {
     for (id token in _observers) [NSNotificationCenter.defaultCenter removeObserver:token];
     [_observers removeAllObjects];
-    if (_timer) { dispatch_source_cancel(_timer); _timer = nil; }
+    dispatch_source_t timer = _timer;
+    _timer = nil;
+    if (timer) dispatch_source_cancel(timer);
+}
+
+// Any thread. After this the callbacks do nothing; the surface releases its reference afterwards.
+// Never blocks: off the main thread the teardown is queued, and the block retains the watcher until it has run.
+- (void)stop {
+    if (atomic_exchange(&_stopped, 1)) return;
+    if ([NSThread isMainThread]) [self teardownOnMain];
+    else dispatch_async(dispatch_get_main_queue(), ^{ [self teardownOnMain]; });
 }
 
 - (void)dealloc {
