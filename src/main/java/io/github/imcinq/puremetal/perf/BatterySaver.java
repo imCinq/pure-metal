@@ -22,9 +22,6 @@ public final class BatterySaver {
     /** How long the Mac must be calm before backing off ends. */
     private static final long CALM_NS = 10_000_000_000L;
 
-    /** Debug: -Dpuremetal.batterySaverForceBackoff=true acts as if the thermal state were serious, to test the 30 FPS backoff. */
-    private static final boolean FORCE_BACKOFF = Boolean.getBoolean("puremetal.batterySaverForceBackoff");
-
     private static volatile boolean enabled = readEnabled();
 
     /** Time of the last native poll (0 = never); survives enable and reset. */
@@ -61,15 +58,6 @@ public final class BatterySaver {
         ScaleConfig.writeProperties(p -> p.setProperty("batterySaver", Boolean.toString(value)));
     }
 
-    /** Bench only: switches Battery Saver in memory without writing the config. */
-    public static void setEnabledTransient(final boolean value) {
-        if (value == enabled) {
-            return;
-        }
-        enabled = value;
-        resetState();
-    }
-
     /** Clears the power state but keeps the last poll time, so toggling never bypasses the once-a-second native poll. */
     private static void resetState() {
         backingOff = false;
@@ -104,7 +92,7 @@ public final class BatterySaver {
         }
         polledNs = now;
         int state = MetalNative.powerState();
-        boolean hot = FORCE_BACKOFF || state >= 2;
+        boolean hot = state >= 2;
         if (hot) {
             backingOff = true;
             calm = false;

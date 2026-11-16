@@ -16,12 +16,6 @@ public final class HdrHighlights {
     /** How often the screen's current EDR headroom is read. */
     public static final long HEADROOM_RECHECK_NS = 1_000_000_000L;
 
-    /**
-     * Dev/debug only (-Dpuremetal.hdrCompare=true): with HDR Highlights on, only the left half of the screen gets the boost, the
-     * right half shows the same image at boost 1.0, with a thin divider between them. Read once, with the surface.
-     */
-    public static final boolean COMPARE = Boolean.getBoolean("puremetal.hdrCompare");
-
     /** How long the boost takes to fade out when a screen opens, and back in when it closes. */
     private static final long RAMP_NS = 200_000_000L;
     /** 0 = no boost, 1 = full boost; moves toward the goal by the time passed since the last frame. */
@@ -68,8 +62,8 @@ public final class HdrHighlights {
             debugBuiltNs = now;
             debugText = shownNoHdr
                 ? "HDR: off (this screen has no HDR)"
-                : String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), target boost %.2f, colorspace %s, compare %s",
-                    shownHeadroom, shownMax, shownBoost, shownLinear ? "ok" : "untagged", COMPARE ? "on" : "off");
+                : String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), target boost %.2f, colorspace %s",
+                    shownHeadroom, shownMax, shownBoost, shownLinear ? "ok" : "untagged");
         }
         return debugText;
     }

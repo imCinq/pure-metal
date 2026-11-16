@@ -4596,10 +4596,8 @@ typedef struct PMSurface {
     atomic_uint hdrBoostBits;         // float bits of the boost target (from the potential headroom), 1.0f when off
     void *hdrWatcher;                 // PMHdrWatcher, retained; NULL on a normal layer. Owns the screen snapshot (main thread writes it)
     atomic_int hdrLinear;             // the layer holds linear values in the display's own space (else sRGB passthrough); written by the present thread, read by it and by pm_surface_hdr_linear
-    uint32_t hdrPresentWidth;         // drawable width of the frame being presented (compare mode splits on this, not the source width)
     float hdrSmoothed;                // headroom the present pass uses: eases toward the watcher's value (present thread only)
     uint64_t hdrSmoothedNs;           // when hdrSmoothed was last updated, 0 = never
-    int hdrCompare;                   // -Dpuremetal.hdrCompare: boost only the left half of the screen, with a divider (dev/debug)
     // Chosen once at surface creation, so a normal layer runs exactly the code it always did and HDR adds nothing to it.
     void (*applyConfig)(struct PMSurface *);
     void (*bind)(struct PMSurface *, int, id<MTLRenderCommandEncoder>, id<MTLTexture>, uint32_t);
@@ -4674,8 +4672,7 @@ static NSString *const PRESENT_SHADER =
 // strength (lava, fire, glowing blocks). Constants: HDR_WHITE_START and HDR_WARM_START are where each ramp begins (0 to 1),
 // HDR_WARM_SAT the saturation a warm pixel needs. The warm mask needs red >= green >= blue and a hue past pure red (so green,
 // cyan, blue, magenta and pure red are never boosted).
-// p.x is the drawable height, p.y the boost target (1.0 = off), p.z 1 for linear output, p.w the drawable width in compare mode, 0 otherwise (dev/debug: the boost
-// applies to the left half only, the right half is the same image with boost 1.0, and a 2 px divider is drawn between them).
+// p.x is the drawable height, p.y the boost target (1.0 = off), p.z 1 for linear output (p.w is unused).
 // q.x is the screen's CURRENT EDR headroom. macOS only grants headroom once content above 1.0 is presented, so the target (p.y)
 // comes from the potential headroom and can exceed what the screen offers right now (at rest it is 1.0). The boosted range is
 // then rolled off toward lim = min(max(current, HDR_TRIGGER), cap): values up to a knee halfway between 1.0 and lim pass
@@ -4708,11 +4705,6 @@ static NSString *const PRESENT_HDR_SHADER =
      "  float warm = smoothstep(" HDR_WARM_START ", 1.0, mx) * smoothstep(" HDR_WARM_SAT ", 0.75, sat) * hue;\n"
      "  float w = max(white, warm);\n"
      "  float cap = p.y;\n"
-     "  if (p.w > 0.5) {\n"
-     "    uint half_w = uint(p.w) / 2;\n"
-     "    if (c.x + 1 == half_w || c.x == half_w) return float4(1.0, 0.0, 1.0, 1.0);\n"
-     "    if (c.x >= half_w) cap = 1.0;\n"
-     "  }\n"
      "  float3 lin = pm_srgb_decode(rgb);\n"
      "  cap = max(cap, 1.0);\n"
      "  float3 outc = lin * mix(1.0, cap, w);\n"
@@ -5637,7 +5629,7 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
 }
 @end
 
-// hdr bit 1 asks for the experimental HDR highlights layer, bit 2 for its compare mode (RGBA16Float, extended linear version of the display's own colorspace,
+// hdr bit 1 asks for the experimental HDR highlights layer (RGBA16Float, extended linear version of the display's own colorspace,
 // EDR on); if its pipeline cannot be built the layer silently stays the normal BGRA8 one.
 PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
     @autoreleasepool {
@@ -5689,7 +5681,6 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
         s->device = d;
         s->vsync = 1;
         s->hdr = hdr ? 1 : 0;
-        s->hdrCompare = (hdr & 2) ? 1 : 0;
         float one = 1.0f;
         uint32_t oneBits;
         memcpy(&oneBits, &one, sizeof(oneBits));
@@ -5904,11 +5895,11 @@ static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, 
 }
 
 PM_EXPORT float pm_surface_edr_headroom(PMSurface *s);
-// HDR layer: the shader reads two float4: (height, boost target, linear flag, compare width) and (current EDR headroom, 0, 0, 0).
+// HDR layer: the shader reads two float4: (height, boost target, linear flag, unused) and (current EDR headroom, 0, 0, 0).
 static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height) {
     PMDevice *d = s->device;
     int linear = atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
-    float params[8] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, s->hdrCompare ? (float)s->hdrPresentWidth : 0.0f, 1.0f, 0.0f, 0.0f, 0.0f };
+    float params[8] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f };
     if (linear) {
         uint32_t bits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
         memcpy(&params[1], &bits, sizeof(bits));
@@ -6035,7 +6026,6 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         [e setViewport:(MTLViewport){ 0.0, 0.0, (double)w, (double)h, 0.0, 1.0 }];
         [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, s->pipeline)];
         uint32_t height = (uint32_t)h;
-        s->hdrPresentWidth = (uint32_t)dst.width;
         s->bind(s, slot, e, src, height);
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [e endEncoding];

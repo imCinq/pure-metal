@@ -46,7 +46,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             throw new IllegalStateException("SDL could not create a Metal view: " + SDLError.SDL_GetError());
         }
         long layer = SDLMetal.SDL_Metal_GetLayer(this.view);
-        this.surface = MetalNative.surfaceCreate(device.handle(), layer, io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE ? (io.github.imcinq.puremetal.perf.HdrHighlights.COMPARE ? 3 : 1) : 0);
+        this.surface = MetalNative.surfaceCreate(device.handle(), layer, io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE ? 1 : 0);
         if (this.surface == 0L) {
             SDLMetal.SDL_Metal_DestroyView(this.view);
             throw new IllegalStateException("Pure Metal could not set up presenting (see the log)");

@@ -63,11 +63,6 @@ public final class Bench {
     private static final String AB = System.getProperty("puremetal.benchAB");
     private static final Map<String, java.util.function.Consumer<Boolean>> AB_HOOKS = new HashMap<>();
 
-    static {
-        // Battery Saver A/B: B turns it on in memory only (nothing is written to config), so its 60 FPS cap applies in B
-        // even when the dev options lift Max FPS. Combine with -PbatterySaverForceBackoff to test the 30 FPS backoff.
-        AB_HOOKS.put("batterySaver", io.github.imcinq.puremetal.perf.BatterySaver::setEnabledTransient);
-    }
     private static java.util.function.Consumer<Boolean> abHook;
     private static int abSlot = -1;
     private static final long[][] abFrames = new long[2][65536];
