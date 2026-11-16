@@ -37,18 +37,25 @@ public final class HdrHighlights {
     private static volatile float shownMax = 1.0F;
     private static volatile float shownBoost = 1.0F;
     private static volatile boolean shownLinear;
+    private static volatile boolean shownNoHdr;
     private static String debugText = "";
     private static long debugBuiltNs;
+
+    /** True when HDR Highlights is on for this run and the screen the window is on has no HDR (so nothing is boosted). */
+    public static boolean screenHasNoHdr() {
+        return ACTIVE && enabled && shownNoHdr;
+    }
 
     private HdrHighlights() {
     }
 
     /** Called from the render thread by the surface. */
-    public static void publish(final float headroom, final float maxHeadroom, final float boost, final boolean linear) {
+    public static void publish(final float headroom, final float maxHeadroom, final float boost, final boolean linear, final boolean screenNoHdr) {
         shownHeadroom = headroom;
         shownMax = maxHeadroom;
         shownBoost = boost;
         shownLinear = linear;
+        shownNoHdr = screenNoHdr;
     }
 
     /** The F3 line, or null when this run has no HDR layer. Rebuilt at most once a second. */
@@ -59,8 +66,10 @@ public final class HdrHighlights {
         long now = System.nanoTime();
         if (debugText.isEmpty() || now - debugBuiltNs >= HEADROOM_RECHECK_NS) {
             debugBuiltNs = now;
-            debugText = String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), target boost %.2f, colorspace %s, compare %s",
-                shownHeadroom, shownMax, shownBoost, shownLinear ? "ok" : "untagged", COMPARE ? "on" : "off");
+            debugText = shownNoHdr
+                ? "HDR: off (this screen has no HDR)"
+                : String.format(java.util.Locale.ROOT, "HDR: headroom %.2f (max %.2f), target boost %.2f, colorspace %s, compare %s",
+                    shownHeadroom, shownMax, shownBoost, shownLinear ? "ok" : "untagged", COMPARE ? "on" : "off");
         }
         return debugText;
     }

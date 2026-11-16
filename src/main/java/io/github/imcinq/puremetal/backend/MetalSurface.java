@@ -36,6 +36,7 @@ final class MetalSurface implements GpuSurfaceBackend {
     private float hdrSentBoost = -1.0F;
     private float hdrMaxHeadroom = 1.0F;
     private boolean hdrLinear;
+    private int hdrState;
 
     MetalSurface(final MetalDevice device, final long windowHandle) {
         this.device = device;
@@ -114,13 +115,14 @@ final class MetalSurface implements GpuSurfaceBackend {
             this.hdrHeadroom = MetalNative.surfaceEdrHeadroom(this.surface);
             this.hdrMaxHeadroom = MetalNative.surfaceEdrMax(this.surface);
             this.hdrLinear = MetalNative.surfaceHdrLinear(this.surface);
+            this.hdrState = MetalNative.surfaceHdrState(this.surface);
         }
         float boost = io.github.imcinq.puremetal.perf.HdrHighlights.boost(this.hdrMaxHeadroom);
         if (boost != this.hdrSentBoost) {
             this.hdrSentBoost = boost;
             MetalNative.surfaceSetHdrBoost(this.surface, boost);
         }
-        io.github.imcinq.puremetal.perf.HdrHighlights.publish(this.hdrHeadroom, this.hdrMaxHeadroom, boost, this.hdrLinear);
+        io.github.imcinq.puremetal.perf.HdrHighlights.publish(this.hdrHeadroom, this.hdrMaxHeadroom, boost, this.hdrLinear, this.hdrState == 2);
     }
 
     /** Once a second: frames rendered vs presented vs actually shown, and why the rest were not presented. */

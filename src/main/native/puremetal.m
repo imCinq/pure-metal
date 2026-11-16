@@ -3679,6 +3679,8 @@ PM_EXPORT void pm_clear_texture(PMDevice *d, void *texture, float r, float g, fl
         float color[4] = { r, g, b, a };
         if (t.textureType == MTLTextureType2D && t.mipmapLevelCount == 1) {
             if (d->bgDst && depth < 0.0 && root_texture(texture) == d->bgDst) drop_backdrop(d); // cleared over anyway
+            // The pending stretch still has to read this texture as it is now; a clear queued first would be encoded ahead of it.
+            if (d->bgDst && d->bgSrc && root_texture(d->bgSrc) == root_texture(texture)) flush_backdrop(d);
             // Deferred: folded into the next pass that attaches it, or encoded before anything else runs.
             int i = find_clear(d, texture);
             if (i < 0) {
@@ -5502,6 +5504,7 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     int pending;                      // pendingSpace is new and not yet applied
     atomic_uint headroomBits;         // float bits, 1.0f = no headroom
     atomic_uint maxHeadroomBits;      // float bits, the most headroom the screen could ever offer (at full range of brightness)
+    atomic_int screenNoHdr;           // 1 when the screen cannot do HDR at all (potential headroom <= 1.0): the layer stays untagged
 }
 - (instancetype)initWithLayer:(CAMetalLayer *)layer;
 - (void)refresh;
@@ -5529,6 +5532,7 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     memcpy(&oneBits, &one, sizeof(oneBits));
     atomic_init(&headroomBits, oneBits);
     atomic_init(&maxHeadroomBits, oneBits);
+    atomic_init(&screenNoHdr, 0);
     atomic_init(&_stopped, 0);
     id delegate = layer.delegate;
     _view = [delegate isKindOfClass:[NSView class]] ? (NSView *)delegate : nil;
@@ -5569,11 +5573,14 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
         NSScreen *screen = _view.window.screen ?: NSScreen.mainScreen;
         CGFloat edr = screen ? screen.maximumExtendedDynamicRangeColorComponentValue : 1.0;
         CGColorSpaceRef base = screen.colorSpace.CGColorSpace;
-        CGColorSpaceRef space = base ? CGColorSpaceCreateExtendedLinearized(base) : NULL;
-        // No extended linear version of this display's space: HDR stays off for it (no headroom, passthrough present).
+        CGFloat potentialEdr = screen ? screen.maximumPotentialExtendedDynamicRangeColorComponentValue : 1.0;
+        // A screen with no HDR (potential headroom <= 1.0) stays untagged: the extended linear space exists for any RGB profile,
+        // but using it there would only change the picture. No extended linear space either: HDR stays off (passthrough present).
+        bool noHdr = !(potentialEdr > 1.0);
+        CGColorSpaceRef space = (base && !noHdr) ? CGColorSpaceCreateExtendedLinearized(base) : NULL;
+        atomic_store_explicit(&screenNoHdr, noHdr ? 1 : 0, memory_order_relaxed);
         float headroom = (space && edr >= 1.0) ? (float)edr : 1.0f;
-        CGFloat potential = screen ? screen.maximumPotentialExtendedDynamicRangeColorComponentValue : 1.0;
-        float maxHeadroom = potential >= 1.0 ? (float)potential : 1.0f;
+        float maxHeadroom = potentialEdr >= 1.0 ? (float)potentialEdr : 1.0f;
         uint32_t maxBits;
         memcpy(&maxBits, &maxHeadroom, sizeof(maxBits));
         atomic_store_explicit(&maxHeadroomBits, maxBits, memory_order_relaxed);
@@ -6250,6 +6257,15 @@ PM_EXPORT void pm_surface_set_hdr_boost(PMSurface *s, float boost) {
 // 1 when the layer is tagged with the display's extended linear colorspace and EDR is on, 0 while it is untagged (passthrough).
 PM_EXPORT int pm_surface_hdr_linear(PMSurface *s) {
     return atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
+}
+
+// 0 = HDR layer not applied yet (or this layer is not HDR), 1 = HDR active, 2 = the screen the window is on has no HDR (layer untagged,
+// picture as in SDR). Any thread, atomics only.
+PM_EXPORT int pm_surface_hdr_state(PMSurface *s) {
+    if (!s->hdrWatcher) return 0;
+    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    if (atomic_load_explicit(&w->screenNoHdr, memory_order_relaxed)) return 2;
+    return atomic_load_explicit(&s->hdrLinear, memory_order_relaxed) ? 1 : 0;
 }
 
 // The most EDR headroom the screen could ever offer (maximumPotentialExtendedDynamicRangeColorComponentValue), as last published

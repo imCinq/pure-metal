@@ -52,7 +52,7 @@ public final class MetalNative {
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
     // Surface.
-    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear;
+    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear, H_surfaceHdrState;
     private static MethodHandle H_upscale, H_upscaleReset, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
 
     private MetalNative() {
@@ -186,6 +186,7 @@ public final class MetalNative {
         H_surfaceEdrHeadroom = fn("pm_surface_edr_headroom", false, F, L);
         H_surfaceEdrMax = fn("pm_surface_edr_max", false, F, L);
         H_surfaceHdrLinear = fn("pm_surface_hdr_linear", false, I, L);
+        H_surfaceHdrState = fn("pm_surface_hdr_state", false, I, L);
         H_surfaceBlit = fn("pm_surface_blit", false, I, L, L, L, L, I, I);
         H_surfaceTextureBusy = fn("pm_surface_texture_busy", false, I, L, L);
         H_surfaceDestroy = fn("pm_surface_destroy", false, null, L);
@@ -666,6 +667,15 @@ public final class MetalNative {
     static float surfaceEdrMax(final long a0) {
         try {
             return (float) H_surfaceEdrMax.invokeExact(a0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** 0 = not applied yet, 1 = HDR active, 2 = this screen has no HDR. */
+    static int surfaceHdrState(final long a0) {
+        try {
+            return (int) H_surfaceHdrState.invokeExact(a0);
         } catch (Throwable t) {
             throw rethrow(t);
         }
