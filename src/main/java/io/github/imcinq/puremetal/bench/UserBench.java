@@ -12,42 +12,18 @@ import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 
 /**
- * Benchmark build for players. Only active when the jar contains the marker resource {@value #MARKER}; a normal jar never touches it.
+ * Benchmark build for players. Only active when the jar contains the marker resource {@value UserBenchBoot#MARKER}; a normal jar never touches it.
  * It presets the existing {@link Bench} properties (flight route generated during a 50 s warm-up, then a teleport back to the start, a 5 s settle and a 30 s measured pass over the same route; spectator mode, frozen time)
  * and writes the result, with hardware details, to puremetal-benchmark.txt in the game folder. No user name or path is recorded.
  */
 public final class UserBench {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final String MARKER = "/puremetal-benchmark.flag";
     static final int RENDER_DISTANCE = 16;
     static final long REFERENCE_SEED = -4953692208966999560L;
-    static final String LAP_START = "tp @s 0 140 0 0 15";
+    static final String LAP_START = UserBenchBoot.LAP_START;
     static final long LAP_SETTLE_NS = 5_000_000_000L;
-    private static final String COMMANDS = "gamemode spectator;time set noon;gamerule advance_time false;weather clear;" + LAP_START;
 
     private UserBench() {
-    }
-
-    /** Called from the mixin plugin, before {@link Bench} is initialized. */
-    public static void apply() {
-        try (InputStream marker = UserBench.class.getResourceAsStream(MARKER)) {
-            if (marker == null) {
-                return;
-            }
-        } catch (java.io.IOException | RuntimeException e) {
-            return;
-        }
-        System.setProperty("puremetal.userBench", "true");
-        System.setProperty("puremetal.bench", "30");
-        System.setProperty("puremetal.benchWarmup", "50");
-        System.setProperty("puremetal.benchWalk", "true");
-        System.setProperty("puremetal.generationFpsCap", "false");
-        System.setProperty("puremetal.benchCommand", COMMANDS);
-        // Startup-only settings, overridden for this launch only. These properties win over config/puremetal.properties,
-        // and nothing writes the file unless the player changes a setting, which the benchmark never does.
-        System.setProperty("puremetal.metal4", "false");
-        System.setProperty("puremetal.hdrHighlights", "false");
-        System.setProperty("puremetal.batterySaver", "false");
     }
 
     public static boolean enabled() {
