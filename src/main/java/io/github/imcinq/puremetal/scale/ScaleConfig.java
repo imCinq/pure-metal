@@ -190,6 +190,18 @@ public final class ScaleConfig {
     }
 
     private static void load() {
+        try {
+            loadFile();
+        } finally {
+            if (Boolean.getBoolean("puremetal.userBench")) {
+                // Player benchmark jar: Native scale with Auto Render Scale off, in memory only (no setter runs, so nothing is saved).
+                scale = MAX_SCALE;
+                autoScale = false;
+            }
+        }
+    }
+
+    private static void loadFile() {
         Properties p = readProperties();
         if (p == null) {
             return;

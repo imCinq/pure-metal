@@ -30,6 +30,7 @@ public final class Bench {
     private static boolean maxFpsForced;
     private static int savedMaxFps;
     private static boolean savedVsync;
+    private static int savedRenderDistance;
     private static net.minecraft.client.InactivityFpsLimit savedInactivity;
     /**
      * -Dpuremetal.benchGraphics=fast|fancy|fabulous: sets the graphics preset in memory for the run. A preset rewrites about seventeen
@@ -305,6 +306,8 @@ public final class Bench {
             minecraft.options.framerateLimit().set(260);
             savedVsync = minecraft.options.enableVsync().get();
             minecraft.options.enableVsync().set(false);
+            savedRenderDistance = minecraft.options.renderDistance().get();
+            minecraft.options.renderDistance().set(UserBench.RENDER_DISTANCE);
             // The default "afk" limit drops the game to 30 FPS after about a minute without input, and the benchmark flies by itself.
             minecraft.options.inactivityFpsLimit().set(net.minecraft.client.InactivityFpsLimit.MINIMIZED);
         }
@@ -463,6 +466,7 @@ public final class Bench {
                     minecraft.options.framerateLimit().set(savedMaxFps);
                     minecraft.options.enableVsync().set(savedVsync);
                     minecraft.options.inactivityFpsLimit().set(savedInactivity);
+                    minecraft.options.renderDistance().set(savedRenderDistance);
                 }
                 restoreGraphics(minecraft);
                 minecraft.stop();

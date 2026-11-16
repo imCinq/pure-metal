@@ -6,6 +6,10 @@
 python3 -I tools/bench.py <tag> default opengl
 ```
 
+## Player benchmark JAR
+
+`./gradlew benchmarkJar` writes `build/libs/pure-metal-<version>-benchmark.jar`: the normal jar plus an empty `puremetal-benchmark.flag` resource (the normal jar is not changed). With that marker the mod flies a fixed route (50 s warm-up, teleport back, 5 s settle, 30 s measured), quits, and writes `puremetal-benchmark.txt` in the game folder. For the run it forces, in memory only (nothing reaches `options.txt` or `config/puremetal.properties`): render distance 16, Metal 3, Native render scale with Auto off, default Terrain LOD, Battery Saver off, HDR Highlights off, VSync off, no FPS cap and no inactivity limit. The in-game options are restored before the quit. The report warns when Sodium is installed or the world seed is not the reference seed (`-4953692208966999560`). Player instructions are in the README.
+
 ## Setup
 
 - Same toolchain as the build (see the README).

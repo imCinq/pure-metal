@@ -48,7 +48,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 **Pure Metal on different Macs (more coming soon)**
 
-*Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers.*
+*Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers. The [benchmark JAR](#run-your-own-benchmark) uses this seed and route.*
 
 | Mac | Pure Metal | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
 | --- | --- | --- | --- | --- |
@@ -58,7 +58,18 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 | M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
 | M1 Air, 8 GB | 0.4.5 | 182.2 | 10.1 ms | 22.4 ms |
 
-To measure on your own Mac, see [Run your own benchmark](#run-your-own-benchmark).
+## Run your own benchmark
+
+Add your Mac to the table above, or check how Pure Metal does on it. It takes about 2 minutes.
+
+1. Download `pure-metal-<version>-benchmark.jar` from the [releases page](https://github.com/imCinq/Pure-Metal/releases).
+2. Put it in your `mods` folder **instead of** the normal Pure Metal JAR. Do not install Sodium, so the result is comparable with the "different Macs" table.
+3. Create a singleplayer world with the seed `-4953692208966999560`.
+4. Join the world and do not touch anything for about 1.5 minutes. The game flies a fixed route, measures 30 seconds and quits by itself.
+5. Send `puremetal-benchmark.txt` from the game folder: [open an issue](https://github.com/imCinq/Pure-Metal/issues) and attach it.
+6. Swap the normal Pure Metal JAR back into `mods`.
+
+For the run, the benchmark JAR forces render distance 16, Metal 3, Native render scale, the default Terrain LOD, Battery Saver off, HDR Highlights off, VSync off and no FPS cap. Your own settings are put back afterwards. The result file lists these values, warns if Sodium is installed or the world seed is different, and contains no user name or file paths.
 
 ## Requirements
 
@@ -136,15 +147,7 @@ With Distant Horizons support off, the game runs without Metal while DH stays in
 
 Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is built with the system `clang` against the macOS 26 SDK; the result still runs on macOS 14+) and a Java 25 toolchain. The jar ends up in `build/libs`.
 
-### Run your own benchmark
-
-`tools/bench.py` compares graphics APIs on your own Mac:
-
-```
-python3 -I tools/bench.py <tag> default opengl
-```
-
-Results depend on the Mac, the world and the render distance, so compare runs on the same machine only. Setup, options and a note on Terrain LOD are in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+Developer benchmarks (`tools/bench.py`) and building the benchmark JAR (`./gradlew benchmarkJar`) are in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
 ## Docs
 

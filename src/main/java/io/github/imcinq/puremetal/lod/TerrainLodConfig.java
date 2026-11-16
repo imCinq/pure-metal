@@ -22,6 +22,11 @@ public final class TerrainLodConfig {
                 ratioPercent = DEFAULT_RATIO;
             }
         }
+        if (Boolean.getBoolean("puremetal.userBench")) {
+            // Player benchmark jar: default Terrain LOD, in memory only (no setter runs, so nothing is saved).
+            enabled = true;
+            ratioPercent = DEFAULT_RATIO;
+        }
     }
 
     private TerrainLodConfig() {

@@ -112,6 +112,21 @@ tasks.named('jar') {
 	from(layout.projectDirectory.files('LICENSE', 'NOTICE'))
 }
 
+// pure-metal-<version>-benchmark.jar: the normal jar (this setup has no remap step) plus the empty marker resource that turns on the player benchmark (UserBench).
+// The normal jar is not changed.
+tasks.register('benchmarkJar', Zip) {
+	def marker = layout.buildDirectory.file("benchmark/puremetal-benchmark.flag")
+	dependsOn 'jar'
+	from(zipTree(tasks.named('jar').flatMap { it.archiveFile }))
+	from(marker)
+	archiveBaseName = 'pure-metal'
+	archiveVersion = project.version.toString()
+	archiveClassifier = 'benchmark'
+	archiveExtension = 'jar'
+	destinationDirectory = layout.buildDirectory.dir("libs")
+	doFirst { marker.get().asFile.with { parentFile.mkdirs(); text = "" } }
+}
+
 tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
 
 java {
