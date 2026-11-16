@@ -4,7 +4,7 @@
 
 Add your Mac to the README table, or check how Pure Metal does on it. It takes about 2 minutes.
 
-1. Download `pure-metal-<version>-benchmark.jar` from the [releases page](https://github.com/imCinq/Pure-Metal/releases).
+1. Download `pure-metal-0.5.0-benchmark.jar` from the [Benchmark JAR release](https://github.com/imCinq/Pure-Metal/releases/tag/benchmark-0.5.0).
 2. Put it in your `mods` folder **instead of** the normal Pure Metal JAR. Do not install Sodium, so the result is comparable with the table.
 3. Create a singleplayer world with the seed `-4953692208966999560`. Cheats are not needed.
 4. Join the world and do not touch anything for about 1.5 minutes. The game flies a fixed route, measures 30 seconds and quits by itself.
