@@ -58,7 +58,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 | M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
 | M1 Air, 8 GB | 0.4.5 | 182.2 | 10.1 ms | 22.4 ms |
 
-**Benchmark your own Mac** (about 2 minutes): download `pure-metal-<version>-benchmark.jar` from the [releases page](https://github.com/imCinq/Pure-Metal/releases) and use it instead of the normal JAR, without Sodium. Create a singleplayer world with seed `-4953692208966999560`, join it and don't touch anything. It flies the route, measures 30 seconds and quits. Then [open an issue](https://github.com/imCinq/Pure-Metal/issues) with `puremetal-benchmark.txt` from your game folder and put the normal JAR back. The run uses the table's settings only in memory, so your own settings stay as they were, and the file has no user name or paths.
+**[Benchmark your Mac](docs/BENCHMARKING.md#benchmark-your-mac)**
 
 ## Requirements
 
