@@ -106,7 +106,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setBinding(io.github.imcinq.puremetal.perf.FramePacing::setEnabled, io.github.imcinq.puremetal.perf.FramePacing::enabled))
                     .addOption(builder.createBooleanOption(id("hdr_highlights"))
                         .setName(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.name())
-                        .setTooltip(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.tooltip())
+                        .setTooltip(value -> io.github.imcinq.puremetal.perf.HdrHighlightsOptions.tooltip())
                         .setImpact(OptionImpact.LOW)
                         .setFlags(OptionFlag.REQUIRES_GAME_RESTART)
                         .setDefaultValue(false)
