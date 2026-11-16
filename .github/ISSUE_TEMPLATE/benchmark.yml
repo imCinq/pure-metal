@@ -1,0 +1,29 @@
+name: Benchmark result
+description: Share a result from the benchmark JAR
+title: "Benchmark: "
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run the benchmark JAR first, see [Benchmark your Mac](https://github.com/imCinq/Pure-Metal/blob/main/docs/BENCHMARKING.md#benchmark-your-mac).
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model
+      description: For example "MacBook Pro 14-inch, M4 Pro, 24 GB".
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: puremetal-benchmark.txt
+      description: Paste the whole file from your game folder, or attach it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Optional. Plugged in or on battery, other apps open, anything that looked wrong.

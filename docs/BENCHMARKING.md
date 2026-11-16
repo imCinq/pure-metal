@@ -8,7 +8,7 @@ Add your Mac to the README table, or check how Pure Metal does on it. It takes a
 2. Put it in your `mods` folder **instead of** the normal Pure Metal JAR. Do not install Sodium, so the result is comparable with the table.
 3. Create a singleplayer world with the seed `-4953692208966999560`. Cheats are not needed.
 4. Switch the game to fullscreen (F11), like the table runs. Then join the world and do not touch anything for about 1.5 minutes. The game flies a fixed route, measures 30 seconds and quits by itself.
-5. [Open an issue](https://github.com/imCinq/Pure-Metal/issues) and attach `puremetal-benchmark.txt` from your game folder.
+5. [Share your result](https://github.com/imCinq/Pure-Metal/issues/new?template=benchmark.yml) and paste or attach `puremetal-benchmark.txt` from your game folder.
 6. Put the normal Pure Metal JAR back into `mods`.
 
 For the run, the benchmark JAR forces render distance 16, Metal 3, Native render scale, the default Terrain LOD, Battery Saver off, HDR Highlights off, VSync off and no FPS cap. These values are only in memory, so your own settings files keep your values, also if you quit early. They cannot be changed in the menus during the run. If the setup commands (spectator mode, teleport, noon, clear weather) cannot run, the result file starts with INVALID and nothing is measured. The file lists the settings, warns if Sodium is installed or the seed is different, and contains no user name or file paths.
