@@ -91,7 +91,15 @@ public final class ScaleConfig {
         return autoScale && !AutoScale.BLOCKED;
     }
 
+    /** True in the player benchmark jar: the settings it forces cannot be changed or saved during the run, so options.txt-style persistence of forced values is impossible. */
+    public static boolean benchLocked() {
+        return Boolean.getBoolean("puremetal.userBench");
+    }
+
     public static void setAutoScale(final boolean value) {
+        if (benchLocked()) {
+            return;
+        }
         if (value == autoScale) {
             return;
         }
@@ -157,6 +165,9 @@ public final class ScaleConfig {
     }
 
     public static void setScale(final int value) {
+        if (benchLocked()) {
+            return;
+        }
         int clamped = Math.clamp(value, MIN_SCALE, MAX_SCALE);
         // Compare what is drawn, not only the saved value: clearing a benchmark's scale can change it on its own.
         int before = scale();
@@ -181,6 +192,9 @@ public final class ScaleConfig {
     }
 
     public static void setUpscaler(final Upscaler value) {
+        if (benchLocked()) {
+            return;
+        }
         if (value != upscaler) {
             upscaler = value;
             refreshEffective();

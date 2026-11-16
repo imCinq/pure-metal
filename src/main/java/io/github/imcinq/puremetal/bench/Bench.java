@@ -28,10 +28,8 @@ public final class Bench {
     private static boolean commandSent;
     private static boolean lapReset;
     private static boolean maxFpsForced;
-    private static int savedMaxFps;
-    private static boolean savedVsync;
-    private static int savedRenderDistance;
-    private static net.minecraft.client.InactivityFpsLimit savedInactivity;
+    /** The player's own values of the options the user benchmark forces, kept until they are put back. Null when nothing is forced. */
+    private static List<SavedOption<?>> forcedOptions;
     /**
      * -Dpuremetal.benchGraphics=fast|fancy|fabulous: sets the graphics preset in memory for the run. A preset rewrites about seventeen
      * individual options (render distance, simulation distance, entity distance, ...), so every one of them is saved first and put back
@@ -174,6 +172,52 @@ public final class Bench {
         return optionsSaveHeld;
     }
 
+    /** Puts the player's own values back in memory. Idempotent; called after the run, on quit and on disconnect (MinecraftBenchMixin). */
+    public static void restoreUserOptions() {
+        List<SavedOption<?>> originals = forcedOptions;
+        if (originals == null) {
+            return;
+        }
+        forcedOptions = null;
+        maxFpsForced = false;
+        for (SavedOption<?> option : originals) {
+            try {
+                option.restore();
+            } catch (RuntimeException e) {
+                LOGGER.warn("BENCH could not restore {}", option.name(), e);
+            }
+        }
+    }
+
+    private static List<Object[]> swappedForSave;
+
+    /** Options.save() start: the file gets the player's own values for the forced options, in the field only (no listeners run). */
+    public static void swapOriginalsForSave() {
+        List<SavedOption<?>> originals = forcedOptions;
+        if (originals == null || swappedForSave != null) {
+            return;
+        }
+        List<Object[]> forced = new ArrayList<>();
+        for (SavedOption<?> option : originals) {
+            io.github.imcinq.puremetal.mixin.OptionInstanceAccessor accessor = (io.github.imcinq.puremetal.mixin.OptionInstanceAccessor)(Object)option.option();
+            forced.add(new Object[] {accessor, accessor.puremetal$getValue()});
+            accessor.puremetal$setValue(option.value());
+        }
+        swappedForSave = forced;
+    }
+
+    /** Options.save() end: the forced values go back in the field. */
+    public static void swapForcedBackAfterSave() {
+        List<Object[]> forced = swappedForSave;
+        if (forced == null) {
+            return;
+        }
+        swappedForSave = null;
+        for (Object[] entry : forced) {
+            ((io.github.imcinq.puremetal.mixin.OptionInstanceAccessor)entry[0]).puremetal$setValue(entry[1]);
+        }
+    }
+
     private record SavedOption<T>(String name, net.minecraft.client.OptionInstance<T> option, T value) {
         void restore() {
             this.option.set(this.value);
@@ -301,15 +345,28 @@ public final class Bench {
             // Player build: no frame limit, set only once the player is in the world (after vanilla's startup save) and put back
             // before the quit. Saving is not held: holding it would also block the "started cleanly" save and make the next launch fall back to OpenGL.
             maxFpsForced = true;
-            savedMaxFps = minecraft.options.framerateLimit().get();
-            savedInactivity = minecraft.options.inactivityFpsLimit().get();
-            minecraft.options.framerateLimit().set(260);
-            savedVsync = minecraft.options.enableVsync().get();
-            minecraft.options.enableVsync().set(false);
-            savedRenderDistance = minecraft.options.renderDistance().get();
-            minecraft.options.renderDistance().set(UserBench.RENDER_DISTANCE);
+            net.minecraft.client.Options o = minecraft.options;
+            List<SavedOption<?>> originals = new ArrayList<>();
+            save(originals, "framerateLimit", o.framerateLimit());
+            save(originals, "enableVsync", o.enableVsync());
+            save(originals, "renderDistance", o.renderDistance());
+            save(originals, "inactivityFpsLimit", o.inactivityFpsLimit());
+            forcedOptions = originals;
+            o.framerateLimit().set(260);
+            o.enableVsync().set(false);
+            o.renderDistance().set(UserBench.RENDER_DISTANCE);
             // The default "afk" limit drops the game to 30 FPS after about a minute without input, and the benchmark flies by itself.
-            minecraft.options.inactivityFpsLimit().set(net.minecraft.client.InactivityFpsLimit.MINIMIZED);
+            o.inactivityFpsLimit().set(net.minecraft.client.InactivityFpsLimit.MINIMIZED);
+        }
+        if (UserBench.enabled()) {
+            String failure = UserBench.pollSetup();
+            if (failure != null) {
+                done = true;
+                UserBench.writeInvalid(minecraft, failure);
+                restoreUserOptions();
+                minecraft.stop();
+                return;
+            }
         }
         if (SHOT != null) {
             if (!minecraft.gui.hud.isHidden()) {
@@ -337,8 +394,12 @@ public final class Bench {
             inWorldSince = now;
             if (COMMAND != null && !commandSent && minecraft.player != null) {
                 commandSent = true;
-                for (String command : COMMAND.split(";")) {
-                    minecraft.player.connection.sendCommand(command.trim());
+                if (UserBench.enabled()) {
+                    UserBench.runSetup(minecraft, COMMAND);
+                } else {
+                    for (String command : COMMAND.split(";")) {
+                        minecraft.player.connection.sendCommand(command.trim());
+                    }
                 }
             }
         }
@@ -350,7 +411,7 @@ public final class Bench {
             if (UserBench.enabled() && !lapReset && minecraft.player != null) {
                 // Player build: the warm-up flew the route and generated its terrain. Go back to the start and measure over that terrain.
                 lapReset = true;
-                minecraft.player.connection.sendCommand(UserBench.LAP_START);
+                UserBench.runSetup(minecraft, UserBench.LAP_START);
                 inWorldSince = now - WARMUP_NS + UserBench.LAP_SETTLE_NS;
                 last = now;
                 return;
@@ -462,12 +523,7 @@ public final class Bench {
             } catch (RuntimeException e) {
                 LOGGER.error("BENCH report failed", e);
             } finally {
-                if (maxFpsForced) {
-                    minecraft.options.framerateLimit().set(savedMaxFps);
-                    minecraft.options.enableVsync().set(savedVsync);
-                    minecraft.options.inactivityFpsLimit().set(savedInactivity);
-                    minecraft.options.renderDistance().set(savedRenderDistance);
-                }
+                restoreUserOptions();
                 restoreGraphics(minecraft);
                 minecraft.stop();
             }

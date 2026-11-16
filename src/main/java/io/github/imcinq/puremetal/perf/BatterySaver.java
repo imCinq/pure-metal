@@ -50,6 +50,9 @@ public final class BatterySaver {
     }
 
     public static void setEnabled(final boolean value) {
+        if (ScaleConfig.benchLocked()) {
+            return;
+        }
         if (value == enabled) {
             return;
         }

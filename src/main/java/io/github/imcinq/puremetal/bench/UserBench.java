@@ -116,6 +116,73 @@ public final class UserBench {
         }
     }
 
+    private static final java.util.List<java.util.concurrent.CompletableFuture<String>> SETUP = new java.util.ArrayList<>();
+    private static String setupFailure;
+
+    /**
+     * Runs the setup commands on the integrated server with full permission, as the player, so the world does not need cheats.
+     * Singleplayer only: anywhere else the run is invalid (see {@link #pollSetup()}).
+     */
+    static void runSetup(final Minecraft minecraft, final String commands) {
+        net.minecraft.server.MinecraftServer server = minecraft.getSingleplayerServer();
+        if (server == null || minecraft.player == null) {
+            setupFailure = "not a singleplayer world, the benchmark needs one";
+            return;
+        }
+        java.util.UUID id = minecraft.player.getUUID();
+        SETUP.add(server.submit(() -> {
+            net.minecraft.server.level.ServerPlayer player = server.getPlayerList().getPlayer(id);
+            if (player == null) {
+                return "player not found on the server";
+            }
+            net.minecraft.commands.CommandSourceStack source = player.createCommandSourceStack()
+                .withPermission(net.minecraft.server.permissions.LevelBasedPermissionSet.OWNER);
+            for (String command : commands.split(";")) {
+                try {
+                    server.getCommands().getDispatcher().execute(command.trim(), source);
+                } catch (com.mojang.brigadier.exceptions.CommandSyntaxException | RuntimeException e) {
+                    return "/" + command.trim().split(" ")[0] + " was rejected";
+                }
+            }
+            return null;
+        }));
+    }
+
+    /** The reason a setup command failed, or null while all went fine so far. */
+    static String pollSetup() {
+        if (setupFailure != null) {
+            return setupFailure;
+        }
+        java.util.Iterator<java.util.concurrent.CompletableFuture<String>> it = SETUP.iterator();
+        while (it.hasNext()) {
+            java.util.concurrent.CompletableFuture<String> future = it.next();
+            if (!future.isDone()) {
+                continue;
+            }
+            it.remove();
+            try {
+                String result = future.get();
+                if (result != null) {
+                    setupFailure = result;
+                }
+            } catch (InterruptedException | java.util.concurrent.ExecutionException e) {
+                setupFailure = "setup command error";
+            }
+        }
+        return setupFailure;
+    }
+
+    /** The run did not measure the reference route: the result file says so and carries no numbers. */
+    static void writeInvalid(final Minecraft minecraft, final String reason) {
+        try {
+            String text = "INVALID: setup commands failed (" + reason + "). Nothing was measured. Use a singleplayer world and run it again.\n";
+            Files.writeString(minecraft.gameDirectory.toPath().resolve("puremetal-benchmark.txt"), text, StandardCharsets.UTF_8);
+            LOGGER.error("BENCH-USER invalid: {}", reason);
+        } catch (Exception e) {
+            LOGGER.error("BENCH-USER report failed", e);
+        }
+    }
+
     /** The singleplayer world's seed as text, or null when there is no integrated server. */
     private static String worldSeed(final Minecraft minecraft) {
         try {

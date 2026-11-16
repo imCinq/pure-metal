@@ -69,7 +69,7 @@ Add your Mac to the table above, or check how Pure Metal does on it. It takes ab
 5. Send `puremetal-benchmark.txt` from the game folder: [open an issue](https://github.com/imCinq/Pure-Metal/issues) and attach it.
 6. Swap the normal Pure Metal JAR back into `mods`.
 
-For the run, the benchmark JAR forces render distance 16, Metal 3, Native render scale, the default Terrain LOD, Battery Saver off, HDR Highlights off, VSync off and no FPS cap. Your own settings are put back afterwards. The result file lists these values, warns if Sodium is installed or the world seed is different, and contains no user name or file paths.
+For the run, the benchmark JAR forces render distance 16, Metal 3, Native render scale, the default Terrain LOD, Battery Saver off, HDR Highlights off, VSync off and no FPS cap. The forced values are only in memory: your own settings files always keep your values, also if you quit early or the game crashes. The setup commands (spectator mode, teleport, noon, clear weather) run on the integrated server and need no cheats; if they cannot run, the result file starts with INVALID and nothing is measured. The benchmark settings cannot be changed in the menus during the run. The result file lists these values, warns if Sodium is installed or the world seed is different, and contains no user name or file paths.
 
 ## Requirements
 

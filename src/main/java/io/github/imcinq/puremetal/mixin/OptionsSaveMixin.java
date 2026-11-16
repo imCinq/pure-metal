@@ -20,4 +20,15 @@ public class OptionsSaveMixin {
             ci.cancel();
         }
     }
+
+    /** Player benchmark: the saved file always has the player's own values for the options the benchmark forces. Saving itself is never held. */
+    @Inject(method = "save", at = @At("HEAD"))
+    private void puremetal$originalsBeforeSave(final CallbackInfo ci) {
+        Bench.swapOriginalsForSave();
+    }
+
+    @Inject(method = "save", at = @At("RETURN"))
+    private void puremetal$forcedAfterSave(final CallbackInfo ci) {
+        Bench.swapForcedBackAfterSave();
+    }
 }

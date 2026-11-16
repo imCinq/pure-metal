@@ -8,6 +8,7 @@
     "PreferredGraphicsApiMixin",
     "MinecraftBenchMixin",
     "OptionsSaveMixin",
+    "OptionInstanceAccessor",
     "MinecraftStartupMixin",
     "RenderTargetMixin",
     "GameRendererMixin",

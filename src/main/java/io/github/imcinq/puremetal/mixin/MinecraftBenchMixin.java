@@ -27,4 +27,15 @@ public class MinecraftBenchMixin {
             Bench.frame((Minecraft)(Object)this);
         }
     }
+
+    /** Player benchmark: an early quit or leaving the world puts the player's options back in memory before anything saves them. */
+    @Inject(method = "stop", at = @At("HEAD"))
+    private void puremetal$restoreOnStop(final CallbackInfo ci) {
+        Bench.restoreUserOptions();
+    }
+
+    @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;ZZ)V", at = @At("HEAD"))
+    private void puremetal$restoreOnDisconnect(final CallbackInfo ci) {
+        Bench.restoreUserOptions();
+    }
 }

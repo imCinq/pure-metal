@@ -59,6 +59,9 @@ public final class Metal4Config {
     }
 
     public static void setEnabled(final boolean value) {
+        if (ScaleConfig.benchLocked()) {
+            return;
+        }
         if (value == enabled) {
             return;
         }

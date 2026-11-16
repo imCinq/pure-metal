@@ -42,6 +42,9 @@ public final class TerrainLodConfig {
 
     /** Returns true if the value changed (the caller reloads chunks). */
     public static boolean setEnabled(final boolean value) {
+        if (ScaleConfig.benchLocked()) {
+            return false;
+        }
         if (value == enabled) {
             return false;
         }
@@ -51,6 +54,9 @@ public final class TerrainLodConfig {
     }
 
     public static boolean setRatioPercent(final int value) {
+        if (ScaleConfig.benchLocked()) {
+            return false;
+        }
         int clamped = Math.clamp(value, MIN_RATIO, MAX_RATIO);
         if (clamped == ratioPercent) {
             return false;
