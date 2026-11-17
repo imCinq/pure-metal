@@ -134,7 +134,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
     /** The Metal 4 toggle: still bound to its saved value, but greyed out where Metal 4 cannot run. */
     private static BooleanOptionBuilder metal4Option(final ConfigBuilder builder) {
         BooleanOptionBuilder option = builder.createBooleanOption(id("metal4"))
-            .setName(Lang.text("puremetal.options.metal4.short"))
+            .setName(Lang.text("puremetal.options.metal4"))
             .setTooltip(ScaleOptions.metal4Tooltip())
             .setImpact(OptionImpact.LOW)
             .setDefaultValue(false)
