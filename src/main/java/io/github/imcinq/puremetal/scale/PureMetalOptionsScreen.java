@@ -33,6 +33,8 @@ public final class PureMetalOptionsScreen extends OptionsSubScreen {
         this.list.addSmall(GenerationCapOptions.vanilla(), io.github.imcinq.puremetal.perf.BatterySaverOptions.vanilla());
         this.list.addHeader(Lang.text("puremetal.options.section.experimental"));
         this.list.addSmall(ScaleOptions.vanillaMetal4(), io.github.imcinq.puremetal.perf.FramePacingOptions.vanilla());
-        this.list.addSmall(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.vanilla(), null);
+        // This screen is rebuilt on each open, so High Refresh Boost is only listed on a display it can act on.
+        this.list.addSmall(io.github.imcinq.puremetal.perf.HdrHighlightsOptions.vanilla(),
+            io.github.imcinq.puremetal.perf.FramePacing.boostDisplay() ? io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.vanilla() : null);
     }
 }

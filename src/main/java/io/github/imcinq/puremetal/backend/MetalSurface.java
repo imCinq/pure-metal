@@ -8,6 +8,7 @@ import io.github.imcinq.puremetal.bench.PresentationProfile;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import org.lwjgl.sdl.SDLError;
 import org.lwjgl.sdl.SDLMetal;
 import org.lwjgl.system.MemoryStack;
@@ -21,8 +22,6 @@ final class MetalSurface implements GpuSurfaceBackend {
     private boolean closed;
     /** Dev aid: -Dpuremetal.capture=<frame> saves that presented frame to puremetal-capture.png in the game dir. */
     private static final int CAPTURE_FRAME = Integer.getInteger("puremetal.capture", -1);
-    /** -Dpuremetal.allowTearing=true: with vsync off, present immediately (tears) instead of at the next refresh. */
-    private static final boolean ALLOW_TEARING = Boolean.getBoolean("puremetal.allowTearing");
     /** Dev aid: -Dpuremetal.noPresent=true renders frames without showing them, to isolate presentation costs. */
     private static final boolean NO_PRESENT = Boolean.getBoolean("puremetal.noPresent");
     private int frame;
@@ -69,7 +68,8 @@ final class MetalSurface implements GpuSurfaceBackend {
             event.begin();
         }
         FrameTrace.mark(FrameTrace.CFG_ENTER, config.width(), config.height(), vsync ? 1L : 0L);
-        MetalNative.surfaceConfigure(this.surface, config.width(), config.height(), vsync ? 1 : 0, ALLOW_TEARING ? 1 : 0);
+        MetalNative.surfaceConfigure(this.surface, config.width(), config.height(), vsync ? 1 : 0,
+            io.github.imcinq.puremetal.perf.FramePacing.allowTearing());
         FrameTrace.mark(FrameTrace.CFG_EXIT, 0);
         if (event != null) event.commit();
     }
@@ -88,7 +88,7 @@ final class MetalSurface implements GpuSurfaceBackend {
         }
         if (io.github.imcinq.puremetal.perf.FramePacing.update(this.configuredVsync)) {
             MetalNative.surfaceSetPacing(this.surface, io.github.imcinq.puremetal.perf.FramePacing.refreshNs(),
-                io.github.imcinq.puremetal.perf.FramePacing.pacing());
+                io.github.imcinq.puremetal.perf.FramePacing.pacing(), io.github.imcinq.puremetal.perf.FramePacing.allowTearing());
         }
         if (io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE) {
             this.updateHdr();
@@ -164,17 +164,18 @@ final class MetalSurface implements GpuSurfaceBackend {
                 }
             }
             org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
-                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={}",
+                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={} sync={}",
                 Math.round(this.statsFrames / secs), Math.round(st.get(2) / secs), Math.round(shown / secs),
-                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format("%.1f", st.get(4) / 1000.0 / shown),
-                st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1
+                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format(Locale.ROOT, "%.1f", st.get(4) / 1000.0 / shown),
+                st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1,
+                MetalNative.surfaceDisplaySync(this.surface)
             );
             io.github.imcinq.puremetal.bench.Bench.hitches += st.get(5);
             io.github.imcinq.puremetal.bench.Bench.shownCompared += st.get(6);
             if (FrameTrace.ENABLED) {
                 org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
                     "PRESENT-TIMING drawableWaitMaxMs={} layerConfigureMaxMs={} size={}x{} vsync={}",
-                    String.format("%.2f", drawableWaitMax / 1e6), String.format("%.2f", layerConfigureMax / 1e6),
+                    String.format(Locale.ROOT, "%.2f", drawableWaitMax / 1e6), String.format(Locale.ROOT, "%.2f", layerConfigureMax / 1e6),
                     this.configuredWidth, this.configuredHeight, this.configuredVsync
                 );
             }

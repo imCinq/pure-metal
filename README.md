@@ -102,6 +102,7 @@ Experimental:
 - **Metal 4** (macOS 26): Metal 3 is currently faster.
 - **Smooth Frame Pacing** (needs VSync): shows frames at an even pace.
 - **HDR Highlights** (needs a restart): makes the sun, bright sky and white highlights brighter on screens with HDR headroom. Turns itself off on screens without HDR and while Battery Saver is on.
+- **High Refresh Boost** (200 Hz+ displays, VSync off): shows frames as soon as they are ready. May tear.
 
 ## Distant Horizons
 

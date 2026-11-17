@@ -2,6 +2,7 @@ package io.github.imcinq.puremetal.scale;
 
 import io.github.imcinq.puremetal.Redact;
 import net.caffeinemc.mods.sodium.api.config.ConfigEntryPoint;
+import net.caffeinemc.mods.sodium.api.config.ConfigState;
 import io.github.imcinq.puremetal.Lang;
 import io.github.imcinq.puremetal.lod.LodOptions;
 import io.github.imcinq.puremetal.backend.Metal4Config;
@@ -112,7 +113,18 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setDefaultValue(false)
                         .setStorageHandler(() -> {
                         })
-                        .setBinding(io.github.imcinq.puremetal.perf.HdrHighlights::setEnabled, io.github.imcinq.puremetal.perf.HdrHighlights::enabled))));
+                        .setBinding(io.github.imcinq.puremetal.perf.HdrHighlights::setEnabled, io.github.imcinq.puremetal.perf.HdrHighlights::enabled))
+                    .addOption(builder.createBooleanOption(id("high_refresh_boost"))
+                        .setName(io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.name())
+                        .setTooltip(io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.tooltip())
+                        .setImpact(OptionImpact.LOW)
+                        .setDefaultValue(false)
+                        // This page is built at startup, before the refresh rate is known, so the check runs each time the screen opens.
+                        .setEnabledProvider(state -> !io.github.imcinq.puremetal.perf.FramePacing.boostForced()
+                            && io.github.imcinq.puremetal.perf.FramePacing.boostDisplay(), ConfigState.UPDATE_ON_REBUILD)
+                        .setStorageHandler(() -> {
+                        })
+                        .setBinding(io.github.imcinq.puremetal.perf.FramePacing::setBoostEnabled, io.github.imcinq.puremetal.perf.FramePacing::boostEnabled))));
     }
 
     private static Identifier id(final String path) {

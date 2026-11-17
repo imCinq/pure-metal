@@ -162,10 +162,10 @@ public final class ScaleOptions {
 
     /**
      * The vanilla boolean value set with its button left inactive: the option stays visible and keeps reading and writing its saved value,
-     * but cannot be clicked on a Mac without Metal 4.
+     * but cannot be clicked: Metal 4 on a Mac without it, High Refresh Boost while -Dpuremetal.allowTearing decides instead.
      */
-    private record LockedBooleanValues(OptionInstance.ValueSet<Boolean> values) implements OptionInstance.ValueSet<Boolean> {
-        LockedBooleanValues() {
+    public record LockedBooleanValues(OptionInstance.ValueSet<Boolean> values) implements OptionInstance.ValueSet<Boolean> {
+        public LockedBooleanValues() {
             this(OptionInstance.BOOLEAN_VALUES);
         }
 
