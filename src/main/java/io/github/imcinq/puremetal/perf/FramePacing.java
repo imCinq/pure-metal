@@ -13,16 +13,15 @@ import net.minecraft.client.Minecraft;
  * config/puremetal.properties), or forced at startup with -Dpuremetal.smoothFramePacing=true|false.
  *
  * Also holds High Refresh Boost (off by default and experimental, stored as highRefreshBoost): with VSync off on a display
- * faster than 120 Hz, each frame is shown as soon as it is ready instead of at the next refresh, which may tear.
+ * of 200 Hz or more, each frame is shown as soon as it is ready instead of at the next refresh, which may tear.
  * -Dpuremetal.allowTearing=true|false decides that for the whole session instead, on any display.
  */
 public final class FramePacing {
     private static final long REFRESH_RECHECK_NS = 1_000_000_000L;
-    /** High Refresh Boost acts on displays faster than 120 Hz; surface_display_sync in the native code has the same limit. */
-    private static final long BOOST_REFRESH_NS = 8_333_333L;
-    /** -Dpuremetal.allowTearing: 1 (true) or 0 (false) for the whole session, -1 when it is not set. */
-    private static final int FORCED_TEARING = System.getProperty("puremetal.allowTearing") == null ? -1
-        : Boolean.getBoolean("puremetal.allowTearing") ? 1 : 0;
+    /** High Refresh Boost acts on displays of 200 Hz and up; surface_display_sync in the native code has the same limit. */
+    private static final long BOOST_REFRESH_NS = 5_000_000L;
+    /** -Dpuremetal.allowTearing: 1 (true) or 0 (false) for the whole session, -1 when it is not set or is anything else. */
+    private static final int FORCED_TEARING = readForcedTearing();
 
     private static volatile boolean enabled = readEnabled();
     private static volatile boolean boost = saved("highRefreshBoost");
@@ -34,6 +33,15 @@ public final class FramePacing {
     private static int sentBoost;
 
     private FramePacing() {
+    }
+
+    private static int readForcedTearing() {
+        String property = System.getProperty("puremetal.allowTearing");
+        if (property == null) {
+            return -1;
+        }
+        String value = property.trim();
+        return value.equalsIgnoreCase("true") ? 1 : value.equalsIgnoreCase("false") ? 0 : -1;
     }
 
     private static boolean readEnabled() {
@@ -81,12 +89,12 @@ public final class FramePacing {
 
     /** True when the window's display is fast enough for High Refresh Boost to act. Render thread. */
     public static boolean boostDisplay() {
-        return refreshNs > 0L && refreshNs < BOOST_REFRESH_NS;
+        return refreshNs > 0L && refreshNs <= BOOST_REFRESH_NS;
     }
 
     /**
      * What the native surface does with VSync off: 1 never waits for the refresh, 0 always does, -1 (High Refresh Boost)
-     * stops waiting on displays faster than 120 Hz.
+     * stops waiting on displays of 200 Hz and up.
      */
     public static int allowTearing() {
         return FORCED_TEARING >= 0 ? FORCED_TEARING : boost ? -1 : 0;

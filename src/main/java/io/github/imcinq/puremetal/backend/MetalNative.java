@@ -52,7 +52,7 @@ public final class MetalNative {
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
     // Surface.
-    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear, H_surfaceHdrState;
+    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceDisplaySync, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear, H_surfaceHdrState;
     private static MethodHandle H_upscale, H_upscaleReset, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
 
     private MetalNative() {
@@ -182,6 +182,7 @@ public final class MetalNative {
         H_surfaceCreate = fn("pm_surface_create", false, L, L, L, I);
         H_surfaceConfigure = fn("pm_surface_configure", false, null, L, I, I, I, I);
         H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I, I);
+        H_surfaceDisplaySync = fn("pm_surface_display_sync", false, I, L);
         H_surfaceSetHdrBoost = fn("pm_surface_set_hdr_boost", false, null, L, F);
         H_surfaceEdrHeadroom = fn("pm_surface_edr_headroom", false, F, L);
         H_surfaceEdrMax = fn("pm_surface_edr_max", false, F, L);
@@ -651,6 +652,14 @@ public final class MetalNative {
     static void surfaceSetPacing(final long a0, final long a1, final int a2, final int a3) {
         try {
             H_surfaceSetPacing.invokeExact(a0, a1, a2, a3);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static int surfaceDisplaySync(final long a0) {
+        try {
+            return (int) H_surfaceDisplaySync.invokeExact(a0);
         } catch (Throwable t) {
             throw rethrow(t);
         }

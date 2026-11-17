@@ -4586,7 +4586,7 @@ typedef struct PMSurface {
     _Atomic uint64_t targetSize; // packed drawable width/height, read by GPU completion callbacks
     uint64_t eventValue;   // last value signalled (render thread)
     int vsync;             // render thread
-    int allowTearing;      // render thread, with vsync off: 1 never syncs, 0 always does, -1 (High Refresh Boost) syncs up to 120 Hz
+    int allowTearing;      // render thread, with vsync off: 1 never syncs, 0 always does, -1 (High Refresh Boost) syncs below 200 Hz
     // Layer settings requested by pm_surface_configure, applied on the present queue before the next drawable is taken
     // (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
     pthread_mutex_t cfgLock;
@@ -5768,16 +5768,16 @@ static void apply_layer_config_hdr(PMSurface *s) {
 // With vsync off, frames that miss a refresh are skipped (like Vulkan's MAILBOX) instead of tearing, which needs display
 // sync. That only works while a present can follow a returned drawable within one refresh. At 240 Hz it mostly cannot:
 // frames alternated between one and two refreshes and about 170 reached the screen per second. High Refresh Boost
-// (allowTearing -1) stops syncing on displays faster than 120 Hz instead, which showed about 235 at 240 Hz and may tear.
+// (allowTearing -1) stops syncing on displays of 200 Hz and up instead, which showed about 235 at 240 Hz and may tear.
 // FramePacing.BOOST_REFRESH_NS is the same limit.
-#define PM_BOOST_REFRESH_NS 8333333ULL
+#define PM_BOOST_REFRESH_NS 5000000ULL
 
 // Render thread.
 static int surface_display_sync(PMSurface *s) {
     if (s->vsync || s->allowTearing == 0) return 1;
     if (s->allowTearing > 0) return 0;
     uint64_t refresh = atomic_load(&s->refreshNs);
-    return !(refresh && refresh < PM_BOOST_REFRESH_NS);
+    return !(refresh && refresh <= PM_BOOST_REFRESH_NS);
 }
 
 PM_EXPORT void pm_surface_configure(PMSurface *s, int width, int height, int vsync, int allowTearing) {
@@ -6261,6 +6261,15 @@ PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacin
         s->cfgPending = 1;
     }
     pthread_mutex_unlock(&s->cfgLock);
+}
+
+// What the layer was last asked to do: 1 waits for the display refresh, 0 shows each frame as soon as it is ready.
+// For the present stats line.
+PM_EXPORT int pm_surface_display_sync(PMSurface *s) {
+    pthread_mutex_lock(&s->cfgLock);
+    int displaySync = s->cfgDisplaySync;
+    pthread_mutex_unlock(&s->cfgLock);
+    return displaySync;
 }
 
 // Boost cap for the HDR present pass (1.0 = SDR look). Cheap, any thread; ignored on a normal layer.

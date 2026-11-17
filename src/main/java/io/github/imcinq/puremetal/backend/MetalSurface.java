@@ -163,10 +163,11 @@ final class MetalSurface implements GpuSurfaceBackend {
                 }
             }
             org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
-                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={}",
+                "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={} sync={}",
                 Math.round(this.statsFrames / secs), Math.round(st.get(2) / secs), Math.round(shown / secs),
                 Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format("%.1f", st.get(4) / 1000.0 / shown),
-                st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1
+                st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1,
+                MetalNative.surfaceDisplaySync(this.surface)
             );
             io.github.imcinq.puremetal.bench.Bench.hitches += st.get(5);
             io.github.imcinq.puremetal.bench.Bench.shownCompared += st.get(6);

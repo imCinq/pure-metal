@@ -43,7 +43,7 @@
   "puremetal.options.smoothFramePacing": "Smooth Frame Pacing",
   "puremetal.options.smoothFramePacing.tooltip": "Makes motion look smoother when VSync is on.\n\nEach frame is shown on the next display refresh, at an even rhythm, instead of the moment it is ready. This reduces small stutters when you turn the camera or move.\n\nA frame that is already late is never held back.\n\nOnly works with VSync on.\n\nExperimental.",
   "puremetal.options.highRefreshBoost": "High Refresh Boost",
-  "puremetal.options.highRefreshBoost.tooltip": "For displays running faster than 120 Hz with VSync off. Shows each frame as soon as it's ready instead of waiting for the next refresh, which can show more frames and make motion smoother.\n\nMay cause screen tearing, mainly in fullscreen. Has no effect with VSync on or on slower displays.\n\nExperimental.",
+  "puremetal.options.highRefreshBoost.tooltip": "For displays running at 200 Hz or faster with VSync off. Shows each frame as soon as it's ready instead of waiting for the next refresh, which can show more frames and make motion smoother.\n\nMay cause screen tearing, mainly in fullscreen. Has no effect with VSync on or on slower displays.\n\nExperimental.",
   "puremetal.terrainMath.fast": "Fast terrain: On",
   "puremetal.terrainMath.standard": "Fast terrain: Off (%s)",
   "puremetal.terrainMath.reason.off": "turned off",
