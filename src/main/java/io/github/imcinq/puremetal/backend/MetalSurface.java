@@ -8,6 +8,7 @@ import io.github.imcinq.puremetal.bench.PresentationProfile;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import org.lwjgl.sdl.SDLError;
 import org.lwjgl.sdl.SDLMetal;
 import org.lwjgl.system.MemoryStack;
@@ -165,7 +166,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
                 "PRESENT rendered/s={} presented/s={} shown/s={} noDrawable/s={} slotsBusy/s={} presentToShownMs={} hitches={}/{} paced={} sync={}",
                 Math.round(this.statsFrames / secs), Math.round(st.get(2) / secs), Math.round(shown / secs),
-                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format("%.1f", st.get(4) / 1000.0 / shown),
+                Math.round(st.get(0) / secs), Math.round(st.get(1) / secs), shown == 0 ? "n/a" : String.format(Locale.ROOT, "%.1f", st.get(4) / 1000.0 / shown),
                 st.get(5), st.get(6), io.github.imcinq.puremetal.perf.FramePacing.pacing() == 1,
                 MetalNative.surfaceDisplaySync(this.surface)
             );
@@ -174,7 +175,7 @@ final class MetalSurface implements GpuSurfaceBackend {
             if (FrameTrace.ENABLED) {
                 org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info(
                     "PRESENT-TIMING drawableWaitMaxMs={} layerConfigureMaxMs={} size={}x{} vsync={}",
-                    String.format("%.2f", drawableWaitMax / 1e6), String.format("%.2f", layerConfigureMax / 1e6),
+                    String.format(Locale.ROOT, "%.2f", drawableWaitMax / 1e6), String.format(Locale.ROOT, "%.2f", layerConfigureMax / 1e6),
                     this.configuredWidth, this.configuredHeight, this.configuredVsync
                 );
             }
