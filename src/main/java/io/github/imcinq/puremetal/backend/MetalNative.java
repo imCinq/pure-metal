@@ -181,7 +181,7 @@ public final class MetalNative {
 
         H_surfaceCreate = fn("pm_surface_create", false, L, L, L, I);
         H_surfaceConfigure = fn("pm_surface_configure", false, null, L, I, I, I, I);
-        H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I);
+        H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I, I);
         H_surfaceSetHdrBoost = fn("pm_surface_set_hdr_boost", false, null, L, F);
         H_surfaceEdrHeadroom = fn("pm_surface_edr_headroom", false, F, L);
         H_surfaceEdrMax = fn("pm_surface_edr_max", false, F, L);
@@ -648,9 +648,9 @@ public final class MetalNative {
         }
     }
 
-    static void surfaceSetPacing(final long a0, final long a1, final int a2) {
+    static void surfaceSetPacing(final long a0, final long a1, final int a2, final int a3) {
         try {
-            H_surfaceSetPacing.invokeExact(a0, a1, a2);
+            H_surfaceSetPacing.invokeExact(a0, a1, a2, a3);
         } catch (Throwable t) {
             throw rethrow(t);
         }

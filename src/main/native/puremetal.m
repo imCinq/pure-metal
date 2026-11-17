@@ -4586,7 +4586,7 @@ typedef struct PMSurface {
     _Atomic uint64_t targetSize; // packed drawable width/height, read by GPU completion callbacks
     uint64_t eventValue;   // last value signalled (render thread)
     int vsync;             // render thread
-    int allowTearing;      // render thread: 1 never syncs with vsync off, 0 always does, -1 decides by the refresh rate
+    int allowTearing;      // render thread, with vsync off: 1 never syncs, 0 always does, -1 (High Refresh Boost) syncs up to 120 Hz
     // Layer settings requested by pm_surface_configure, applied on the present queue before the next drawable is taken
     // (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
     pthread_mutex_t cfgLock;
@@ -5767,16 +5767,17 @@ static void apply_layer_config_hdr(PMSurface *s) {
 
 // With vsync off, frames that miss a refresh are skipped (like Vulkan's MAILBOX) instead of tearing, which needs display
 // sync. That only works while a present can follow a returned drawable within one refresh. At 240 Hz it mostly cannot:
-// frames alternated between one and two refreshes and about 170 reached the screen per second. From 200 Hz up the layer
-// stops syncing instead, which showed about 235.
-#define PM_MAILBOX_MIN_REFRESH_NS 5000000ULL
+// frames alternated between one and two refreshes and about 170 reached the screen per second. High Refresh Boost
+// (allowTearing -1) stops syncing on displays faster than 120 Hz instead, which showed about 235 at 240 Hz and may tear.
+// FramePacing.BOOST_REFRESH_NS is the same limit.
+#define PM_BOOST_REFRESH_NS 8333333ULL
 
 // Render thread.
 static int surface_display_sync(PMSurface *s) {
     if (s->vsync || s->allowTearing == 0) return 1;
     if (s->allowTearing > 0) return 0;
     uint64_t refresh = atomic_load(&s->refreshNs);
-    return !(refresh && refresh < PM_MAILBOX_MIN_REFRESH_NS);
+    return !(refresh && refresh < PM_BOOST_REFRESH_NS);
 }
 
 PM_EXPORT void pm_surface_configure(PMSurface *s, int width, int height, int vsync, int allowTearing) {
@@ -6245,11 +6246,14 @@ PM_EXPORT void pm_surface_take_stats(PMSurface *s, uint64_t *out) {
     out[6] = atomic_exchange(&s->stats[8], 0);
 }
 
-// Display refresh interval (0 if unknown) and whether presents are paced: the option is on and vsync is on.
-PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacing) {
+// Display refresh interval (0 if unknown), whether presents are paced (the option is on and vsync is on) and what vsync
+// off does (see PMSurface.allowTearing).
+PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacing, int allowTearing) {
     atomic_store(&s->refreshNs, refreshNs);
     atomic_store(&s->pacing, pacing && refreshNs ? 1 : 0);
-    // The refresh rate arrives after the first configure and changes when the window moves to another display.
+    s->allowTearing = allowTearing;
+    // The refresh rate arrives after the first configure and changes when the window moves to another display; High
+    // Refresh Boost can be toggled at any time.
     int displaySync = surface_display_sync(s);
     pthread_mutex_lock(&s->cfgLock);
     if (s->cfgWidth > 0 && s->cfgDisplaySync != displaySync) {

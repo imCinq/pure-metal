@@ -21,12 +21,6 @@ final class MetalSurface implements GpuSurfaceBackend {
     private boolean closed;
     /** Dev aid: -Dpuremetal.capture=<frame> saves that presented frame to puremetal-capture.png in the game dir. */
     private static final int CAPTURE_FRAME = Integer.getInteger("puremetal.capture", -1);
-    /**
-     * With vsync off: -Dpuremetal.allowTearing=true presents immediately (may tear), =false always presents at the next
-     * refresh. Unset (-1), displays of 200 Hz and up present immediately, where waiting for the refresh drops frames.
-     */
-    private static final int ALLOW_TEARING = System.getProperty("puremetal.allowTearing") == null ? -1
-        : Boolean.getBoolean("puremetal.allowTearing") ? 1 : 0;
     /** Dev aid: -Dpuremetal.noPresent=true renders frames without showing them, to isolate presentation costs. */
     private static final boolean NO_PRESENT = Boolean.getBoolean("puremetal.noPresent");
     private int frame;
@@ -73,7 +67,8 @@ final class MetalSurface implements GpuSurfaceBackend {
             event.begin();
         }
         FrameTrace.mark(FrameTrace.CFG_ENTER, config.width(), config.height(), vsync ? 1L : 0L);
-        MetalNative.surfaceConfigure(this.surface, config.width(), config.height(), vsync ? 1 : 0, ALLOW_TEARING);
+        MetalNative.surfaceConfigure(this.surface, config.width(), config.height(), vsync ? 1 : 0,
+            io.github.imcinq.puremetal.perf.FramePacing.allowTearing());
         FrameTrace.mark(FrameTrace.CFG_EXIT, 0);
         if (event != null) event.commit();
     }
@@ -92,7 +87,7 @@ final class MetalSurface implements GpuSurfaceBackend {
         }
         if (io.github.imcinq.puremetal.perf.FramePacing.update(this.configuredVsync)) {
             MetalNative.surfaceSetPacing(this.surface, io.github.imcinq.puremetal.perf.FramePacing.refreshNs(),
-                io.github.imcinq.puremetal.perf.FramePacing.pacing());
+                io.github.imcinq.puremetal.perf.FramePacing.pacing(), io.github.imcinq.puremetal.perf.FramePacing.allowTearing());
         }
         if (io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE) {
             this.updateHdr();
