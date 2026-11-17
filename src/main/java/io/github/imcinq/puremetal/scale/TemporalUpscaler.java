@@ -89,8 +89,8 @@ public final class TemporalUpscaler {
             LOGGER.info(
                 "Temporal/s: frames={} scalerCreations={} scalerResets={} encoders/frame={} cbSplits/frame={} directFrames={} spanGpu={} ms (avg of {}) | stages ms: world={} motion={} handPass={} handPatch={} scaler={} chain={}",
                 diagFrames, MetalUpscaler.takeTemporalStat(0), MetalUpscaler.takeTemporalStat(1),
-                String.format("%.1f", MetalUpscaler.takeTemporalStat(2) / (double)frames),
-                String.format("%.1f", MetalUpscaler.takeTemporalStat(3) / (double)frames), MetalUpscaler.takeTemporalStat(6),
+                String.format(java.util.Locale.ROOT, "%.1f", MetalUpscaler.takeTemporalStat(2) / (double)frames),
+                String.format(java.util.Locale.ROOT, "%.1f", MetalUpscaler.takeTemporalStat(3) / (double)frames), MetalUpscaler.takeTemporalStat(6),
                 ms(MetalUpscaler.takeTemporalStat(4), spans), spans, ms(MetalUpscaler.takeTemporalStat(8), spans),
                 ms(MetalUpscaler.takeTemporalStat(9), spans), ms(MetalUpscaler.takeTemporalStat(10), spans),
                 ms(MetalUpscaler.takeTemporalStat(11), spans), ms(MetalUpscaler.takeTemporalStat(12), spans),
@@ -102,7 +102,7 @@ public final class TemporalUpscaler {
     }
 
     private static String ms(final long ns, final long samples) {
-        return String.format("%.2f", samples == 0 ? 0.0 : ns / 1e6 / samples);
+        return String.format(java.util.Locale.ROOT, "%.2f", samples == 0 ? 0.0 : ns / 1e6 / samples);
     }
 
     /** Why temporal upscaling cannot run right now (a translation key), or null when it can. */

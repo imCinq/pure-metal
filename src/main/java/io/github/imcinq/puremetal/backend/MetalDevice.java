@@ -492,7 +492,7 @@ final class MetalDevice implements GpuDeviceBackend {
         if (Bench.SPIKE_LOG && size >= 8L << 20) {
             long t1 = System.nanoTime();
             LOGGER.info("BENCH-BIGBUF t={}ms label={} sizeMB={} allocMs={} thread={}", t1 / 1_000_000L, label != null ? label.get() : "?",
-                size >> 20, String.format("%.2f", (t1 - t0) / 1e6), Thread.currentThread().getName());
+                size >> 20, String.format(java.util.Locale.ROOT, "%.2f", (t1 - t0) / 1e6), Thread.currentThread().getName());
         }
         if (Bench.SECONDS > 0 && label != null) buffer.benchLabel = label.get();
         buffer.enableShadow();

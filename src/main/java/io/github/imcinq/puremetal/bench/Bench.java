@@ -455,7 +455,7 @@ public final class Bench {
         }
         frames[count++] = now - last;
         if (SPIKE_LOG && now - last > 20_000_000L) {
-            LOGGER.info("BENCH-SPIKE t={}ms frameMs={}", now / 1_000_000L, String.format("%.2f", (now - last) / 1e6));
+            LOGGER.info("BENCH-SPIKE t={}ms frameMs={}", now / 1_000_000L, String.format(java.util.Locale.ROOT, "%.2f", (now - last) / 1e6));
         }
         io.github.imcinq.puremetal.backend.EncodeProfile.frame(gpuNs);
         if (SHOT != null && !shotTaken && now - recordStart >= 3_000_000_000L) {

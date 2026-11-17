@@ -321,7 +321,7 @@ public final class FrameTrace {
                             }
                         }
                         double lag = ms(e.t - e.c), startDelay = submit == 0 ? -1 : ms(e.b - submit), exec = ms(e.c - e.b);
-                        sub = String.format(" submit#%d commit->gpuStart=%.1f gpuExec=%.1f gpuEnd->callback=%.1f", waitIdx, startDelay, exec, lag);
+                        sub = String.format(java.util.Locale.ROOT, " submit#%d commit->gpuStart=%.1f gpuExec=%.1f gpuEnd->callback=%.1f", waitIdx, startDelay, exec, lag);
                         if (lag > 5.0) {
                             cause = "wait: callback late";
                         } else if (startDelay > 5.0) {
@@ -340,18 +340,18 @@ public final class FrameTrace {
             slowWindows.add(new SlowWindow(frameMs, w, c, r, ms(nd), ms(pcbMax), presents, ms(maxPresentGap), cause));
             if (detail++ < 25) {
                 LOGGER.info("FRAMETRACE slow frame {} ms: wait={} cfg={} rot={} nextDrawableMax={} presentGpuMax={} presents={} maxPresentedGap={} cause={}{}",
-                    String.format("%.1f", frameMs), String.format("%.1f", w), String.format("%.1f", c), String.format("%.1f", r),
-                    String.format("%.1f", ms(nd)), String.format("%.1f", ms(pcbMax)), presents, String.format("%.1f", ms(maxPresentGap)), cause, sub);
+                    String.format(java.util.Locale.ROOT, "%.1f", frameMs), String.format(java.util.Locale.ROOT, "%.1f", w), String.format(java.util.Locale.ROOT, "%.1f", c), String.format(java.util.Locale.ROOT, "%.1f", r),
+                    String.format(java.util.Locale.ROOT, "%.1f", ms(nd)), String.format(java.util.Locale.ROOT, "%.1f", ms(pcbMax)), presents, String.format(java.util.Locale.ROOT, "%.1f", ms(maxPresentGap)), cause, sub);
             }
         }
         int windows = Math.max(frames.size() - 1, 0);
         LOGGER.info("FRAMETRACE slow(>{}ms)={} of {} frames; causes={} | commitFeedback={} submitToFeedbackAvg={} max={} | eventListener={} matched={} feedbackToEventAvg={} max={}",
             SLOW_MS, slow, windows, causes,
-            feedbacks, feedbacks == 0 ? "n/a" : String.format("%.2f", ms(feedbackLag) / feedbacks),
-            String.format("%.2f", ms(feedbackLagMax)),
+            feedbacks, feedbacks == 0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", ms(feedbackLag) / feedbacks),
+            String.format(java.util.Locale.ROOT, "%.2f", ms(feedbackLagMax)),
             signals, signalMatched,
-            signalMatched == 0 ? "n/a" : String.format("%.2f", ms(signalLag) / signalMatched),
-            String.format("%.2f", ms(signalLagMax)));
+            signalMatched == 0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", ms(signalLag) / signalMatched),
+            String.format(java.util.Locale.ROOT, "%.2f", ms(signalLagMax)));
         return new Summary(evs.size(), ringCount, frames.size(), windows, slow, cfgCalls, causes, slowWindows);
     }
 }

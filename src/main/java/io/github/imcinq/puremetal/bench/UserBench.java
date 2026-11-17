@@ -78,8 +78,8 @@ public final class UserBench {
                 out.append("Pure Metal ").append(key).append(": ")
                     .append(settings == null ? "default" : settings.getProperty(key, "default")).append('\n');
             }
-            out.append("Frames: ").append(count).append(" in ").append(String.format("%.1f", elapsedNs / 1e9)).append(" s\n");
-            out.append("Average FPS: ").append(String.format("%.1f", count / (elapsedNs / 1e9))).append('\n');
+            out.append("Frames: ").append(count).append(" in ").append(String.format(java.util.Locale.ROOT, "%.1f", elapsedNs / 1e9)).append(" s\n");
+            out.append("Average FPS: ").append(String.format(java.util.Locale.ROOT, "%.1f", count / (elapsedNs / 1e9))).append('\n');
             out.append("Median frame ms: ").append(ms(sorted[count / 2])).append('\n');
             out.append("1% low FPS: ").append(lowFps(sorted, 0.99)).append('\n');
             out.append("0.1% low FPS: ").append(lowFps(sorted, 0.999)).append('\n');
@@ -192,12 +192,12 @@ public final class UserBench {
     }
 
     private static String ms(final long ns) {
-        return String.format("%.2f", ns / 1e6);
+        return String.format(java.util.Locale.ROOT, "%.2f", ns / 1e6);
     }
 
     private static String lowFps(final long[] sorted, final double p) {
         int index = Math.min(sorted.length - 1, (int)Math.ceil(p * sorted.length) - 1);
-        return String.format("%.1f", 1e9 / sorted[Math.max(0, index)]);
+        return String.format(java.util.Locale.ROOT, "%.1f", 1e9 / sorted[Math.max(0, index)]);
     }
 
     private static String memoryGb() {
