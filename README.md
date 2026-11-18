@@ -53,9 +53,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 | Mac | Pure Metal | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
 | --- | --- | --- | --- | --- |
 | M5 Max, 48 GB | 0.4.5 | <strong>1043.4</strong> | <strong>1.4 ms</strong> | <strong>3.2 ms</strong> |
-| M5 Max, 48 GB | 0.4.4.1 | 940.9 | 1.9 ms | 3.8 ms |
 | M3 Max, 36 GB | 0.4.5 | 669.3 | 2.7 ms | 5.6 ms |
-| M3 Max, 36 GB | 0.4.4.1 | 551.6 | 3.2 ms | 6.3 ms |
 | M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
 | M1 Air, 8 GB | 0.4.5 | 182.2 | 10.1 ms | 22.4 ms |
 
