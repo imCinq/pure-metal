@@ -31,6 +31,18 @@ public final class Lang {
     }
 
     /**
+     * The one layout every Experimental option uses: its description, then why it has no effect right now (if it has none),
+     * then "Experimental." on the last line.
+     */
+    public static Component experimentalTooltip(final Component description, final Component status) {
+        net.minecraft.network.chat.MutableComponent out = Component.empty().append(description).append("\n\n");
+        if (status != null) {
+            out.append(status).append("\n\n");
+        }
+        return out.append(text("puremetal.options.experimental"));
+    }
+
+    /**
      * Sets the name a vanilla button shows before its value ("Name: Value"). OptionInstance builds that name as a plain translatable of its key,
      * so without Fabric API the raw key would show; this replaces it with {@link #text} (the field is opened by the access widener).
      */

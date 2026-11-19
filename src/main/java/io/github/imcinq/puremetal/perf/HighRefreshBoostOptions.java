@@ -18,9 +18,7 @@ public final class HighRefreshBoostOptions {
     }
 
     public static Component tooltip() {
-        Component base = Lang.text("puremetal.options.highRefreshBoost.tooltip");
-        Component status = status();
-        return status == null ? base : Component.empty().append(base).append(Component.literal("\n\n")).append(status);
+        return Lang.experimentalTooltip(Lang.text("puremetal.options.highRefreshBoost.tooltip"), status());
     }
 
     /** Why the option does nothing right now, or null when it can act. */

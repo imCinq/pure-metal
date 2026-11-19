@@ -16,11 +16,8 @@ public final class HdrHighlightsOptions {
     }
 
     public static Component tooltip() {
-        Component base = Lang.text("puremetal.options.hdrHighlights.tooltip");
-        if (HdrHighlights.screenHasNoHdr()) {
-            return Component.empty().append(base).append(Component.literal("\n\n")).append(Lang.text("puremetal.options.hdrHighlights.noScreen"));
-        }
-        return base;
+        return Lang.experimentalTooltip(Lang.text("puremetal.options.hdrHighlights.tooltip"),
+            HdrHighlights.screenHasNoHdr() ? Lang.text("puremetal.options.hdrHighlights.noScreen") : null);
     }
 
     /** Built on each call so the initial value is read from the live option (Sodium's page can change it). */

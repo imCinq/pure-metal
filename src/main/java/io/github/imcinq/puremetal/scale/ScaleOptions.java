@@ -40,8 +40,8 @@ public final class ScaleOptions {
     }
 
     public static Component metal4Tooltip() {
-        Component text = Lang.text("puremetal.options.metal4.tooltip");
-        return Metal4Config.supported() ? text : Component.empty().append(text).append("\n").append(Lang.text("puremetal.options.metal4.unsupported"));
+        return Lang.experimentalTooltip(Lang.text("puremetal.options.metal4.tooltip"),
+            Metal4Config.supported() ? null : Lang.text("puremetal.options.metal4.unsupported"));
     }
 
     public static Component upscalerName() {
