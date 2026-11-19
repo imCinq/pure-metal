@@ -180,12 +180,24 @@ public final class Bench {
         }
         forcedOptions = null;
         maxFpsForced = false;
+        net.minecraft.client.Options o = Minecraft.getInstance().options;
         for (SavedOption<?> option : originals) {
             try {
                 option.restore();
             } catch (RuntimeException e) {
                 LOGGER.warn("BENCH could not restore {}", option.name(), e);
             }
+        }
+        keepPreset(o, presetBeforeForcing);
+        o.broadcastOptions(); // no-op once the player is gone
+    }
+
+    private static net.minecraft.client.GraphicsPreset presetBeforeForcing;
+
+    /** Changing the render distance switches the graphics preset to Custom: put the player's preset back in the field only, so none of its settings are applied again. */
+    private static void keepPreset(final net.minecraft.client.Options o, final net.minecraft.client.GraphicsPreset preset) {
+        if (preset != null) {
+            ((io.github.imcinq.puremetal.mixin.OptionInstanceAccessor)(Object)o.graphicsPreset()).puremetal$setValue(preset);
         }
     }
 
@@ -352,11 +364,15 @@ public final class Bench {
             save(originals, "renderDistance", o.renderDistance());
             save(originals, "inactivityFpsLimit", o.inactivityFpsLimit());
             forcedOptions = originals;
+            presetBeforeForcing = o.graphicsPreset().get();
             o.framerateLimit().set(260);
             o.enableVsync().set(false);
             o.renderDistance().set(UserBench.RENDER_DISTANCE);
             // The default "afk" limit drops the game to 30 FPS after about a minute without input, and the benchmark flies by itself.
             o.inactivityFpsLimit().set(net.minecraft.client.InactivityFpsLimit.MINIMIZED);
+            keepPreset(o, presetBeforeForcing);
+            // The server only learns the render distance from a client information packet: without one, it keeps sending the player's own distance.
+            o.broadcastOptions();
         }
         if (UserBench.enabled()) {
             String failure = UserBench.pollSetup();
