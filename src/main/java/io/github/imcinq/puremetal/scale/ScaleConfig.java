@@ -285,8 +285,16 @@ public final class ScaleConfig {
         Properties p = readProperties();
         if (p == null) {
             if (Files.exists(FILE)) {
-                LOGGER.warn("Pure Metal: not saving {} because the existing file could not be read", FILE.getFileName());
-                return;
+                // Unreadable (for example a broken unicode escape): keep it beside the new file instead of refusing every save, which
+                // made changes look applied but revert at the next launch. Settings it held are already at their defaults in memory.
+                Path broken = FILE.resolveSibling(FILE.getFileName() + ".broken");
+                try {
+                    Files.move(FILE, broken, StandardCopyOption.REPLACE_EXISTING);
+                    LOGGER.warn("Pure Metal: {} could not be read; moved it to {} and saving fresh settings", FILE.getFileName(), broken.getFileName());
+                } catch (IOException e) {
+                    LOGGER.warn("Pure Metal: not saving {} because the existing file could not be read or moved: {}", FILE.getFileName(), Redact.error(e));
+                    return;
+                }
             }
             p = new Properties();
         }
