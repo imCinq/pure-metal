@@ -1,6 +1,7 @@
 package io.github.imcinq.puremetal.perf;
 
 import io.github.imcinq.puremetal.Lang;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.CommonComponents;
@@ -15,7 +16,11 @@ public final class FramePacingOptions {
     }
 
     public static Component tooltip() {
-        return Lang.text("puremetal.options.smoothFramePacing.tooltip");
+        Component base = Lang.text("puremetal.options.smoothFramePacing.tooltip");
+        if (!Minecraft.getInstance().options.enableVsync().get()) {
+            return Component.empty().append(base).append(Component.literal("\n\n")).append(Lang.text("puremetal.options.smoothFramePacing.vsyncOff"));
+        }
+        return base;
     }
 
     /** Built on each call so the initial value is read from the live option (Sodium's page can change it). */

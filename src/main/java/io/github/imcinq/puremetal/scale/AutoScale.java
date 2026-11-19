@@ -1,7 +1,5 @@
 package io.github.imcinq.puremetal.scale;
 
-import com.mojang.blaze3d.platform.Monitor;
-import com.mojang.blaze3d.platform.VideoMode;
 import com.mojang.blaze3d.platform.Window;
 import io.github.imcinq.puremetal.backend.MetalUpscaler;
 import io.github.imcinq.puremetal.bench.Bench;
@@ -188,9 +186,7 @@ public final class AutoScale {
     private static int targetFps(final Minecraft mc, final long now) {
         if (refreshHz == 0 || now - refreshCheckedNs > REFRESH_RECHECK_NS) {
             refreshCheckedNs = now;
-            Monitor monitor = mc.getWindow().findBestMonitor();
-            VideoMode mode = monitor == null ? null : monitor.currentMode();
-            float hz = mode == null ? 0.0F : mode.getRefreshRate();
+            float hz = io.github.imcinq.puremetal.perf.FramePacing.activeRefreshHz(mc.getWindow());
             refreshHz = hz > 0.0F ? Math.round(hz) : -1;
         }
         Options options = mc.options;

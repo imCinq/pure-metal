@@ -99,7 +99,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                     .addOption(metal4Option(builder))
                     .addOption(builder.createBooleanOption(id("smooth_frame_pacing"))
                         .setName(io.github.imcinq.puremetal.perf.FramePacingOptions.name())
-                        .setTooltip(io.github.imcinq.puremetal.perf.FramePacingOptions.tooltip())
+                        .setTooltip(value -> io.github.imcinq.puremetal.perf.FramePacingOptions.tooltip())
                         .setImpact(OptionImpact.LOW)
                         .setDefaultValue(false)
                         .setStorageHandler(() -> {
@@ -116,7 +116,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setBinding(io.github.imcinq.puremetal.perf.HdrHighlights::setEnabled, io.github.imcinq.puremetal.perf.HdrHighlights::enabled))
                     .addOption(builder.createBooleanOption(id("high_refresh_boost"))
                         .setName(io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.name())
-                        .setTooltip(io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.tooltip())
+                        .setTooltip(value -> io.github.imcinq.puremetal.perf.HighRefreshBoostOptions.tooltip())
                         .setImpact(OptionImpact.LOW)
                         .setDefaultValue(false)
                         // This page is built at startup, before the refresh rate is known, so the check runs each time the screen opens.

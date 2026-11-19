@@ -88,6 +88,27 @@ public final class FramePacing {
         return FORCED_TEARING >= 0;
     }
 
+    /**
+     * Render thread: the refresh rate the window really runs at, 0 when unknown. The exclusive fullscreen mode when one is set
+     * (it can be slower than the desktop mode), else the display's current mode. getActiveVideoMode() alone is not enough:
+     * SDL keeps the fullscreen mode after the window goes back to windowed. Shared with Auto Render Scale.
+     */
+    public static float activeRefreshHz(final Window window) {
+        VideoMode mode;
+        if (window.isExclusiveFullscreen()) {
+            mode = window.getActiveVideoMode();
+        } else {
+            Monitor monitor = window.findBestMonitor();
+            mode = monitor == null ? null : monitor.currentMode();
+        }
+        return mode == null ? 0.0F : mode.getRefreshRate();
+    }
+
+    /** The refresh rate last looked up by update(), rounded; 0 when unknown. */
+    public static int refreshHz() {
+        return refreshNs > 0L ? (int)Math.round(1.0e9 / refreshNs) : 0;
+    }
+
     /** True when the window's display is fast enough for High Refresh Boost to act. Render thread. */
     public static boolean boostDisplay() {
         return refreshNs > 0L && refreshNs <= BOOST_REFRESH_NS;
@@ -110,18 +131,7 @@ public final class FramePacing {
         long now = System.nanoTime();
         if (refreshCheckedNs == 0L || now - refreshCheckedNs > REFRESH_RECHECK_NS) {
             refreshCheckedNs = now;
-            // The mode the window really runs at: the exclusive fullscreen mode when one is set, else its display's current mode
-            // (the desktop mode can be faster than an exclusive fullscreen mode, which would let Boost turn display sync off below 200 Hz).
-            // getActiveVideoMode() alone is not enough: SDL keeps the fullscreen mode after the window goes back to windowed.
-            Window window = Minecraft.getInstance().getWindow();
-            VideoMode mode;
-            if (window.isExclusiveFullscreen()) {
-                mode = window.getActiveVideoMode();
-            } else {
-                Monitor monitor = window.findBestMonitor();
-                mode = monitor == null ? null : monitor.currentMode();
-            }
-            float hz = mode == null ? 0.0F : mode.getRefreshRate();
+            float hz = activeRefreshHz(Minecraft.getInstance().getWindow());
             refreshNs = hz > 1.0F ? Math.round(1.0e9 / hz) : 0L;
         }
         int pacing = enabled && vsync && refreshNs > 0L ? 1 : 0;

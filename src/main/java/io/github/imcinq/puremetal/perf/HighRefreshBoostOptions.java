@@ -2,6 +2,7 @@ package io.github.imcinq.puremetal.perf;
 
 import io.github.imcinq.puremetal.Lang;
 import io.github.imcinq.puremetal.scale.ScaleOptions;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.CommonComponents;
@@ -17,7 +18,24 @@ public final class HighRefreshBoostOptions {
     }
 
     public static Component tooltip() {
-        return Lang.text("puremetal.options.highRefreshBoost.tooltip");
+        Component base = Lang.text("puremetal.options.highRefreshBoost.tooltip");
+        Component status = status();
+        return status == null ? base : Component.empty().append(base).append(Component.literal("\n\n")).append(status);
+    }
+
+    /** Why the option does nothing right now, or null when it can act. */
+    private static Component status() {
+        if (FramePacing.boostForced()) {
+            return Lang.text("puremetal.options.highRefreshBoost.forced");
+        }
+        if (Minecraft.getInstance().options.enableVsync().get()) {
+            return Lang.text("puremetal.options.highRefreshBoost.vsyncOn");
+        }
+        int hz = FramePacing.refreshHz();
+        if (hz > 0 && !FramePacing.boostDisplay()) {
+            return Lang.text("puremetal.options.highRefreshBoost.slowDisplay", hz);
+        }
+        return null;
     }
 
     /**
