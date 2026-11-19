@@ -291,7 +291,7 @@ public final class ScaleConfig {
             if (Files.exists(FILE)) {
                 // Unreadable (for example a broken unicode escape): keep it beside the new file instead of refusing every save, which
                 // made changes look applied but revert at the next launch. Settings it held are already at their defaults in memory.
-                Path broken = FILE.resolveSibling(FILE.getFileName() + ".broken");
+                Path broken = FILE.resolveSibling(FILE.getFileName() + ".broken-" + System.currentTimeMillis()); // never replaces an older backup
                 try {
                     Files.move(FILE, broken, StandardCopyOption.REPLACE_EXISTING);
                     LOGGER.warn("Pure Metal: {} could not be read; moved it to {} and saving fresh settings", FILE.getFileName(), broken.getFileName());

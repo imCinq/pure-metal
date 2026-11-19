@@ -180,6 +180,11 @@ public final class UserBench {
         writeInvalidText(minecraft, "INVALID: you left the world before the benchmark finished. Restart the game and run it again.\n", "left the world before the end");
     }
 
+    /** A menu opened during the run. */
+    static void writeMenuOpened(final Minecraft minecraft) {
+        writeInvalidText(minecraft, "INVALID: a menu was opened during the benchmark (pause, chat, settings or switching to another app). Restart the game and run it again without touching it.\n", "menu opened during the run");
+    }
+
     private static void writeInvalidText(final Minecraft minecraft, final String text, final String reason) {
         try {
             Files.writeString(minecraft.gameDirectory.toPath().resolve("puremetal-benchmark.txt"), text, StandardCharsets.UTF_8);

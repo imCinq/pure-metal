@@ -369,6 +369,14 @@ public final class Bench {
         long now = System.nanoTime();
         boolean playing = minecraft.level != null && minecraft.gui.screen() == null;
         if (!playing) {
+            if (UserBench.enabled() && maxFpsForced && minecraft.level != null) {
+                // Player build: a menu (pause, chat, settings, or switching apps) stops the frame count but not the clock, and its
+                // settings could undo the forced ones. The run cannot be trusted any more.
+                done = true;
+                UserBench.writeMenuOpened(minecraft);
+                restoreUserOptions();
+                return;
+            }
             inWorldSince = 0;
             last = now;
             return;

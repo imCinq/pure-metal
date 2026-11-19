@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1
+
+**New**
+- High Refresh Boost (Experimental, off by default): on displays running at 200 Hz or faster with VSync off, finished frames no longer wait for the next display refresh, which can show more frames per second and make motion smoother. May cause screen tearing, mainly in fullscreen. In exclusive fullscreen it goes by the fullscreen mode's refresh rate, not the desktop's.
+
+**Fixes**
+- HDR Highlights: brightness changes ease in smoothly again, and the HDR check no longer runs 10 times a second all the time. The timer behind both only started during benchmarks.
+- Auto Render Scale aims at the real refresh rate in exclusive fullscreen instead of the desktop's, so a 60 Hz fullscreen mode on a 120 Hz Mac no longer lowers Render Scale for no reason.
+- If Pure Metal's settings file cannot be read, it is kept as a backup next to it and settings save again. Before, every change was lost at the next launch.
+- Logs and the benchmark file always use a dot for decimals, also on systems set to a comma.
+
+**Benchmark JAR**
+- The benchmark now really loads 16 chunks. Before, the world kept your own render distance (12 on default settings), so results from players below 16 measured a smaller world.
+- Your graphics preset is no longer switched to Custom after a run.
+- Leaving the world, quitting or opening a menu during a run now writes an INVALID result instead of a misleading one.
+
+**Settings**
+- Experimental options (Metal 4, Smooth Frame Pacing, HDR Highlights, High Refresh Boost) share one tooltip layout, end with "Experimental.", and say when they have no effect right now and why, for example "VSync is on".
+
 ## 0.5.0
 
 **New**
