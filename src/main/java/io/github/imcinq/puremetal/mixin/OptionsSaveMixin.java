@@ -28,7 +28,7 @@ public class OptionsSaveMixin {
     }
 
     /** save() ends by sending the options to the server: the forced values go back before that, so the server keeps the benchmark's render distance. */
-    @Inject(method = "save", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Options;broadcastOptions()V"), require = 0)
+    @Inject(method = "save", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Options;broadcastOptions()V"), require = 1)
     private void puremetal$forcedBeforeBroadcast(final CallbackInfo ci) {
         Bench.swapForcedBackAfterSave();
     }

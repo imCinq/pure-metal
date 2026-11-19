@@ -204,7 +204,11 @@ public final class Bench {
         }
         if (presetNow == presetBeforeForcing) {
             keepPreset(o, presetNow);
-        } // else the player picked a preset mid-run: the restore set Custom if it changed any of its values, which is the honest label
+        } else {
+            // The player picked a preset mid-run: the restore set Custom if it changed any of its values. A save during the run may
+            // have written that preset next to the player's own values, so write the file again with the label that matches.
+            o.save();
+        }
         o.broadcastOptions(); // no-op once the player is gone
     }
 
