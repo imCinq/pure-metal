@@ -172,8 +172,16 @@ public final class UserBench {
 
     /** The run did not measure the reference route: the result file says so and carries no numbers. */
     static void writeInvalid(final Minecraft minecraft, final String reason) {
+        writeInvalidText(minecraft, "INVALID: setup commands failed (" + reason + "). Nothing was measured. Use a singleplayer world and run it again.\n", reason);
+    }
+
+    /** The player left the world before the run finished. */
+    static void writeAborted(final Minecraft minecraft) {
+        writeInvalidText(minecraft, "INVALID: you left the world before the benchmark finished. Restart the game and run it again.\n", "left the world before the end");
+    }
+
+    private static void writeInvalidText(final Minecraft minecraft, final String text, final String reason) {
         try {
-            String text = "INVALID: setup commands failed (" + reason + "). Nothing was measured. Use a singleplayer world and run it again.\n";
             Files.writeString(minecraft.gameDirectory.toPath().resolve("puremetal-benchmark.txt"), text, StandardCharsets.UTF_8);
             LOGGER.error("BENCH-USER invalid: {}", reason);
         } catch (Exception e) {

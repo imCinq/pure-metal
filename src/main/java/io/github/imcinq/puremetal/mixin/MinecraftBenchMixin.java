@@ -36,6 +36,7 @@ public class MinecraftBenchMixin {
 
     @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;ZZ)V", at = @At("HEAD"))
     private void puremetal$restoreOnDisconnect(final CallbackInfo ci) {
+        Bench.abortOnDisconnect();
         Bench.restoreUserOptions();
     }
 }

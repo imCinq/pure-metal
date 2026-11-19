@@ -172,6 +172,18 @@ public final class Bench {
         return optionsSaveHeld;
     }
 
+    /**
+     * Player benchmark: leaving the world before the run finished ends it for this launch. Without this the next world would
+     * continue the old run, skip its own setup and report under its own seed.
+     */
+    public static void abortOnDisconnect() {
+        if (!UserBench.enabled() || done || !maxFpsForced) {
+            return;
+        }
+        done = true;
+        UserBench.writeAborted(Minecraft.getInstance());
+    }
+
     /** Puts the player's own values back in memory. Idempotent; called after the run, on quit and on disconnect (MinecraftBenchMixin). */
     public static void restoreUserOptions() {
         List<SavedOption<?>> originals = forcedOptions;
