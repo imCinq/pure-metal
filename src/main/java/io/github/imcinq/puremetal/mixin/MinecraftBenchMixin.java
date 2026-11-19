@@ -31,6 +31,7 @@ public class MinecraftBenchMixin {
     /** Player benchmark: an early quit or leaving the world puts the player's options back in memory before anything saves them. */
     @Inject(method = "stop", at = @At("HEAD"))
     private void puremetal$restoreOnStop(final CallbackInfo ci) {
+        Bench.abortOnDisconnect(); // quitting mid-run: an INVALID report, not an older launch's result
         Bench.restoreUserOptions();
     }
 

@@ -1,6 +1,8 @@
 package io.github.imcinq.puremetal.perf;
 
+import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.VideoMode;
+import com.mojang.blaze3d.platform.Window;
 import io.github.imcinq.puremetal.scale.ScaleConfig;
 import java.util.Properties;
 import net.minecraft.client.Minecraft;
@@ -110,7 +112,15 @@ public final class FramePacing {
             refreshCheckedNs = now;
             // The mode the window really runs at: the exclusive fullscreen mode when one is set, else its display's current mode
             // (the desktop mode can be faster than an exclusive fullscreen mode, which would let Boost turn display sync off below 200 Hz).
-            VideoMode mode = Minecraft.getInstance().getWindow().getActiveVideoMode();
+            // getActiveVideoMode() alone is not enough: SDL keeps the fullscreen mode after the window goes back to windowed.
+            Window window = Minecraft.getInstance().getWindow();
+            VideoMode mode;
+            if (window.isExclusiveFullscreen()) {
+                mode = window.getActiveVideoMode();
+            } else {
+                Monitor monitor = window.findBestMonitor();
+                mode = monitor == null ? null : monitor.currentMode();
+            }
             float hz = mode == null ? 0.0F : mode.getRefreshRate();
             refreshNs = hz > 1.0F ? Math.round(1.0e9 / hz) : 0L;
         }
