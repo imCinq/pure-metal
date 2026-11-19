@@ -25,6 +25,8 @@ static _Atomic uint64_t g_traceN;
 static _Atomic int g_traceOn;
 static pthread_mutex_t g_traceLock = PTHREAD_MUTEX_INITIALIZER;
 static mach_timebase_info_data_t g_tb;
+// Filled when the library loads: pm_now_ns() runs in normal play too (HDR watcher, present path), not only once tracing starts.
+__attribute__((constructor)) static void pm_timebase_init(void) { mach_timebase_info(&g_tb); }
 static uint64_t pm_now_ns(void) { return mach_absolute_time() * g_tb.numer / g_tb.denom; }
 // GPU timestamps, MTL4CounterHeap entries included, are in mach ticks rather than nanoseconds (unlike MTLCounterResultTimestamp).
 static uint64_t pm_ticks_ns(uint64_t ticks) {
