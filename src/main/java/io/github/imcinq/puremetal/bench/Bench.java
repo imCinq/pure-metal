@@ -193,7 +193,7 @@ public final class Bench {
         forcedOptions = null;
         maxFpsForced = false;
         net.minecraft.client.Options o = Minecraft.getInstance().options;
-        // The preset as it is now: the forcing kept the player's, and a preset or option the player picked during the run wins.
+        // The preset as it is now: still the player's unless they picked another one during the run.
         net.minecraft.client.GraphicsPreset presetNow = o.graphicsPreset().get();
         for (SavedOption<?> option : originals) {
             try {
@@ -202,7 +202,9 @@ public final class Bench {
                 LOGGER.warn("BENCH could not restore {}", option.name(), e);
             }
         }
-        keepPreset(o, presetNow);
+        if (presetNow == presetBeforeForcing) {
+            keepPreset(o, presetNow);
+        } // else the player picked a preset mid-run: the restore set Custom if it changed any of its values, which is the honest label
         o.broadcastOptions(); // no-op once the player is gone
     }
 

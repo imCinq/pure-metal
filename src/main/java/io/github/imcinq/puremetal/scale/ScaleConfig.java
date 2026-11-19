@@ -284,6 +284,10 @@ public final class ScaleConfig {
     public static synchronized void writeProperties(final Consumer<Properties> update) {
         Properties p = readProperties();
         if (p == null) {
+            if (Files.exists(FILE) && !unparseable()) {
+                LOGGER.warn("Pure Metal: not saving {} because it could not be read right now", FILE.getFileName());
+                return;
+            }
             if (Files.exists(FILE)) {
                 // Unreadable (for example a broken unicode escape): keep it beside the new file instead of refusing every save, which
                 // made changes look applied but revert at the next launch. Settings it held are already at their defaults in memory.
@@ -318,6 +322,18 @@ public final class ScaleConfig {
                 } catch (IOException ignored) {
                 }
             }
+        }
+    }
+
+    /** True only when the file's text cannot be parsed; a passing I/O error must not reset the settings. */
+    private static boolean unparseable() {
+        try (Reader in = Files.newBufferedReader(FILE)) {
+            new Properties().load(in);
+            return false;
+        } catch (IllegalArgumentException | java.nio.charset.CharacterCodingException e) {
+            return true; // broken escape, or bytes that are not UTF-8
+        } catch (IOException e) {
+            return false;
         }
     }
 
