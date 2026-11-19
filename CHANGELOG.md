@@ -3,7 +3,7 @@
 ## 0.5.1
 
 **New**
-- High Refresh Boost (Experimental, off by default): on displays running at 200 Hz or faster with VSync off, finished frames no longer wait for the next display refresh, which can show more frames per second and make motion smoother. May cause screen tearing, mainly in fullscreen. In exclusive fullscreen it goes by the fullscreen mode's refresh rate, not the desktop's.
+- High Refresh Boost (Experimental, off by default): on displays running at 200 Hz or faster with VSync off, finished frames no longer wait for the next display refresh, which can show more frames per second and make motion smoother. May cause screen tearing, mainly in fullscreen. In exclusive fullscreen it goes by the fullscreen mode's refresh rate, not the desktop's. ([#5](https://github.com/imCinq/pure-metal/pull/5) by @CrashSystemZ)
 
 **Fixes**
 - HDR Highlights: brightness changes ease in smoothly again, and the HDR check no longer runs 10 times a second all the time. The timer behind both only started during benchmarks.
