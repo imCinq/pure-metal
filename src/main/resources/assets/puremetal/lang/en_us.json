@@ -46,7 +46,7 @@
   "puremetal.options.highRefreshBoost.vsyncOn": "Has no effect right now: VSync is on.",
   "puremetal.options.highRefreshBoost.slowDisplay": "Has no effect right now: this display runs at %s Hz (needs 200 Hz or more).",
   "puremetal.options.highRefreshBoost.forced": "Has no effect right now: a launch option decides this instead.",
-  "puremetal.options.highRefreshBoost.tooltip": "Shows more frames per second and makes motion smoother on displays running at 200 Hz or faster with VSync off.\n\nIt works by no longer waiting for the next display refresh, so a finished frame can appear partway through one.\n\nMay cause screen tearing, mainly in fullscreen. Has no effect with VSync on or on slower displays.\n\nExperimental.",
+  "puremetal.options.highRefreshBoost.tooltip": "Can show more frames per second and make motion smoother on displays running at 200 Hz or faster with VSync off.\n\nIt works by no longer waiting for the next display refresh, so a finished frame can appear partway through one.\n\nMay cause screen tearing, mainly in fullscreen. Has no effect with VSync on or on slower displays.\n\nExperimental.",
   "puremetal.terrainMath.fast": "Fast terrain: On",
   "puremetal.terrainMath.standard": "Fast terrain: Off (%s)",
   "puremetal.terrainMath.reason.off": "turned off",

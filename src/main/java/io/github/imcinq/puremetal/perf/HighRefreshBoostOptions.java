@@ -33,7 +33,7 @@ public final class HighRefreshBoostOptions {
         }
         int hz = FramePacing.refreshHz();
         if (hz > 0 && !FramePacing.boostDisplay()) {
-            return Lang.text("puremetal.options.highRefreshBoost.slowDisplay", hz);
+            return Lang.text("puremetal.options.highRefreshBoost.slowDisplay", Math.min(hz, 199)); // 199.9 Hz rounds to 200 but is too slow
         }
         return null;
     }
