@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import io.github.imcinq.puremetal.backend.DistantHorizonsExperiment;
 import io.github.imcinq.puremetal.backend.MetalInfo;
 import io.github.imcinq.puremetal.perf.BatterySaver;
@@ -46,13 +47,27 @@ public final class DebugLine implements DebugScreenEntry {
         }
     }
 
+    private static String inactiveLine() {
+        String activeBackend = "OpenGL";
+        try {
+            var device = RenderSystem.getDevice();
+            if (device != null && device.getDeviceInfo() != null && device.getDeviceInfo().backendName() != null
+                && !device.getDeviceInfo().backendName().isEmpty()) {
+                activeBackend = device.getDeviceInfo().backendName();
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return "Pure Metal: inactive (" + activeBackend + ")";
+    }
+
     private String line() {
         String now = MetalInfo.backend();
         if (now == null) {
             this.backend = null;
+            String base = inactiveLine();
             String dh = DistantHorizonsExperiment.debugNote();
             // "DH: on" describes the preflight, which is misleading when Pure Metal is not the one rendering.
-            return dh == null || !dh.startsWith("DH: off") ? INACTIVE : INACTIVE + " | " + dh;
+            return dh == null || !dh.startsWith("DH: off") ? base : base + " | " + dh;
         }
         String name = MetalInfo.gpuName();
         int percent = ScaleConfig.scale();

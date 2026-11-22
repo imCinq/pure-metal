@@ -94,6 +94,7 @@ public abstract class ChunkBuilderMeshingTaskMixin {
     @Inject(method = EXECUTE, at = @At("RETURN"), require = 1)
     private void puremetal$endLod(final ChunkBuildContext context, final CancellationToken token, final CallbackInfoReturnable<ChunkBuildOutput> cir) {
         byte state = CoarseMesher.end();
+        SodiumEmitter.end();
         if (cir.getReturnValue() instanceof LodState lod) {
             lod.puremetal$setLodState(state);
         }

@@ -124,8 +124,9 @@ public final class UserBench {
                     LOGGER.error("BENCH-USER setup command '{}' failed: {}", command.trim(), detail);
                     return "/" + command.trim().split(" ")[0] + " was rejected: " + detail;
                 } catch (RuntimeException e) {
-                    LOGGER.error("BENCH-USER setup command '{}' threw", command.trim(), e);
-                    return "/" + command.trim().split(" ")[0] + " was rejected: " + e;
+                    String detail = io.github.imcinq.puremetal.Redact.error(e);
+                    LOGGER.error("BENCH-USER setup command '{}' threw: {}", command.trim(), detail);
+                    return "/" + command.trim().split(" ")[0] + " was rejected: " + detail;
                 }
             }
             return null;

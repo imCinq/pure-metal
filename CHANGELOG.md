@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+**Fixes**
+- MetalFX Temporal: fixed vertical motion vectors and sub-pixel jitter signs. Fast camera movement no longer ghosts the way it did before, and distant edges stay steady below 100% Render Scale.
+- Metal 4: allocations freed and reused across frames stay in the residency set while still in use, failed command encoders close their command buffer cleanly, and the Metal 4 shader compiler initializes safely across threads.
+- Unaligned writes and copies to GPU-written buffers now use a GPU byte-copy fallback instead of corrupting adjacent bytes, and partial region clears check both color and depth targets before queuing work (with `RG16_FLOAT` support added).
+- Fixed a potential crash on shutdown after Metal 3 profiling splits and cleared worker-thread references when Sodium Terrain LOD meshing finishes.
+
+**Improvements**
+- Starting the game with an Intel (x86_64) Java runtime under Rosetta now explains that Pure Metal needs an ARM64 (Apple Silicon) Java 25 build instead of reporting an unsupported Mac.
+- When Pure Metal is inactive, the F3 line shows the active graphics backend instead of always saying OpenGL.
+- Error details written to `puremetal-benchmark.txt` now redact personal paths.
+- Removed the fast-motion ghosting note from the MetalFX Temporal descriptions in the README and Video Settings.
+
 ## 0.5.1
 
 **New**

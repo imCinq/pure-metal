@@ -19,8 +19,9 @@ import org.jspecify.annotations.Nullable;
  * world's depth into motion vectors (the camera is the only thing that moves in them; see pm_temporal_prepare).
  *
  * The world is drawn jittered with a Halton sequence. {@link #jitter} shifts clip space by (2jx/w, 2jy/h) for a jitter
- * (jx, jy) in input pixels, so MetalFX is told the sample offset (-jx, +jy) (y points down on screen). If the image
- * crawls or smears in game, the signs are the first suspect: -Dpuremetal.jitterFlipX / -Dpuremetal.jitterFlipY flip them.
+ * (jx, jy) in input pixels; after SPIRV-Cross flips vertex Y, both axes shift texture coordinates by (+jx, +jy), so
+ * MetalFX is told the sample offset (+jx, +jy) to return to the unjittered reference frame. If the image crawls or
+ * smears in game, the signs are the first suspect: -Dpuremetal.jitterFlipX / -Dpuremetal.jitterFlipY flip them.
  */
 public final class TemporalUpscaler {
     /** A camera move longer than this in one frame is a teleport: history is dropped. */
@@ -308,7 +309,7 @@ public final class TemporalUpscaler {
 
     /** At the end of the world. Returns false when MetalFX did not draw (the caller upscales another way). */
     public static boolean upscale(final GpuTextureView source, final @Nullable GpuTextureView handDepth, final GpuTextureView destination) {
-        boolean ok = prepared && MetalUpscaler.temporalUpscale(source, handDepth, destination, -jitterX * FLIP_X, jitterY * FLIP_Y, reset);
+        boolean ok = prepared && MetalUpscaler.temporalUpscale(source, handDepth, destination, jitterX * FLIP_X, jitterY * FLIP_Y, reset);
         prepared = false;
         active = false;
         havePrevious = ok;

@@ -498,6 +498,8 @@ typedef struct PMDevice {
     // m4Pipelines=false (-Dpuremetal.m4Pipelines=false) keeps Metal 4 command encoding but builds libraries and pipelines on the
     // classic Metal 3 device path. Default on, so the option changes nothing.
     void *mtl4Compiler;      // id<MTL4Compiler>
+    pthread_mutex_t compilerLock;
+    void *byteCopyPipeline, *byteMovePipeline; // id<MTLComputePipelineState>, lazy compute kernels for unaligned copies
     _Atomic int mtl4On, mtl4Warned, cbWarned; // cbWarned: no frame command buffer could be created (logged once)
     bool m4Pipelines;
     // Metal 4 command model, decided once in pm_device_create (opt-in). With m4 set, the command buffer, render and blit slots above hold
@@ -821,16 +823,20 @@ static id<MTLComputePipelineState> pm_new_compute_pipeline(PMDevice *d, id<MTLLi
 // The device's MTL4Compiler, created on first use (by the compile path, or by the Metal 4 command model for its MetalFX scalers).
 API_AVAILABLE(macos(26.0))
 static id<MTL4Compiler> pm_mtl4_compiler(PMDevice *d, NSString **why) {
+    pthread_mutex_lock(&d->compilerLock);
     if (!d->mtl4Compiler) {
         NSError *error = nil;
         id<MTL4Compiler> compiler = [DEV_MTL(d) newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&error];
         if (!compiler) {
-            *why = [NSString stringWithFormat:@"could not create the compiler: %@", error.localizedDescription];
+            if (why) *why = [NSString stringWithFormat:@"could not create the compiler: %@", error.localizedDescription];
+            pthread_mutex_unlock(&d->compilerLock);
             return nil;
         }
         d->mtl4Compiler = pm_retain(compiler);
     }
-    return PM_OBJ(id<MTL4Compiler>, d->mtl4Compiler);
+    id<MTL4Compiler> result = PM_OBJ(id<MTL4Compiler>, d->mtl4Compiler);
+    pthread_mutex_unlock(&d->compilerLock);
+    return result;
 }
 
 // Turns the Metal 4 compile path on or off. Returns whether it is active; reason says why (or why not).
@@ -970,13 +976,26 @@ static void m4_sync(PMDevice *d, bool all) {
     pthread_mutex_lock(&d->m4Lock);
     int keep = 0;
     for (int i = 0; i < d->m4GraveCount; i++) {
-        PMGrave g = d->m4Grave[i];
-        if (g.frame > done) { d->m4Grave[keep++] = g; continue; }
-        if (pm_kind((__bridge id)g.object) == 1 && [set containsAllocation:(__bridge id<MTLAllocation>)g.object]) {
-            [set removeAllocation:(__bridge id<MTLAllocation>)g.object];
-            d->m4Dirty = 1;
+        if (d->m4Grave[i].frame > done) {
+            PMGrave tmp = d->m4Grave[keep];
+            d->m4Grave[keep++] = d->m4Grave[i];
+            d->m4Grave[i] = tmp;
         }
-        CFRelease(g.object);
+    }
+    for (int i = keep; i < d->m4GraveCount; i++) {
+        void *obj = d->m4Grave[i].object;
+        if (pm_kind((__bridge id)obj) == 1 && !CFDictionaryGetValue(d->m4Tracked, obj)
+                && [set containsAllocation:(__bridge id<MTLAllocation>)obj]) {
+            bool stillPending = false;
+            for (int j = 0; j < keep; j++) {
+                if (d->m4Grave[j].object == obj) { stillPending = true; break; }
+            }
+            if (!stillPending) {
+                [set removeAllocation:(__bridge id<MTLAllocation>)obj];
+                d->m4Dirty = 1;
+            }
+        }
+        CFRelease(obj);
     }
     d->m4GraveCount = keep;
     if (d->m4Dirty) {
@@ -2588,6 +2607,7 @@ PM_EXPORT PMDevice *pm_device_create(int debugLabels, int metal4) {
         d->debugLabels = debugLabels;
         pthread_mutex_init(&d->lock, NULL);
         pthread_mutex_init(&d->passLock, NULL);
+        pthread_mutex_init(&d->compilerLock, NULL);
         pthread_cond_init(&d->cond, NULL);
         atomic_store(&d->completed, 0);
         memset(d->doneMark, 0, sizeof(d->doneMark));
@@ -3152,6 +3172,9 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
         PM_ENC_COUNT(PM_ENC_CBS_COMMITTED, 1);
         pm_release(d->cb);
         d->cb = NULL;
+        d->passSamples = NULL;
+        pm_release(d->passSamplesCb);
+        d->passSamplesCb = NULL;
         d->profileSamples = 0;
         d->probeSampledSubmit = false;
     }
@@ -3250,6 +3273,10 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
                 [cb commit];
             }
             pm_release(d->cb);
+            d->cb = NULL;
+            d->passSamples = NULL;
+            pm_release(d->passSamplesCb);
+            d->passSamplesCb = NULL;
         }
         if (d->m4) {
             if (!pm_wait_idle(d)) {
@@ -3302,7 +3329,14 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
         pm_release(d->txMotionPipeline);
         pm_release(d->txHandPipeline);
         pm_release(d->profileCounterSet);
+        if (d->passSamples) {
+            pm_release(d->passSamples->buffer);
+            free(d->passSamples);
+            d->passSamples = NULL;
+        }
         pm_release(d->passSamplesCb);
+        pm_release(d->byteCopyPipeline);
+        pm_release(d->byteMovePipeline);
         pm_release(d->probeRead);
         pm_release(d->probeReduce);
         pm_release(d->probeQuery);
@@ -3317,6 +3351,7 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
         pm_release(d->device);
         pthread_mutex_destroy(&d->lock);
         pthread_mutex_destroy(&d->passLock);
+        pthread_mutex_destroy(&d->compilerLock);
         pthread_cond_destroy(&d->cond);
         free(d);
     }
@@ -3553,10 +3588,117 @@ PM_EXPORT void *pm_depth_state_create(PMDevice *d, int enabled, int compare, int
 // ---------------------------------------------------------------------------------------------------------------
 // Copies (outside render passes, in call order).
 
+static NSString *const BYTE_COPY_SHADER =
+    @"#include <metal_stdlib>\n"
+     "using namespace metal;\n"
+     "struct ByteCopyParams { ulong srcOffset; ulong dstOffset; ulong size; uint stride; uint reverse; };\n"
+     "kernel void pm_copy_bytes(const device uchar *src [[buffer(0)]],\n"
+     "                          device uchar *dst [[buffer(1)]],\n"
+     "                          constant ByteCopyParams &p [[buffer(2)]],\n"
+     "                          uint gid [[thread_position_in_grid]]) {\n"
+     "  for (ulong i = (ulong)gid; i < p.size; i += (ulong)p.stride) {\n"
+     "    dst[p.dstOffset + i] = src[p.srcOffset + i];\n"
+     "  }\n"
+     "}\n"
+     "// Same-buffer copy uses one read/write device buffer argument to obey MSL 5.2 non-aliasing rules.\n"
+     "kernel void pm_move_bytes(device uchar *buf [[buffer(0)]],\n"
+     "                          constant ByteCopyParams &p [[buffer(1)]],\n"
+     "                          uint gid [[thread_position_in_grid]]) {\n"
+     "  if (p.reverse != 0u) {\n"
+     "    if (gid == 0u) {\n"
+     "      for (ulong i = p.size; i > 0ul; i--) buf[p.dstOffset + i - 1ul] = buf[p.srcOffset + i - 1ul];\n"
+     "    }\n"
+     "    return;\n"
+     "  }\n"
+     "  for (ulong i = (ulong)gid; i < p.size; i += (ulong)p.stride) {\n"
+     "    buf[p.dstOffset + i] = buf[p.srcOffset + i];\n"
+     "  }\n"
+     "}\n";
+
+static int ensure_byte_copy_pipelines(PMDevice *d) {
+    if (d->byteCopyPipeline && d->byteMovePipeline) return 1;
+    NSError *error = nil;
+    id<MTLLibrary> lib = pm_new_library(d, BYTE_COPY_SHADER, nil, &error);
+    if (!lib) { set_error(d, error ? error.localizedDescription : @"could not compile byte copy shader"); return 0; }
+    id<MTLComputePipelineState> copy = pm_new_compute_pipeline(d, lib, @"pm_copy_bytes", &error);
+    if (!copy) { set_error(d, error ? error.localizedDescription : @"could not create byte copy pipeline"); return 0; }
+    id<MTLComputePipelineState> move = pm_new_compute_pipeline(d, lib, @"pm_move_bytes", &error);
+    if (!move) { set_error(d, error ? error.localizedDescription : @"could not create byte move pipeline"); return 0; }
+    pm_release(d->byteCopyPipeline);
+    pm_release(d->byteMovePipeline);
+    d->byteCopyPipeline = pm_retain(copy);
+    d->byteMovePipeline = pm_retain(move);
+    return 1;
+}
+
+// GPU-ordered byte-exact buffer copy for offsets or sizes that are not 4-byte aligned (Metal blits on macOS require 4-byte alignment).
+static void copy_buffer_bytes(PMDevice *d, void *src, uint64_t srcOffset, void *dst, uint64_t dstOffset, uint64_t size) {
+    if (!ensure_byte_copy_pipelines(d)) return;
+    end_blit(d);
+    id<MTLCommandBuffer> cb = current_cb(d);
+    if (!cb) return;
+    bool same = src == dst;
+    bool overlap = same && ((srcOffset <= dstOffset && dstOffset - srcOffset < size)
+                            || (dstOffset < srcOffset && srcOffset - dstOffset < size));
+    uint32_t reverse = overlap && dstOffset > srcOffset ? 1u : 0u;
+    uint32_t threads = overlap ? 1u : (uint32_t)(size < 65536ULL ? size : 65536ULL);
+    uint32_t tg = threads < 64u ? threads : 64u;
+    struct { uint64_t srcOffset, dstOffset, size; uint32_t stride, reverse; } params = {
+        srcOffset, dstOffset, size, threads, reverse
+    };
+    id<MTLComputePipelineState> pipeline = PM_OBJ(id<MTLComputePipelineState>, same ? d->byteMovePipeline : d->byteCopyPipeline);
+    PM_IF_M4(d) {
+        id<MTL4ComputeCommandEncoder> e = m4_compute_encoder(d, (id<MTL4CommandBuffer>)cb, true, true, "compute byte copy");
+        if (!e) { set_error(d, @"could not create a byte copy encoder"); return; }
+        if (!d->m4FullBarriers) {
+            if (same) {
+                m4_use(d, e, src, MTLStageDispatch, true, true, "byte copy");
+            } else {
+                m4_use(d, e, src, MTLStageDispatch, true, false, "byte copy source");
+                m4_use(d, e, dst, MTLStageDispatch, false, true, "byte copy destination");
+            }
+        }
+        [e setArgumentTable:PM_OBJ(id<MTL4ArgumentTable>, d->m4Table)];
+        [e setComputePipelineState:pipeline];
+        if (same) {
+            m4_set_buffer(d, 0, PM_OBJ(id<MTLBuffer>, dst), 0);
+            m4_set_bytes(d, 1, &params, sizeof(params));
+        } else {
+            m4_set_buffer(d, 0, PM_OBJ(id<MTLBuffer>, src), 0);
+            m4_set_buffer(d, 1, PM_OBJ(id<MTLBuffer>, dst), 0);
+            m4_set_bytes(d, 2, &params, sizeof(params));
+        }
+        [e dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+        [e endEncoding];
+        atomic_fetch_add(&d->encCounts[4], 1);
+        PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
+        return;
+    }
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+    if (!e) { set_error(d, @"could not create a byte copy encoder"); return; }
+    [e setComputePipelineState:pipeline];
+    if (same) {
+        [e setBuffer:PM_OBJ(id<MTLBuffer>, dst) offset:0 atIndex:0];
+        [e setBytes:&params length:sizeof(params) atIndex:1];
+    } else {
+        [e setBuffer:PM_OBJ(id<MTLBuffer>, src) offset:0 atIndex:0];
+        [e setBuffer:PM_OBJ(id<MTLBuffer>, dst) offset:0 atIndex:1];
+        [e setBytes:&params length:sizeof(params) atIndex:2];
+    }
+    [e dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+    [e endEncoding];
+    atomic_fetch_add(&d->encCounts[4], 1);
+    PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
+}
+
 PM_EXPORT void pm_copy_buffer(PMDevice *d, void *src, uint64_t srcOffset, void *dst, uint64_t dstOffset, uint64_t size) {
     PM_ENC_SCOPE(PM_ENC_COPY);
     @autoreleasepool {
         if (size == 0) return;
+        if ((srcOffset & 3) || (dstOffset & 3) || (size & 3)) {
+            copy_buffer_bytes(d, src, srcOffset, dst, dstOffset, size);
+            return;
+        }
         id<MTLBlitCommandEncoder> blit = blit_encoder(d, 0);
         if (!blit) return;
         PM_IF_M4(d) m4_blit_deps(d, &d->blitHaz, (id<MTL4ComputeCommandEncoder>)blit, src, dst, true);
@@ -3577,7 +3719,11 @@ PM_EXPORT void pm_copy_buffer_early(PMDevice *d, void *src, uint64_t srcOffset, 
         if (!d->uploadCb) {
             id<MTLCommandBuffer> ucb = new_cb(d, true);
             id<MTLBlitCommandEncoder> ub = ucb ? new_blit_encoder(d, ucb, nil, true) : nil;
-            if (!ub) { set_error(d, @"could not create an upload command buffer"); return; }
+            if (!ub) {
+                if (ucb) { PM_IF_M4(d) [(id<MTL4CommandBuffer>)ucb endCommandBuffer]; }
+                set_error(d, @"could not create an upload command buffer");
+                return;
+            }
             d->uploadCb = pm_retain(ucb);
             d->uploadBlit = pm_retain(ub);
             atomic_fetch_add(&d->encCounts[3], 1);
@@ -5024,7 +5170,7 @@ static NSString *const TEMPORAL_SHADER =
      "  if (gid.x >= depth.get_width() || gid.y >= depth.get_height()) return;\n"
      "  float d = depth.read(gid).r;\n"
      "  float2 uv = (float2(gid) + 0.5) / size;\n"
-     "  float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);\n"
+     "  float2 ndc = float2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);\n"
      "  float4 rel = p.invCur * float4(ndc, d, 1.0);\n"
      "  float4 prev = float4(0.0);\n"
      "  if (d <= 0.0 || abs(rel.w) < 1e-6) {\n"
@@ -5037,7 +5183,7 @@ static NSString *const TEMPORAL_SHADER =
      "  float2 mv = float2(0.0);\n"
      "  if (prev.w > 1e-5) {\n"
      "    float2 n = prev.xy / prev.w;\n"
-     "    mv = clamp((float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5) - uv) * size, -size, size);\n"
+     "    mv = clamp((float2(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5) - uv) * size, -size, size);\n"
      "  }\n"
      "  motion.write(float4(mv, 0.0, 0.0), gid);\n"
      "  depthOut.write(float4(d, 0.0, 0.0, 0.0), gid);\n"
@@ -5283,6 +5429,9 @@ static void diag_stage(PMDevice *d, int stage, bool last, int piece) {
     PM_ENC_COUNT(PM_ENC_CBS_COMMITTED, 1);
     pm_release(d->cb);
     d->cb = NULL;
+    d->passSamples = NULL;
+    pm_release(d->passSamplesCb);
+    d->passSamplesCb = NULL;
     atomic_fetch_add(&d->txDiagStats[3], 1);
 }
 
@@ -6035,6 +6184,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
         if (e) atomic_fetch_add(&s->device->encCounts[5], 1);
         if (!e) {
+            PM_IF_M4(s->device) [(id<MTL4CommandBuffer>)pcb endCommandBuffer];
             release_slot(s, slot);
             pm_credits_finish(&s->shown, lease, 0);
             set_error(s->device, @"could not create the present encoder");

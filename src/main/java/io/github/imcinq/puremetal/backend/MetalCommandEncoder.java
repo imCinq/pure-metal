@@ -336,20 +336,33 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         final int mipLevel
     ) {
         this.checkNotInRenderPass("clear a texture region");
-        // Metal has no "clear rectangle" outside a draw, so fill the region from a staging buffer instead.
-        if (!this.fillRegion(colorTexture, clearColor, 0.0, regionX, regionY, regionWidth, regionHeight, mipLevel)
-            | !this.fillRegion(depthTexture, clearColor, clearDepth, regionX, regionY, regionWidth, regionHeight, mipLevel)) {
-            // Whole-texture clear is the documented fallback (0.4.1 notes); warn once so it does not spam the log per call.
-            if (!this.warnedRegionClearFallback) {
-                this.warnedRegionClearFallback = true;
-                LOGGER.warn("Pure Metal: region clear of {} / {} not supported for these formats, clearing whole textures",
-                    colorTexture.getFormat(), depthTexture.getFormat());
-            }
-            this.clearColorAndDepthTextures(colorTexture, clearColor, depthTexture, clearDepth);
+        if (regionWidth <= 0 || regionHeight <= 0) {
+            return;
         }
+        // Check both formats before encoding either copy, so an unsupported depth format never wastes a color blit or wipes
+        // unrelated pixels after partially mutating one attachment.
+        if (canFillRegion(colorTexture.getFormat()) && canFillRegion(depthTexture.getFormat())) {
+            this.fillRegion(colorTexture, clearColor, 0.0, regionX, regionY, regionWidth, regionHeight, mipLevel);
+            this.fillRegion(depthTexture, clearColor, clearDepth, regionX, regionY, regionWidth, regionHeight, mipLevel);
+            return;
+        }
+        // Whole-texture clear is the documented fallback (0.4.1 notes); warn once so it does not spam the log per call.
+        if (!this.warnedRegionClearFallback) {
+            this.warnedRegionClearFallback = true;
+            LOGGER.warn("Pure Metal: region clear of {} / {} not supported for these formats, clearing whole textures",
+                colorTexture.getFormat(), depthTexture.getFormat());
+        }
+        this.clearColorAndDepthTextures(colorTexture, clearColor, depthTexture, clearDepth);
     }
 
-    private boolean fillRegion(
+    private static boolean canFillRegion(final GpuFormat format) {
+        return switch (format) {
+            case RGBA8_UNORM, R8_UNORM, RG16_FLOAT, RGBA16_FLOAT, R32_FLOAT, RGBA32_FLOAT, D32_FLOAT, D16_UNORM -> true;
+            default -> false;
+        };
+    }
+
+    private void fillRegion(
         final GpuTexture texture, final Vector4fc color, final double depth, final int x, final int y, final int width, final int height, final int mip
     ) {
         GpuFormat format = texture.getFormat();
@@ -359,14 +372,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             switch (format) {
                 case RGBA8_UNORM -> pixel.put(unorm8(color.x())).put(unorm8(color.y())).put(unorm8(color.z())).put(unorm8(color.w()));
                 case R8_UNORM -> pixel.put(unorm8(color.x()));
+                case RG16_FLOAT -> pixel.putShort(half(color.x())).putShort(half(color.y()));
                 case RGBA16_FLOAT -> pixel.putShort(half(color.x())).putShort(half(color.y())).putShort(half(color.z())).putShort(half(color.w()));
                 case R32_FLOAT -> pixel.putFloat(color.x());
                 case RGBA32_FLOAT -> pixel.putFloat(color.x()).putFloat(color.y()).putFloat(color.z()).putFloat(color.w());
                 case D32_FLOAT -> pixel.putFloat((float)depth);
                 case D16_UNORM -> pixel.putShort((short)Math.round(Math.clamp(depth, 0.0, 1.0) * 65535.0));
-                default -> {
-                    return false;
-                }
+                default -> throw new IllegalStateException("Unexpected region-clear format " + format);
             }
             long size = (long)texel * width * height;
             GpuBufferSlice.MappedView staging = this.transientMemory.allocateGpuMapped(size, Math.max(4, texel), GpuBuffer.USAGE_COPY_SRC);
@@ -379,7 +391,6 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 this.handle(), ((MetalBuffer)staging.slice().buffer()).use().handle(), staging.slice().offset(), texel * width, height,
                 ((MetalTexture)texture).handle(), mip, 0, x, y, width, height
             );
-            return true;
         } finally {
             MemoryUtil.memFree(pixel);
         }
@@ -408,6 +419,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         if (dstOffset < 0L || size < 0L || dstOffset > target.size() || size > target.size() - dstOffset) {
             throw new IllegalArgumentException("Cannot write " + size + " bytes at offset " + dstOffset + " of a " + target.size() + " byte buffer");
         }
+        if (size == 0) {
+            return;
+        }
         // The CPU knows these bytes, so keep the shadow current; this does not drop it (the copy below is CPU-sourced).
         target.shadowWrite(dstOffset, MemoryUtil.memAddress(data), size);
         if ((dstOffset & 3L) == 0L && (size & 3) == 0) {
@@ -424,9 +438,21 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             }
             GpuBufferSlice staging = this.transientMemory.uploadStaging(data, 4L, GpuBuffer.USAGE_COPY_SRC);
             MetalNative.copyBuffer(this.handle(), ((MetalBuffer)staging.buffer()).use().handle(), staging.offset(), target.handle(), dstOffset, size);
+        } else if (target.shadow() == 0L && target.gpuWritten) {
+            // An earlier GPU write may still be queued for this non-shadowed buffer, so reading neighbor bytes from
+            // contents() would overwrite them with stale data. Copy only the exact bytes in GPU order instead.
+            if (!this.warnedUnalignedWrite) {
+                this.warnedUnalignedWrite = true;
+                LOGGER.info("Pure Metal: copying an unaligned buffer write on the GPU ({} bytes at offset {})", size, dstOffset);
+            }
+            if (io.github.imcinq.puremetal.bench.Bench.SECONDS > 0) {
+                io.github.imcinq.puremetal.bench.Bench.countBlit(target.benchLabel, target.usage(), size);
+            }
+            GpuBufferSlice staging = this.transientMemory.uploadStaging(data, 4L, GpuBuffer.USAGE_COPY_SRC);
+            MetalNative.copyBuffer(this.handle(), ((MetalBuffer)staging.buffer()).use().handle(), staging.offset(), target.handle(), dstOffset, size);
         } else {
             // Metal blits need 4-byte aligned offsets and sizes on macOS. Widen the copy and keep the bytes around
-            // the write from the buffer's current contents.
+            // the write from the buffer's current CPU-known contents (shadow, or contents() when the GPU has never written it).
             if (!this.warnedUnalignedWrite) {
                 this.warnedUnalignedWrite = true;
                 LOGGER.info("Pure Metal: widening an unaligned buffer write ({} bytes at offset {})", size, dstOffset);
@@ -436,8 +462,6 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             }
             long start = dstOffset & ~3L;
             // The allocation is padded to 16 bytes (see MetalBuffer), so the widened end can always be 4-aligned.
-            // Limitation: a buffer without a shadow that an earlier command in this submit already wrote on the GPU
-            // has stale neighbour bytes in contents(); the widened copy would write those back.
             long end = (dstOffset + size + 3L) & ~3L;
             int widened = (int)(end - start);
             GpuBufferSlice.MappedView staging = this.transientMemory.allocateGpuMapped(widened, 4L, GpuBuffer.USAGE_COPY_SRC);
@@ -453,13 +477,17 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     @Override
     public void copyToBuffer(final GpuBufferSlice source, final GpuBufferSlice target) {
         this.checkNotInRenderPass("copy a buffer");
+        if (source.length() == 0L) {
+            return;
+        }
         if (io.github.imcinq.puremetal.bench.Bench.SECONDS > 0) {
             MetalBuffer t = (MetalBuffer)target.buffer();
             io.github.imcinq.puremetal.bench.Bench.countBlit("copy " + ((MetalBuffer)source.buffer()).benchLabel + " -> " + t.benchLabel, t.usage(), source.length());
         }
         MetalBuffer src = (MetalBuffer)source.buffer();
         MetalBuffer dst = (MetalBuffer)target.buffer();
-        if (src.unusedThisSubmit() && dst.unusedThisSubmit()) {
+        boolean aligned = (source.offset() & 3L) == 0L && (target.offset() & 3L) == 0L && (source.length() & 3L) == 0L;
+        if (aligned && src.unusedThisSubmit() && dst.unusedThisSubmit()) {
             // Nothing recorded this submit touches either buffer, so the copy can run ahead of the whole frame (like
             // writeToBuffer's early path) and the open render pass stays open.
             MetalNative.copyBufferEarly(this.handle(), src.handle(), source.offset(), dst.handle(), target.offset(), source.length());
@@ -467,9 +495,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             return;
         }
         MetalNative.copyBuffer(
-            this.handle(), ((MetalBuffer)source.buffer()).use().handle(), source.offset(), ((MetalBuffer)target.buffer()).use().handle(), target.offset(), source.length()
+            this.handle(), src.use().handle(), source.offset(), dst.use().handle(), target.offset(), source.length()
         );
-        ((MetalBuffer)target.buffer()).markGpuWritten();
+        dst.markGpuWritten();
     }
 
     @Override

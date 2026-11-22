@@ -63,7 +63,7 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 - macOS 14 or newer on Apple Silicon (tested on M2). Fast Terrain needs macOS 15. The optional Metal 4 mode needs macOS 26.
 - Minecraft 26.3 with Fabric Loader 0.19+
-- Java 25
+- Java 25 (ARM64 / Apple Silicon build, not Intel/Rosetta)
 - Sodium (optional)
 
 ## Install
@@ -86,7 +86,7 @@ Optional, off by default. Draws the 3D world at fewer pixels and scales it up. M
 
 - **Render Scale:** Native, or 50 to 100%. Since 0.5.0 the upscale is merged into the next pass, so lower scales cost less extra work.
 - **Auto Render Scale:** off by default. Lowers the scale when your GPU can't reach your FPS target and raises it when it can (100, 85, 70 or 60%). If a lower step doesn't make the game faster, it goes back up and waits before trying again.
-- **Upscaler:** Bilinear (fastest), MetalFX Spatial (sharper) or MetalFX Temporal (sharpest, steadiest image below 100%, may ghost on fast motion).
+- **Upscaler:** Bilinear (fastest), MetalFX Spatial (sharper) or MetalFX Temporal (sharpest, steadiest image below 100%).
 
 ## More options
 

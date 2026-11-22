@@ -76,7 +76,8 @@ public final class PureMetalBackend implements GpuBackend {
             return "this isn't macOS";
         }
         if (!arch.equals("aarch64")) {
-            return "this Mac doesn't have Apple Silicon";
+            return "Java is running as " + (arch.isEmpty() ? "unknown architecture" : arch)
+                + " instead of ARM64 (Apple Silicon requires an ARM64 Java 25 runtime, not Intel/Rosetta)";
         }
         String conflict = incompatibleMod();
         if (conflict != null) {

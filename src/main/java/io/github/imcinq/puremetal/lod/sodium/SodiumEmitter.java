@@ -44,6 +44,13 @@ public final class SodiumEmitter implements CoarseMesher.Emitter, CoarseMesher.W
         return e;
     }
 
+    /** Release per-section buffer references after a worker finishes the section. */
+    public static void end() {
+        SodiumEmitter e = LOCAL.get();
+        e.buffers = null;
+        e.collector = null;
+    }
+
     @Override
     public void quad(final BakedQuad q, final int cellX, final int cellY, final int cellZ, final int[] colors, final int[] lights) {
         int emission = q.materialInfo().lightEmission();

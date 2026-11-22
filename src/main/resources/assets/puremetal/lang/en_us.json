@@ -22,7 +22,7 @@
   "puremetal.options.upscaler.temporal.unsupported": "MetalFX couldn't start on this Mac; using Bilinear.",
   "puremetal.options.upscaler.temporal.hooks": "Another mod changed rendering; using Bilinear.",
   "puremetal.options.upscaler.note100": "Upscalers only apply below 100% Render Scale.",
-  "puremetal.options.upscaler.tooltip": "Bilinear: fastest, softest.\nMetalFX Spatial: sharper, costs a little FPS on M1/M2.\nMetalFX Temporal: sharpest, may ghost on fast motion.",
+  "puremetal.options.upscaler.tooltip": "Bilinear: fastest, softest.\nMetalFX Spatial: sharper, costs a little FPS on M1/M2.\nMetalFX Temporal: sharpest, steadiest image.",
   "puremetal.options.experimental": "Experimental.",
   "puremetal.options.metal4": "Metal 4",
   "puremetal.options.metal4.tooltip": "Uses Apple's newer Metal 4 graphics API instead of Metal 3.\n\nUsually a little slower for now and may show visual glitches. Needs macOS 26 and an M1 or newer. Restart the game after changing this.",
