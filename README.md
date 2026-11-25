@@ -3,6 +3,7 @@
 A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Apple's Metal API instead of OpenGL. Works with Sodium.
 
 - Fast Terrain renders terrain much faster on the GPU, on by default (macOS 15+)
+- Smoother Chunk Loading paces background chunk builds, finishes terrain uploads between frames (without Sodium) and boosts sound thread priority, on by default
 - Terrain LOD simplifies distant terrain, leaves, plants and water at render distance 16+
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
@@ -81,6 +82,16 @@ On by default, needs macOS 15. Terrain renders much faster on the GPU and looks 
 
 To turn it off, see [JVM options](#jvm-options).
 
+## Smoother Chunk Loading
+
+On by default. Keeps FPS steady while flying or exploring without Sodium, especially on fanless MacBook Airs.
+
+- **Chunk pacing:** scales background chunk builds to your Mac's cores and temperature so sudden terrain bursts don't cause stutters. Turns off during loading screens so worlds load at full speed.
+- **End-of-frame uploads:** finishes terrain uploads between frames instead of mid-frame, avoiding extra GPU work before the HUD.
+- **Sound priority:** keeps sound playback from causing brief hitches when the CPU is busy (works with and without Sodium).
+
+*Sodium already handles its own chunk building and uploads, so only the sound improvement runs alongside it.* To turn any of these off, see [JVM options](#jvm-options).
+
 ## Render Scale
 
 Optional, off by default. Draws the 3D world at fewer pixels and scales it up. Menus, chat and the HUD stay sharp.
@@ -126,6 +137,10 @@ Add these to your launcher's JVM arguments and restart.
 | --- | --- |
 | `-Dpuremetal.fastTerrainMath=off` | Turns Fast Terrain off |
 | `-Dpuremetal.experimentalDistantHorizons=false` | Turns Distant Horizons support off (`FALSE` and `False` also work) |
+| `-Dpuremetal.disableChunkBuildPacer=true` | Turns chunk-build pacing off (without Sodium) |
+| `-Dpuremetal.maxChunkBuildThreads=N` | Sets a fixed chunk-build worker limit instead of automatic pacing |
+| `-Dpuremetal.disableEarlyTerrainUpload=true` | Turns end-of-frame terrain uploads off (without Sodium) |
+| `-Dpuremetal.disableThreadQos=true` | Turns sound thread priority boost off |
 
 With Distant Horizons support off, the game runs without Metal while DH stays installed. To keep Metal without DH, remove the DH mod instead.
 
