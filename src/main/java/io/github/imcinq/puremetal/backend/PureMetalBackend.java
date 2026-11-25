@@ -29,6 +29,12 @@ public final class PureMetalBackend implements GpuBackend {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static @Nullable String unsupportedReason;
     private static boolean checked;
+    private static volatile boolean fallback;
+
+    /** True once Pure Metal was rejected or failed device creation and Minecraft fell back to another backend. */
+    public static boolean fellBack() {
+        return fallback;
+    }
 
     /** Why Pure Metal can't run on this machine, or null if it can. Cheap after the first call. */
     public static synchronized @Nullable String unsupportedReason() {
@@ -113,6 +119,7 @@ public final class PureMetalBackend implements GpuBackend {
     public void loadLibrary() throws BackendCreationException {
         String reason = unsupportedReason();
         if (reason != null) {
+            fallback = true;
             LOGGER.warn("Pure Metal was rejected: {}", Redact.home(reason));
             throw new BackendCreationException("Pure Metal is off because " + reason, BackendCreationException.Reason.PLATFORM_ERROR);
         }
@@ -120,6 +127,9 @@ public final class PureMetalBackend implements GpuBackend {
 
     @Override
     public void unloadLibrary() {
+        if (MetalDevice.current == null) {
+            fallback = true;
+        }
     }
 
     @Override
@@ -130,17 +140,20 @@ public final class PureMetalBackend implements GpuBackend {
     @Override
     public GpuDevice createDevice(final GpuDebugOptions debugOptions) throws BackendCreationException {
         if (!StartupGuard.metalStarting()) {
+            fallback = true;
             throw new BackendCreationException("Pure Metal is off because its startup marker could not be written", BackendCreationException.Reason.OTHER);
         }
         long handle;
         try {
             handle = MetalNative.deviceCreate(debugOptions.useLabels() ? 1 : 0, Metal4Config.effective() ? 1 : 0);
         } catch (Throwable t) {
+            fallback = true;
             LOGGER.warn("Pure Metal could not create a Metal device: {}", Redact.error(t));
             StartupGuard.metalFailed();
             throw new BackendCreationException("Pure Metal could not create a Metal device: " + Redact.error(t), BackendCreationException.Reason.OTHER);
         }
         if (handle == 0L) {
+            fallback = true;
             LOGGER.warn("Pure Metal could not create a Metal device: the native layer returned no device");
             StartupGuard.metalFailed();
             throw new BackendCreationException("Pure Metal could not create a Metal device", BackendCreationException.Reason.OTHER);
@@ -149,6 +162,7 @@ public final class PureMetalBackend implements GpuBackend {
             return new FrontendGpuDevice(new MetalDevice(handle, debugOptions));
         } catch (RuntimeException e) {
             MetalDevice.current = null;
+            fallback = true;
             MetalNative.deviceDestroy(handle);
             LOGGER.warn("Pure Metal could not start: {}", Redact.error(e));
             StartupGuard.metalFailed();

@@ -9,6 +9,8 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #include <pthread.h>
+#include <pthread/qos.h>
+#include <sys/sysctl.h>
 #include <mach/mach_time.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -2573,6 +2575,50 @@ PM_EXPORT int pm_power_state(void) {
     @autoreleasepool {
         return (int)[NSProcessInfo processInfo].thermalState & 3;
     }
+}
+
+/** Number of non-efficiency cores (e.g. Super + Performance) via hw.perflevelN, falling back to perflevel0. */
+PM_EXPORT int pm_perf_core_count(void) {
+    int32_t levels = 0;
+    size_t size = sizeof(levels);
+    if (sysctlbyname("hw.nperflevels", &levels, &size, NULL, 0) == 0 && levels > 0) {
+        int total = 0;
+        for (int i = 0; i < levels && i < 8; i++) {
+            char nameKey[32], cpuKey[40], name[64];
+            snprintf(nameKey, sizeof(nameKey), "hw.perflevel%d.name", i);
+            size_t nameSize = sizeof(name);
+            if (sysctlbyname(nameKey, name, &nameSize, NULL, 0) == 0 && strncmp(name, "Efficiency", 10) == 0) {
+                continue;
+            }
+            snprintf(cpuKey, sizeof(cpuKey), "hw.perflevel%d.logicalcpu", i);
+            int32_t count = 0;
+            size_t countSize = sizeof(count);
+            if (sysctlbyname(cpuKey, &count, &countSize, NULL, 0) == 0 && count > 0) {
+                total += (int)count;
+            }
+        }
+        if (total > 0) {
+            return total;
+        }
+    }
+    int32_t count = 0;
+    size = sizeof(count);
+    if (sysctlbyname("hw.perflevel0.logicalcpu", &count, &size, NULL, 0) == 0 && count > 0) {
+        return (int)count;
+    }
+    return 0;
+}
+
+/** Sets the calling thread's macOS QoS class (0=default, 1=utility, 2=user-initiated, 3=user-interactive). Returns 0 on success. */
+PM_EXPORT int pm_set_thread_qos(int level) {
+    qos_class_t qos;
+    switch (level) {
+        case 1: qos = QOS_CLASS_UTILITY; break;
+        case 2: qos = QOS_CLASS_USER_INITIATED; break;
+        case 3: qos = QOS_CLASS_USER_INTERACTIVE; break;
+        default: qos = QOS_CLASS_DEFAULT; break;
+    }
+    return pthread_set_qos_class_self_np(qos, 0);
 }
 
 PM_EXPORT int pm_device_check(char *nameOut, int cap) {

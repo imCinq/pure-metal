@@ -203,10 +203,17 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static final float[] VANILLA_ALPHAS={VANILLA_CUTOUT_ALPHA,0.1F};
     /** Sodium 0.9.x pipelines (ShaderChunkRenderer): cutout 0.5, translucent 0.01. */
     private static final float[] SODIUM_ALPHAS={VANILLA_CUTOUT_ALPHA,0.01F};
-    /** Sodium 0.9.3-beta.5 changed the vertex and fragment shader and chunk_vertex, fog and globals (camera relative positions); chunk_material and oit.glsl are unchanged. */
+    /** Sodium 0.9.3-beta.5, 0.9.3 and 0.9.4-beta.1: camera-relative positions in vertex/fragment/chunk_vertex/fog/globals; chunk_material and oit.glsl unchanged. */
     private static final Map<String,String> SODIUM_BETA5=Map.of(
         "sodium:chunk_vertex.glsl","f81998545f37971d167e079b0ea78dee9ae99b660bbf7053053dcfd11e06a793",
         "sodium:fog.glsl","8f471f062405ed9928e2d298188601966f444072b33675b546b9ebffebe095be",
+        "sodium:globals.glsl","bd44a4ef22ba629caf0c8f887807c340112635d464dc08bc04cfa88d88cfc518",
+        "sodium:chunk_material.glsl","456e00dc7904a2e003fe4e1f06b2023bc3189cb7259fec77ba3e854fc4f7a452",
+        "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
+    /** Sodium 0.9.4-beta.2 removed dead USE_FOG guards and unused locals in block_layer_opaque and fog.glsl; math is identical to 0.9.3. */
+    private static final Map<String,String> SODIUM_094_BETA2=Map.of(
+        "sodium:chunk_vertex.glsl","f81998545f37971d167e079b0ea78dee9ae99b660bbf7053053dcfd11e06a793",
+        "sodium:fog.glsl","227b3af21c134de0285c2b77a1e444a1c78c3f69de021c8dd0d7170e2c2bc0a6",
         "sodium:globals.glsl","bd44a4ef22ba629caf0c8f887807c340112635d464dc08bc04cfa88d88cfc518",
         "sodium:chunk_material.glsl","456e00dc7904a2e003fe4e1f06b2023bc3189cb7259fec77ba3e854fc4f7a452",
         "minecraft:oit.glsl","d90c5f454fffff35e81673b9806531d468d9597557a2bf7d9e37ed5cd7c18989");
@@ -216,8 +223,10 @@ public final class TerrainShaderProof implements AutoCloseable {
         new Family(Identifier.fromNamespaceAndPath("sodium","blocks/block_layer_opaque"),SODIUM_ALPHAS,new Variant[] {
             // Sodium 0.9.2 and 0.9.3-beta.1 (identical shaders)
             new Variant("eb663f22c1be14a3a1e391601e466a77b420f8e087f2edf2b06c0c9e64342ce8","380c49c7463bed6382cb993e39a55e4a07e4c00462f8980fc020b66e29bd27a1",SODIUM),
-            // Sodium 0.9.3-beta.5
-            new Variant("35b6b4307e2254adf90205733b34f96945939643b9fb6f0d8f3d69826cf74451","db2e196489be7a6be867d8ebfdfe96b58580c6de2b002dcedc3aebbe1e201abc",SODIUM_BETA5)}),
+            // Sodium 0.9.3-beta.5, 0.9.3 and 0.9.4-beta.1
+            new Variant("35b6b4307e2254adf90205733b34f96945939643b9fb6f0d8f3d69826cf74451","db2e196489be7a6be867d8ebfdfe96b58580c6de2b002dcedc3aebbe1e201abc",SODIUM_BETA5),
+            // Sodium 0.9.4-beta.2
+            new Variant("0696311d904626cb44034bebf7be67b480abe03df995ca33e8f91c4c533f573f","06c1bd05a0ee34fdedd1fded1e73f57b08b20637b124a7c555d81eec26b5bdf3",SODIUM_094_BETA2)}),
         new Family(Identifier.fromNamespaceAndPath("minecraft","core/block"),VANILLA_ALPHAS,new Variant[] {
             new Variant("3c2508a469916fa10c37d1e368b7de8e7505e289bb87c2134aaaf5fed992a9ea","bb8c8bbbae9227219e68ea3f0dab4ef6586c1dd4f745cab16c635c1553ed2ca9",BLOCK)})};
     private final FamilyState held;
@@ -317,7 +326,7 @@ public final class TerrainShaderProof implements AutoCloseable {
         return content!=null && hash(StandardCharsets.UTF_8.decode(content).toString(),entry.getValue());
     }
     /** Sodium versions whose shaders are pinned in the Sodium variants of FAMILIES (the build metadata after "+" is ignored). Add a version here when pinning it. */
-    private static final java.util.Set<String> PINNED_SODIUM_VERSIONS=java.util.Set.of("0.9.2","0.9.3-beta.1","0.9.3-beta.5");
+    private static final java.util.Set<String> PINNED_SODIUM_VERSIONS=java.util.Set.of("0.9.2","0.9.3-beta.1","0.9.3-beta.5","0.9.3","0.9.4-beta.1","0.9.4-beta.2");
     private static boolean pinnedSodiumVersion() {
         try {
             return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sodium")

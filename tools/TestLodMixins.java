@@ -81,7 +81,50 @@ public final class TestLodMixins {
             throw new AssertionError("LOD/RGSS shader hook enablement incorrect");
         }
         System.out.println("PASS: LOD/RGSS source hook " + (textureHook ? "enabled" : "disabled"));
+        checkPerfMixins(loader, sodium);
         System.out.println("PASS: " + (sodium ? "Sodium" : "vanilla") + " LOD hooks transformed without launching the game");
+    }
+
+    static void checkPerfMixins(ClassLoader loader, boolean sodium) throws Exception {
+        Class<?> sound = Class.forName("net.minecraft.client.sounds.SoundEngineExecutor", false, loader);
+        sound.getDeclaredMethods();
+        boolean soundHook = java.util.Arrays.stream(sound.getDeclaredMethods())
+            .anyMatch(m -> m.getName().contains("puremetal$promoteSoundThread"));
+        if (soundHook == Boolean.getBoolean("puremetal.disableThreadQos")) {
+            throw new AssertionError("SoundEngineExecutorMixin enablement incorrect");
+        }
+        Class<?> dispatcher = Class.forName("net.minecraft.client.renderer.chunk.SectionRenderDispatcher", false, loader);
+        dispatcher.getDeclaredMethods();
+        boolean pacerHook = java.util.Arrays.stream(dispatcher.getDeclaredMethods())
+            .anyMatch(m -> m.getName().contains("puremetal$pacedSchedule"))
+            && java.util.Arrays.stream(dispatcher.getDeclaredMethods())
+                .anyMatch(m -> m.getName().contains("puremetal$trackAcquire"))
+            && java.util.Arrays.stream(dispatcher.getDeclaredMethods())
+                .anyMatch(m -> m.getName().contains("puremetal$onFrameUpload"));
+        boolean expectedPacer = !sodium && !Boolean.getBoolean("puremetal.disableChunkBuildPacer");
+        if (pacerHook != expectedPacer) {
+            throw new AssertionError("SectionRenderDispatcherPacerMixin enablement incorrect (got " + pacerHook + ", expected " + expectedPacer + ")");
+        }
+        Class<?> levelRenderer = Class.forName("net.minecraft.client.renderer.LevelRenderer", false, loader);
+        levelRenderer.getDeclaredMethods();
+        boolean earlyUploadHook = java.util.Arrays.stream(levelRenderer.getDeclaredMethods())
+            .anyMatch(m -> m.getName().contains("puremetal$flushPendingBeforeRender"))
+            && java.util.Arrays.stream(levelRenderer.getDeclaredMethods())
+                .anyMatch(m -> m.getName().contains("puremetal$deferTerrainUpload"))
+            && java.util.Arrays.stream(levelRenderer.getDeclaredMethods())
+                .anyMatch(m -> m.getName().contains("puremetal$deferOcclusionUpdate"))
+            && java.util.Arrays.stream(levelRenderer.getDeclaredMethods())
+                .anyMatch(m -> m.getName().contains("puremetal$flushDeferredTerrainUpload"));
+        Class<?> levelExtractor = Class.forName("net.minecraft.client.renderer.extract.LevelExtractor", false, loader);
+        levelExtractor.getDeclaredMethods();
+        boolean extractFlushHook = java.util.Arrays.stream(levelExtractor.getDeclaredMethods())
+            .anyMatch(m -> m.getName().contains("puremetal$flushDeferredBeforeExtract"));
+        boolean expectedEarlyUpload = !sodium && !Boolean.getBoolean("puremetal.disableEarlyTerrainUpload");
+        if (earlyUploadHook != expectedEarlyUpload || extractFlushHook != expectedEarlyUpload) {
+            throw new AssertionError("Early terrain upload mixin enablement incorrect (renderer=" + earlyUploadHook
+                + ", extractor=" + extractFlushHook + ", expected=" + expectedEarlyUpload + ")");
+        }
+        System.out.println("PASS: perf mixins transformed cleanly (sodium=" + sodium + ", pacer=" + pacerHook + ", earlyUpload=" + earlyUploadHook + ", soundQos=" + soundHook + ")");
     }
 
     static void checkSodiumCondition(ClassLoader loader, String gameDir) throws Exception {

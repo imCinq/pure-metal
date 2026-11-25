@@ -48,12 +48,13 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 
 **Pure Metal on different Macs (more coming soon)**
 
-*Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 were provided by third-party testers.*
+*Minecraft 26.3, no Sodium, render distance 16, fullscreen at each Mac's native resolution, VSync off, no FPS cap. M2 ran at 50% LOD, others at the default. Same seed and flight route for all: a warm-up lap, then 30 seconds measured. Results other than M2 Air and M5 Air were provided by third-party testers.*
 
 | Mac | Pure Metal | Avg FPS | 1-in-100 slowest frame (p99) | 1-in-1000 slowest frame (p99.9) |
 | --- | --- | --- | --- | --- |
 | M5 Max, 48 GB | 0.4.5 | <strong>1043.4</strong> | <strong>1.4 ms</strong> | <strong>3.2 ms</strong> |
 | M3 Max, 36 GB | 0.4.5 | 669.3 | 2.7 ms | 5.6 ms |
+| M5 Air, 24 GB | 0.5.3 | 337.9 | 5.2 ms | 9.7 ms |
 | M2 Air, 16 GB | 0.4.5 | 200.7 | 8.9 ms | 15.0 ms |
 | M1 Air, 8 GB | 0.4.5 | 182.2 | 10.1 ms | 22.4 ms |
 

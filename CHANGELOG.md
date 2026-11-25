@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+**Improvements**
+- Smoother frame times without Sodium: Pure Metal now paces background chunk builds to your Mac's performance cores and thermal state, stepping down when your Mac warms up so sudden terrain bursts do not stall the game. The cap turns off during loading screens so worlds still load at full speed.
+- End-of-frame terrain uploads (without Sodium): finished terrain chunks and occlusion updates now upload between frames instead of mid-frame, avoiding extra GPU work before the HUD on both Metal 3 and Metal 4.
+- Sound playback priority: raises Minecraft's sound thread priority on macOS while Pure Metal is active so playing sounds is less likely to cause brief hitches when the CPU is busy (works with and without Sodium).
+- Fast Terrain: added shader support for Sodium 0.9.3, 0.9.4-beta.1 and 0.9.4-beta.2 so Fast Terrain stays on with newer Sodium releases.
+
 ## 0.5.2
 
 **Fixes**

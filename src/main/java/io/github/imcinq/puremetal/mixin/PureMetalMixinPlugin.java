@@ -85,6 +85,16 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.endsWith(".perf.PalettedContainerMixin")) {
             return !Boolean.getBoolean("puremetal.disablePaletteScratch");
         }
+        if (mixinClassName.endsWith(".perf.SoundEngineExecutorMixin")) {
+            return !Boolean.getBoolean("puremetal.disableThreadQos");
+        }
+        if (mixinClassName.endsWith(".perf.SectionRenderDispatcherPacerMixin")) {
+            return !SODIUM && !Boolean.getBoolean("puremetal.disableChunkBuildPacer");
+        }
+        if (mixinClassName.endsWith(".perf.LevelRendererEarlyUploadMixin")
+            || mixinClassName.endsWith(".perf.LevelExtractorEarlyUploadMixin")) {
+            return !SODIUM && !Boolean.getBoolean("puremetal.disableEarlyTerrainUpload");
+        }
         if (mixinClassName.endsWith(".MinecraftBenchMixin")) {
             return Integer.getInteger("puremetal.bench", 0) > 0 || Boolean.getBoolean("puremetal.profile")
                 || Boolean.getBoolean("puremetal.terrainDiagnostics") || Boolean.getBoolean("puremetal.terrainOcclusionProbe");

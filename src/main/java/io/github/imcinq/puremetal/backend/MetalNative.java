@@ -32,7 +32,9 @@ public final class MetalNative {
     private static SymbolLookup lookup;
 
     // Formats and device.
-    private static MethodHandle H_formatCount, H_pixelFormatSupported, H_powerState;
+    private static MethodHandle H_formatCount, H_pixelFormatSupported;
+    private static volatile MethodHandle H_powerState, H_perfCoreCount, H_setThreadQos;
+    private static volatile int cachedPerfCores = -1;
     private static MethodHandle H_deviceCheck, H_deviceCreate, H_deviceName, H_deviceMaxBufferLength, H_deviceWorkingSet;
     private static MethodHandle H_deviceLastError, H_deviceFailed, H_deviceDestroy, H_release, H_setLabel;
     private static MethodHandle H_traceEnable, H_traceMark, H_traceRead, H_encEnable, H_encTake;
@@ -101,6 +103,8 @@ public final class MetalNative {
         final MemoryLayout I = JAVA_INT, L = JAVA_LONG, F = JAVA_FLOAT, D = JAVA_DOUBLE;
         H_formatCount = fn("pm_format_count", true, I);
         H_powerState = fn("pm_power_state", false, I);
+        H_perfCoreCount = fn("pm_perf_core_count", false, I);
+        H_setThreadQos = fn("pm_set_thread_qos", false, I, I);
         H_pixelFormatSupported = fn("pm_pixel_format_supported", true, I, I);
         H_deviceCheck = fn("pm_device_check", false, I, L, I);
         H_deviceCreate = fn("pm_device_create", false, L, I, I);
@@ -202,15 +206,51 @@ public final class MetalNative {
     }
 
     /**
-     * Battery Saver: the thermal state (0 nominal, 1 fair, 2 serious, 3 critical). 0 when the library is not loaded.
+     * Battery Saver and thread QoS: the thermal state (0 nominal, 1 fair, 2 serious, 3 critical). 0 when the library is not loaded.
      * Callers poll this about once a second.
      */
     public static int powerState() {
-        if (H_powerState == null) {
+        MethodHandle handle = H_powerState;
+        if (handle == null) {
             return 0;
         }
         try {
-            return (int) H_powerState.invokeExact();
+            return (int) handle.invokeExact();
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Number of macOS non-efficiency cores (Super + Performance via {@code hw.perflevelN}), or 0 if unavailable. */
+    public static int perfCoreCount() {
+        int cached = cachedPerfCores;
+        if (cached >= 0) {
+            return cached;
+        }
+        MethodHandle handle = H_perfCoreCount;
+        if (handle == null) {
+            return 0;
+        }
+        try {
+            int count = (int) handle.invokeExact();
+            cachedPerfCores = Math.max(0, count);
+            return cachedPerfCores;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Sets the calling thread's macOS QoS class (0=default, 1=utility, 2=user-initiated, 3=user-interactive).
+     * Returns 0 on success, or -1 when the native library is not loaded.
+     */
+    public static int setThreadQos(final int level) {
+        MethodHandle handle = H_setThreadQos;
+        if (handle == null) {
+            return -1;
+        }
+        try {
+            return (int) handle.invokeExact(level);
         } catch (Throwable t) {
             throw rethrow(t);
         }
