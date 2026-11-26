@@ -28,6 +28,14 @@ public final class MetalUpscaler {
         if (device != null) MetalNative.upscaleReset(device.handle());
     }
 
+    /** HDR Highlights: zeroes the alpha channel of {@code colorView} at the world/HUD boundary before GuiRenderer draws. */
+    public static void clearHdrWorldAlpha(final GpuTextureView colorView) {
+        MetalDevice device = MetalDevice.current;
+        if (device != null && colorView instanceof MetalTextureView view) {
+            MetalNative.clearAlpha(device.handle(), view.handle());
+        }
+    }
+
     /** Called on the render thread when the player returns to menus: parked buffers the GPU has finished are released. */
     public static void trimPoolIfActive() {
         MetalDevice device = MetalDevice.current;

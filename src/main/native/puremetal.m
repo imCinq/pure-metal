@@ -3,7 +3,7 @@
 // command buffer. Enums arrive as Pure Metal codes (see MetalConst.java) and are mapped here by name.
 
 #import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
 #import <MetalFX/MetalFX.h>
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
@@ -271,13 +271,49 @@ static MTLPrimitiveTopologyClass topology_class(int c) {
 // first PM_M4_LOG_SKIP, the default of -Dpuremetal.m4BarrierLogSkip=K (startup compiles, the first residency commit and the window's
 // first frames stay out of the log; the skip moves the window to, say, the position the bench measures).
 #define PM_M4_LOG_SKIP 600
-// -Dpuremetal.profile on Metal 4: MTL4 pass descriptors cannot carry a counter sample buffer, so GPU spans come from timestamps
-// written into an MTL4CounterHeap instead. A render pass writes before its first draw, after its vertex work and after its fragment
-// work (three entries, two samples: vertex then fragment); a compute or blit encoder writes one pair (its start when the encoder is
-// created, its end when the next encoder starts). Heap slot, entries used and sample list belong to the frame slot and are only
-// reused once that frame's commit feedback has resolved them.
-#define PM_M4_TS_PAIRS 64
-#define PM_M4_TS_ENTRIES (2 * PM_M4_TS_PAIRS)
+// -Dpuremetal.profile / -Dpuremetal.passTiming on Metal 4: MTL4 pass descriptors cannot carry a counter sample buffer, so GPU
+// spans come from timestamps written into an MTL4CounterHeap instead. A render pass writes before its first draw, after its vertex
+// work and after its fragment work (three entries, two samples: span and fragment tail); a compute or blit encoder writes one pair
+// (its start when the encoder is created, its end when the next encoder starts). Heap slot, entries used and sample list belong to
+// the frame slot and are only reused once that frame's commit feedback has resolved them.
+#define PM_M4_TS_PAIRS 512
+#define PM_M4_TS_ENTRIES 1024
+#define PM_M4_TS_PASSES 256
+#define PM_M4_Q_ENTRIES 1024
+#define PM_QUERY_PENDING_MAX 65536
+
+typedef struct PMQuerySlot {
+    uint64_t gen;      // bumped on every pm_query_write so late completions never overwrite reused slots
+    uint64_t valueNs;  // resolved GPU timestamp in nanoseconds
+    uint8_t ready;     // 1 when the submit matching `gen` completed
+} PMQuerySlot;
+
+typedef struct PMQueryPool {
+    _Atomic int refs;      // 1 owned by Java + 1 per pending submit record referencing this pool
+    pthread_mutex_t lock;  // guards slots[] and closed
+    int size;
+    bool closed;
+    PMQuerySlot *slots;
+} PMQueryPool;
+
+typedef struct PMPendingQuery {
+    PMQueryPool *pool;     // retained (+1 ref)
+    uint32_t index;
+    uint64_t gen;
+    uint8_t isEnd;         // 0 = before any frame work in this submit, 1 = after work
+    int32_t m4HeapIndex;   // >= 0: entry in d->m4QHeap[slot] on Metal 4; -1: use GPUStartTime/GPUEndTime
+} PMPendingQuery;
+
+typedef struct PMQueryBatch {
+    _Atomic int refs;
+    pthread_mutex_t lock;
+    bool done;
+    bool allM4;            // true when every item has a Metal 4 counter-heap entry
+    PMPendingQuery *items;
+    int count;
+    int m4Slot;            // >= 0 when this batch owns entries in d->m4QHeap[m4Slot]
+    int m4Used;
+} PMQueryBatch;
 
 enum { PM_STAGE_VERTEX = 1, PM_STAGE_FRAGMENT = 2 };
 
@@ -429,8 +465,15 @@ typedef struct PMDevice {
     // that is ~116 MB per frame for the main color + depth). Anything else that could observe it encodes them first.
     PMPendingClear clears[PM_MAX_PENDING_CLEARS];
     int clearCount;
-    void *presentPipeline;   // id<MTLRenderPipelineState> keyed to presentFormat
-    void *presentLibrary;    // id<MTLLibrary>
+    void *presentPipeline;    // id<MTLRenderPipelineState> for BGRA8Unorm SDR presenting
+    void *presentLibrary;     // id<MTLLibrary> for SDR presenting
+    void *presentHdrPipeline; // id<MTLRenderPipelineState> for RGBA16Float HDR presenting (lazy)
+    void *presentHdrLibrary;  // id<MTLLibrary> for HDR presenting (lazy)
+    // World-only HDR mask: zeros the main target's alpha channel at the world/HUD boundary (writeMask = Alpha only).
+    void *alphaZeroLibrary;
+    void *alphaZeroPipelines[3]; // keyed by depth format slot: 0 invalid, 1 Depth32Float, 2 Depth32Float_Stencil8
+    MTLPixelFormat alphaZeroColorFormats[3];
+    void *alphaZeroDepthState;
     // Keep identical attachments open across a full depth-only clear; on by default (depthClearFold A/B switch).
     // PUREMETAL_DEPTH_CLEAR_FOLD=0 disables it.
     bool foldDepthClears;
@@ -438,7 +481,6 @@ typedef struct PMDevice {
     void *partialDepthLibrary, *partialDepthPipeline, *partialDepthState;
     MTLPixelFormat partialDepthFormat;
     MTLPixelFormat depthClearFormats[PM_MAX_COLOR];
-    MTLPixelFormat presentFormat;
     // Render scale: the world drawn smaller is upscaled into the full-size target (pm_upscale).
     void *upscalePipeline;   // id<MTLRenderPipelineState> keyed to upscaleFormat
     MTLPixelFormat upscaleFormat;
@@ -450,6 +492,7 @@ typedef struct PMDevice {
     // (flush_backdrop). PUREMETAL_UPSCALE_FOLD=0 makes pm_upscale encode its own pass again and keep the scaled depth.
     void *bgDst, *bgSrc;     // id<MTLTexture> (root texture of the target / the image to stretch), retained while pending
     float bgSharp;           // sharpening amount of the pending stretch (0 = none)
+    bool bgZeroAlpha;        // HDR Highlights: clear alpha to 0 in the folded upscale draw so HUD coverage accumulates cleanly
     bool foldUpscale;
     void *fxScaler;          // id<MTLFXSpatialScaler> keyed to the fx* sizes and format below
     void *fxOut;             // id<MTLTexture>, the scaler's full-size output
@@ -578,8 +621,21 @@ typedef struct PMDevice {
     // off, and every hook tests m4Profile plus the heap first, so the default path writes nothing. Render thread only: the
     // presenter records on another thread and another command buffer, and never touches this state.
     void *m4TsHeap[PM_M4_FRAMES];
-    struct { uint16_t used, count; struct { uint16_t first, second; uint8_t bin; } pair[PM_M4_TS_PAIRS]; } m4Ts[PM_M4_FRAMES];
+    struct {
+        uint16_t used, count, passCount;
+        uint32_t epoch;
+        struct { uint16_t first, second; uint8_t bin; } pair[PM_M4_TS_PAIRS];
+        struct { uint16_t base, key; } pass[PM_M4_TS_PASSES];
+    } m4Ts[PM_M4_FRAMES];
+    uint64_t m4TsFreq; // GPU timestamp ticks per second from queryTimestampFrequency (0 falls back to Mach timebase)
     _Atomic int m4TsBusy[PM_M4_FRAMES]; // set while a submitted frame's heap still has to be resolved for its slot to be reusable
+    void *m4QHeap[PM_M4_FRAMES];        // Metal 4 timestamp query pools: lazy MTL4CounterHeap per frame slot
+    int m4QUsed[PM_M4_FRAMES];
+    _Atomic int m4QBusy[PM_M4_FRAMES];
+    bool m4QInitFailed;
+    PMPendingQuery *pendingQueries;     // render-thread list of queries written into the current submit
+    int pendingQueryCount, pendingQueryCap;
+    bool frameRendered;                 // true once any render pass began in the current submit (reset in pm_submit)
     _Atomic uint64_t m4TsDropped;       // samples the heap's capacity could not hold (pm_take_stat 37)
     int m4TsOpen, m4TsPass;
     int m4Profile;
@@ -639,7 +695,7 @@ typedef struct PMDevice {
 static void reset_temporal(PMDevice *d);
 static int ensure_upscale_pipeline(PMDevice *d, MTLPixelFormat format);
 static int ensure_upscale_depth_pipeline(PMDevice *d, MTLPixelFormat format);
-static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness);
+static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness, bool zeroAlpha);
 
 static void encode_probe(PMDevice *d, void *depth);
 #define DEV_MTL(d) PM_OBJ(id<MTLDevice>, (d)->device)
@@ -1015,17 +1071,17 @@ static bool m4_slot_ready(PMDevice *d) {
     // Frames before the pool is full never wait on a previous frame (there is none), but a heap already submitted on this slot may
     // still be resolving.
     uint64_t need = d->m4Seq > PM_M4_FRAMES ? d->m4Seq - PM_M4_FRAMES : 0;
-    if (atomic_load(&d->m4Done) >= need && !atomic_load(&d->m4TsBusy[slot])) return true;
+    if (atomic_load(&d->m4Done) >= need && !atomic_load(&d->m4TsBusy[slot]) && !atomic_load(&d->m4QBusy[slot])) return true;
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += 5;
     pthread_mutex_lock(&d->lock);
     int rc = 0;
-    while ((atomic_load(&d->m4Done) < need || atomic_load(&d->m4TsBusy[slot])) && rc == 0) {
+    while ((atomic_load(&d->m4Done) < need || atomic_load(&d->m4TsBusy[slot]) || atomic_load(&d->m4QBusy[slot])) && rc == 0) {
         rc = pthread_cond_timedwait(&d->cond, &d->lock, &deadline);
     }
     pthread_mutex_unlock(&d->lock);
-    if (atomic_load(&d->m4Done) >= need && !atomic_load(&d->m4TsBusy[slot])) return true;
+    if (atomic_load(&d->m4Done) >= need && !atomic_load(&d->m4TsBusy[slot]) && !atomic_load(&d->m4QBusy[slot])) return true;
     set_error(d, @"the GPU did not release a command allocator within 5s");
     return false;
 }
@@ -1049,9 +1105,11 @@ static id<MTL4CommandBuffer> m4_begin_cb(PMDevice *d, bool upload) {
         // previous frame on this slot has already resolved them (m4_slot_ready).
         d->m4TsOpen = -1;
         d->m4TsPass = -1;
+        d->m4QUsed[slot] = 0;
         if (d->m4Profile) {
             d->m4Ts[slot].used = 0;
             d->m4Ts[slot].count = 0;
+            d->m4Ts[slot].passCount = 0;
         }
     }
     [cb beginCommandBufferWithAllocator:alloc];
@@ -1564,14 +1622,22 @@ static void m4_ts_span_close(PMDevice *d, id<MTL4CommandBuffer> cb) {
     [cb writeTimestampIntoHeap:m4_ts_heap(d) atIndex:(NSUInteger)first + 1];
 }
 
+static uint64_t m4_ticks_ns(PMDevice *d, uint64_t ticks) {
+    if (d->m4TsFreq) return (uint64_t)(((__uint128_t)ticks * 1000000000ULL) / d->m4TsFreq);
+    return pm_ticks_ns(ticks);
+}
+
 // One render pass encoder, whatever number of logical passes were merged into it: the span starts with the encoder and closes when
 // it ends, so merged passes can never lose their coverage. The samples are attributed to the encoder, i.e. the first pass's label
 // (the pass the trace reports, whose merged counter says how many logical passes it carries) and the encoder's bin. A pair
 // reopened at every logical pass end would charge only the first pass of a merged encoder.
 API_AVAILABLE(macos(26.0))
-static void m4_ts_render_open(PMDevice *d, id<MTL4RenderCommandEncoder> e) {
+static void m4_ts_render_open(PMDevice *d, id<MTL4RenderCommandEncoder> e, int passKey) {
     d->m4TsPass = -1;
-    if (!m4_ts_room(d, 3, 2)) return;
+    if (!m4_ts_room(d, 3, 2)) {
+        if (passKey >= 0) atomic_fetch_add(&d->passTimingDropped, 1);
+        return;
+    }
     int slot = (int)(d->m4Seq % PM_M4_FRAMES);
     int first = d->m4Ts[slot].used;
     id<MTL4CounterHeap> heap = m4_ts_heap(d);
@@ -1585,11 +1651,24 @@ static void m4_ts_render_open(PMDevice *d, id<MTL4RenderCommandEncoder> e) {
     d->m4Ts[slot].pair[d->m4Ts[slot].count].first = (uint16_t)(first + 1);
     d->m4Ts[slot].pair[d->m4Ts[slot].count].second = (uint16_t)(first + 2);
     d->m4Ts[slot].pair[d->m4Ts[slot].count++].bin = 1;
+    if (passKey >= 0) {
+        if (d->m4Ts[slot].passCount < PM_M4_TS_PASSES) {
+            if (d->m4Ts[slot].passCount == 0) {
+                pthread_mutex_lock(&d->passLock);
+                d->m4Ts[slot].epoch = d->passEpoch;
+                pthread_mutex_unlock(&d->passLock);
+            }
+            d->m4Ts[slot].pass[d->m4Ts[slot].passCount].base = (uint16_t)first;
+            d->m4Ts[slot].pass[d->m4Ts[slot].passCount++].key = (uint16_t)passKey;
+        } else {
+            atomic_fetch_add(&d->passTimingDropped, 1);
+        }
+    }
     d->m4TsPass = first;
 }
 
-// Writes the encoder's last two timestamps. Must run before the encoder is ended; end_parked_actions and the two upscale encoders
-// are the only places a render encoder ends.
+// Writes the encoder's last two timestamps. Must run before the encoder is ended; end_parked_actions, clear encoders when pass
+// timing is active, and the two upscale encoders are the only places a render encoder ends.
 API_AVAILABLE(macos(26.0))
 static void m4_ts_render_close(PMDevice *d, id<MTL4RenderCommandEncoder> e) {
     int first = d->m4TsPass;
@@ -1600,17 +1679,18 @@ static void m4_ts_render_close(PMDevice *d, id<MTL4RenderCommandEncoder> e) {
     [e writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed afterStage:MTLRenderStageFragment intoHeap:heap atIndex:(NSUInteger)first + 2];
 }
 
-// Resolves one finished frame's heap into the Metal 3 profile bins (durations and sample counts) and frees its slot.
+// Resolves one finished frame's heap into the profile bins and per-pass totals (when pass timing is active) and frees its slot.
 API_AVAILABLE(macos(26.0))
 static void m4_ts_finish(PMDevice *d, uint64_t frame) {
     int slot = (int)(frame % PM_M4_FRAMES);
     id<MTL4CounterHeap> heap = PM_OBJ(id<MTL4CounterHeap>, d->m4TsHeap[slot]);
     if (d->m4Profile && heap) {
-        int used = d->m4Ts[slot].used, count = d->m4Ts[slot].count;
-        if (used > 0 && count > 0) {
+        int used = d->m4Ts[slot].used, count = d->m4Ts[slot].count, pcount = d->m4Ts[slot].passCount;
+        const MTL4TimestampHeapEntry *entries = NULL;
+        if (used > 0 && (count > 0 || pcount > 0)) {
             NSData *data = [heap resolveCounterRange:NSMakeRange(0, (NSUInteger)used)];
-            if (data.length >= used * sizeof(MTL4TimestampHeapEntry)) {
-                const MTL4TimestampHeapEntry *entries = data.bytes;
+            if (data.length >= (NSUInteger)used * sizeof(MTL4TimestampHeapEntry)) {
+                entries = data.bytes;
                 for (int i = 0; i < count; i++) {
                     uint64_t ticks[2];
                     ticks[0] = entries[d->m4Ts[slot].pair[i].first].timestamp;
@@ -1619,14 +1699,42 @@ static void m4_ts_finish(PMDevice *d, uint64_t frame) {
                     // The entries are raw ticks: convert the difference, never the absolute values. Invalid entries read as 0 and
                     // are skipped rather than counted as a zero-length sample.
                     if (ticks[0] && ticks[1] && ticks[1] >= ticks[0]) {
-                        atomic_fetch_add(&d->profileStats[bin], pm_ticks_ns(ticks[1] - ticks[0]));
+                        atomic_fetch_add(&d->profileStats[bin], m4_ticks_ns(d, ticks[1] - ticks[0]));
                         atomic_fetch_add(&d->profileStats[bin + 3], 1);
                     }
                 }
             }
         }
+        if (pcount > 0) {
+            uint64_t dropped = 0, partial = 0;
+            pthread_mutex_lock(&d->passLock);
+            if (d->m4Ts[slot].epoch == d->passEpoch) {
+                for (int i = 0; i < pcount; i++) {
+                    if (!entries) { dropped++; continue; }
+                    uint16_t base = d->m4Ts[slot].pass[i].base;
+                    uint64_t t0 = entries[base].timestamp;
+                    uint64_t t1 = entries[base + 1].timestamp;
+                    uint64_t t2 = entries[base + 2].timestamp;
+                    bool spanOk = t0 && t2 && t2 >= t0;
+                    bool vOk = t0 && t1 && t1 >= t0;
+                    bool fOk = t1 && t2 && t2 >= t1;
+                    if (!spanOk && !vOk && !fOk) { dropped++; continue; }
+                    if (!vOk || !fOk) partial++;
+                    PMPassKey *key = &d->passKeys[d->m4Ts[slot].pass[i].key];
+                    key->count++;
+                    key->vertexNs += vOk ? m4_ticks_ns(d, t1 - t0) : 0;
+                    key->fragmentNs += fOk ? m4_ticks_ns(d, t2 - t1) : 0;
+                    key->spanNs += spanOk ? m4_ticks_ns(d, t2 - t0) : 0;
+                }
+                if (dropped) atomic_fetch_add(&d->passTimingDropped, dropped);
+                if (partial) atomic_fetch_add(&d->passTimingPartial, partial);
+            }
+            pthread_mutex_unlock(&d->passLock);
+        }
+        if (used > 0) [heap invalidateCounterRange:NSMakeRange(0, (NSUInteger)used)];
         d->m4Ts[slot].used = 0;
         d->m4Ts[slot].count = 0;
+        d->m4Ts[slot].passCount = 0;
     }
     atomic_store(&d->m4TsBusy[slot], 0);
 }
@@ -1684,7 +1792,7 @@ static id<MTL4ComputeCommandEncoder> m4_upload_encoder(PMDevice *d, id<MTL4Comma
 // `label` only names the encoder in the -Dpuremetal.m4BarrierLog dump; callers still set the Metal label they want.
 API_AVAILABLE(macos(26.0))
 static id<MTLRenderCommandEncoder> m4_render_encoder(PMDevice *d, id<MTL4CommandBuffer> cb, MTL4RenderPassDescriptor *rp, void *table,
-                                                     bool tracked, bool stamp, const char *label) {
+                                                     bool tracked, bool stamp, const char *label, int passKey) {
     // A compute/blit span still open ends here, at the render encoder that follows it.
     if (stamp) m4_ts_span_close(d, cb);
     bool frameCb = tracked; // the presenter passes false: its encoder belongs to the present command buffer
@@ -1702,7 +1810,7 @@ static id<MTLRenderCommandEncoder> m4_render_encoder(PMDevice *d, id<MTL4Command
         m4_full_barrier(d, e, "consumer", "m4_render_encoder", "none", NULL, MTLStageVertex | MTLStageFragment);
     }
     // After the pass barriers: the span measures the pass's own work, not the wait it needed first.
-    if (stamp) m4_ts_render_open(d, e);
+    if (stamp) m4_ts_render_open(d, e, passKey);
     [e setArgumentTable:PM_OBJ(id<MTL4ArgumentTable>, table) atStages:MTLRenderStageVertex | MTLRenderStageFragment];
     return (id)e;
 }
@@ -1721,14 +1829,14 @@ static MTLRenderPassDescriptor *new_pass_descriptor(PMDevice *d) {
     return [MTLRenderPassDescriptor renderPassDescriptor];
 }
 
-// Encoder opens by kind, for the bench (pm_take_stat 29..34). Clears are counted apart from the passes they break, and are not
-// bracketed by the pass timestamps (only kind 0, a real render pass, opens a span).
+// Encoder opens by kind, for the bench (pm_take_stat 29..34). Clears are counted apart from the passes they break, and are only
+// bracketed by pass timestamps when passTiming explicitly assigns them a passKey.
 static id<MTLRenderCommandEncoder> new_render_encoder_kind(PMDevice *d, id<MTLCommandBuffer> cb, MTLRenderPassDescriptor *rp, int kind,
-                                                           const char *label) {
+                                                           const char *label, int passKey) {
     id<MTLRenderCommandEncoder> e = nil;
     if (d->m4) {
         if (@available(macOS 26.0, *)) {
-            e = m4_render_encoder(d, (id<MTL4CommandBuffer>)cb, (MTL4RenderPassDescriptor *)rp, d->m4Table, true, kind == 0, label);
+            e = m4_render_encoder(d, (id<MTL4CommandBuffer>)cb, (MTL4RenderPassDescriptor *)rp, d->m4Table, true, kind == 0 || passKey >= 0, label, passKey);
         }
     } else {
         e = [cb renderCommandEncoderWithDescriptor:rp];
@@ -1737,8 +1845,9 @@ static id<MTLRenderCommandEncoder> new_render_encoder_kind(PMDevice *d, id<MTLCo
     return e;
 }
 
-static id<MTLRenderCommandEncoder> new_render_encoder(PMDevice *d, id<MTLCommandBuffer> cb, MTLRenderPassDescriptor *rp, const char *label) {
-    return new_render_encoder_kind(d, cb, rp, 0, label);
+static id<MTLRenderCommandEncoder> new_render_encoder(PMDevice *d, id<MTLCommandBuffer> cb, MTLRenderPassDescriptor *rp, const char *label,
+                                                      int passKey) {
+    return new_render_encoder_kind(d, cb, rp, 0, label, passKey);
 }
 
 // Copies `length` bytes into this frame's inline-constant chunks (Metal 4 has no setBytes) and returns their GPU address.
@@ -1915,13 +2024,19 @@ static void submit_finished(PMDevice *d, uint64_t index) {
     done_advance(d->doneMark, &d->completed);
 }
 
+static void query_batch_finish(PMDevice *d, PMQueryBatch *batch, CFTimeInterval start, CFTimeInterval end, bool failed, bool allowFallback);
+static void query_batch_release(PMQueryBatch *batch);
+
 // Signals the frame on the completion timeline: the queue runs the signal after the frame's command buffer, so the listener below
 // learns about completion from the GPU itself instead of from the commit feedback. `index` is the submit Java waits on and advances
 // with the frame number, so the difference between the two is fixed and the timeline can carry both.
 API_AVAILABLE(macos(26.0))
-static void m4_signal_frame(PMDevice *d, uint64_t frame, uint64_t index) {
+static void m4_signal_frame(PMDevice *d, uint64_t frame, uint64_t index, PMQueryBatch *eventQueries) {
     id<MTLSharedEvent> event = PM_OBJ(id<MTLSharedEvent>, d->m4FrameEvent);
-    if (!event || !d->m4EventCompletion) return;
+    if (!event || !d->m4EventCompletion) {
+        query_batch_release(eventQueries);
+        return;
+    }
     if (!d->m4IndexKnown) {
         d->m4IndexBase = (int64_t)index - (int64_t)frame;
         d->m4IndexKnown = true;
@@ -1933,6 +2048,12 @@ static void m4_signal_frame(PMDevice *d, uint64_t frame, uint64_t index) {
                     block:^(id<MTLSharedEvent> signaled, uint64_t value) {
         (void)signaled;
         trace_ev(16, (int64_t)value, 0, 0); // the frame's completion event fired on the listener queue
+        if (eventQueries) {
+            // Only publish genuine Metal 4 GPU counter-heap entries here; if any entry failed to resolve, leave the
+            // batch untouched so MTL4CommitFeedback can apply real GPUStartTime/GPUEndTime instead of CPU time.
+            query_batch_finish(d, eventQueries, 0.0, 0.0, false, false);
+            query_batch_release(eventQueries);
+        }
         pthread_mutex_lock(&d->lock);
         int64_t doneIndex = (int64_t)value + d->m4IndexBase;
         if (doneIndex > 0) done_mark_through(d->doneMark, &d->completed, (uint64_t)doneIndex);
@@ -2044,6 +2165,7 @@ static bool m4_setup(PMDevice *d, id<MTLDevice> device, NSString **why) {
         d->m4PresentCb[i] = pm_retain(presentCbs[i]);
     }
     d->m4Seq = 1;
+    d->m4TsFreq = [device respondsToSelector:@selector(queryTimestampFrequency)] ? [device queryTimestampFrequency] : 0;
     // With profiling off nothing writes these, but they must already mean "no span open": a close (which every frame runs) must
     // find nothing to write into a heap that does not exist.
     d->m4TsOpen = -1;
@@ -2073,6 +2195,7 @@ static void m4_teardown(PMDevice *d) {
         pm_release(d->m4Cb[i]);
         pm_release(d->m4UploadCb[i]);
         pm_release(d->m4TsHeap[i]);
+        pm_release(d->m4QHeap[i]);
     }
     for (int i = 0; i < PM_PRESENT_SLOTS; i++) {
         pm_release(d->m4PresentAlloc[i]);
@@ -2118,6 +2241,7 @@ PM_EXPORT int pm_profile_enable(PMDevice *d) {
                     heap.label = [NSString stringWithFormat:@"Pure Metal passes %d", i];
                     d->m4TsHeap[i] = pm_retain(heap);
                 }
+                d->m4TsFreq = [DEV_MTL(d) respondsToSelector:@selector(queryTimestampFrequency)] ? [DEV_MTL(d) queryTimestampFrequency] : 0;
                 d->m4TsOpen = -1;
                 d->m4TsPass = -1;
                 d->m4Profile = 1;
@@ -2192,10 +2316,9 @@ static id<MTLCounterSampleBuffer> profile_render(PMDevice *d, MTLRenderPassDescr
     return buffer;
 }
 
-// Opt-in per-pass timing: 1 enabled, 0 counters unavailable, -1 Metal 4 (not supported). Implies the stage-boundary counters.
+// Opt-in per-pass timing: 1 enabled, 0 counters unavailable. Implies the stage-boundary / Metal 4 counter-heap timestamps.
 PM_EXPORT int pm_pass_timing_enable(PMDevice *d) {
     @autoreleasepool {
-        if (d->m4) return -1;
         if (!pm_profile_enable(d)) return 0;
         d->passTiming = 1;
         return 1;
@@ -2900,13 +3023,15 @@ static void encode_clear(PMDevice *d, id<MTLTexture> t, NSUInteger level, NSUInt
         rp.colorAttachments[0].clearColor = MTLClearColorMake(color[0], color[1], color[2], color[3]);
     }
     id<MTLCommandBuffer> cb = raw_cb(d);
-    bool timed = d->passTiming && pass_time_begin(d, cb, rp, "clear", (int)t.width, (int)t.height, is_depth_format(t.pixelFormat));
+    bool timed = !d->m4 && d->passTiming && pass_time_begin(d, cb, rp, "clear", (int)t.width, (int)t.height, is_depth_format(t.pixelFormat));
+    int m4Key = d->m4 && d->passTiming ? pass_time_key(d, "clear", (int)t.width, (int)t.height, is_depth_format(t.pixelFormat)) : -1;
     id<MTLCounterSampleBuffer> samples = d->passTiming ? nil : profile_render(d, rp);
-    id<MTLRenderCommandEncoder> encoder = new_render_encoder_kind(d, cb, rp, 1, "clear");
+    id<MTLRenderCommandEncoder> encoder = new_render_encoder_kind(d, cb, rp, 1, "clear", m4Key);
     if (!encoder && timed) pass_time_undo(d);
     if (encoder) {
         PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
         profile_completion(d, cb, samples, true);
+        if (m4Key >= 0) { PM_IF_M4(d) m4_ts_render_close(d, (id<MTL4RenderCommandEncoder>)encoder); }
         [encoder endEncoding];
     }
 }
@@ -2915,6 +3040,7 @@ static void drop_backdrop(PMDevice *d) {
     pm_release(d->bgDst);
     pm_release(d->bgSrc);
     d->bgDst = d->bgSrc = NULL;
+    d->bgZeroAlpha = false;
 }
 
 static void drop_clear(PMDevice *d, int i) {
@@ -3076,13 +3202,347 @@ static bool end_uploads(PMDevice *d) {
     return true;
 }
 
+// --- Frame-level timestamp query pools (F3 GPU timer & Tracy calibration) ---
+
+static void pm_query_pool_retain(PMQueryPool *p) {
+    atomic_fetch_add_explicit(&p->refs, 1, memory_order_relaxed);
+}
+
+static void pm_query_pool_release(PMQueryPool *p) {
+    if (!p) return;
+    if (atomic_fetch_sub_explicit(&p->refs, 1, memory_order_acq_rel) == 1) {
+        pthread_mutex_destroy(&p->lock);
+        free(p->slots);
+        free(p);
+    }
+}
+
+PM_EXPORT void *pm_query_pool_create(int size) {
+    if (size <= 0 || size > (1 << 20)) return NULL;
+    PMQueryPool *p = calloc(1, sizeof(PMQueryPool));
+    if (!p) return NULL;
+    p->slots = calloc((size_t)size, sizeof(PMQuerySlot));
+    if (!p->slots) { free(p); return NULL; }
+    p->size = size;
+    atomic_init(&p->refs, 1);
+    pthread_mutex_init(&p->lock, NULL);
+    return p;
+}
+
+PM_EXPORT void pm_query_pool_destroy(void *pool) {
+    PMQueryPool *p = (PMQueryPool *)pool;
+    if (!p) return;
+    pthread_mutex_lock(&p->lock);
+    p->closed = true;
+    pthread_mutex_unlock(&p->lock);
+    pm_query_pool_release(p);
+}
+
+PM_EXPORT int64_t pm_query_read(void *pool, int index) {
+    PMQueryPool *p = (PMQueryPool *)pool;
+    if (!p || index < 0 || index >= p->size) return -1;
+    int64_t result = -1;
+    pthread_mutex_lock(&p->lock);
+    if (!p->closed && p->slots[index].ready) {
+        result = (int64_t)p->slots[index].valueNs;
+    }
+    pthread_mutex_unlock(&p->lock);
+    return result;
+}
+
+PM_EXPORT void pm_query_read_range(void *pool, int index, int count, int64_t *out) {
+    if (!out || count <= 0) return;
+    PMQueryPool *p = (PMQueryPool *)pool;
+    if (!p || index < 0 || count > p->size - index) {
+        for (int i = 0; i < count; i++) out[i] = -1;
+        return;
+    }
+    pthread_mutex_lock(&p->lock);
+    if (p->closed) {
+        for (int i = 0; i < count; i++) out[i] = -1;
+    } else {
+        for (int i = 0; i < count; i++) {
+            PMQuerySlot *s = &p->slots[index + i];
+            out[i] = s->ready ? (int64_t)s->valueNs : -1;
+        }
+    }
+    pthread_mutex_unlock(&p->lock);
+}
+
+PM_EXPORT uint64_t pm_sample_gpu_timestamp_ns(PMDevice *d) {
+    if (!d) return 0;
+    @autoreleasepool {
+        id<MTLDevice> dev = DEV_MTL(d);
+        if (![dev respondsToSelector:@selector(sampleTimestamps:gpuTimestamp:)]) return 0;
+        MTLTimestamp cpuTs = 0, gpuTs = 0;
+        [dev sampleTimestamps:&cpuTs gpuTimestamp:&gpuTs];
+        if (gpuTs == 0) return 0;
+        // Apple Silicon macOS 14+ returns nanoseconds; guard against raw Mach ticks if a driver reports unscaled ticks.
+        uint64_t machTicks = mach_absolute_time();
+        uint64_t machNs = pm_ticks_ns(machTicks);
+        if (cpuTs > 0 && machTicks > 0 && machNs > 0) {
+            uint64_t diffNs = cpuTs > machNs ? cpuTs - machNs : machNs - cpuTs;
+            uint64_t diffTicks = cpuTs > machTicks ? cpuTs - machTicks : machTicks - cpuTs;
+            if (diffTicks < diffNs) {
+                return d->m4 ? m4_ticks_ns(d, gpuTs) : pm_ticks_ns(gpuTs);
+            }
+        }
+        return (uint64_t)gpuTs;
+    }
+}
+
+API_AVAILABLE(macos(26.0))
+static bool m4_q_ensure_heaps(PMDevice *d) {
+    if (d->m4QHeap[0]) return true;
+    if (d->m4QInitFailed) return false;
+    for (int i = 0; i < PM_M4_FRAMES; i++) {
+        MTL4CounterHeapDescriptor *hd = [MTL4CounterHeapDescriptor new];
+        hd.type = MTL4CounterHeapTypeTimestamp;
+        hd.count = PM_M4_Q_ENTRIES;
+        NSError *error = nil;
+        id<MTL4CounterHeap> heap = [DEV_MTL(d) newCounterHeapWithDescriptor:hd error:&error];
+        if (!heap) {
+            for (int j = 0; j < i; j++) { pm_release(d->m4QHeap[j]); d->m4QHeap[j] = NULL; }
+            d->m4QInitFailed = true;
+            return false;
+        }
+        heap.label = [NSString stringWithFormat:@"Pure Metal query %d", i];
+        d->m4QHeap[i] = pm_retain(heap);
+    }
+    return true;
+}
+
+API_AVAILABLE(macos(26.0))
+static NSData *m4_q_resolve(PMDevice *d, int slot, int used) {
+    if (slot < 0 || used <= 0 || !d->m4QHeap[slot]) return nil;
+    NSData *data = [PM_OBJ(id<MTL4CounterHeap>, d->m4QHeap[slot]) resolveCounterRange:NSMakeRange(0, (NSUInteger)used)];
+    if (!data || data.length < (NSUInteger)used * sizeof(MTL4TimestampHeapEntry)) return nil;
+    return data;
+}
+
+API_AVAILABLE(macos(26.0))
+static uint64_t m4_q_entry_ns(PMDevice *d, NSData *data, int idx) {
+    if (!data || idx < 0) return 0;
+    const MTL4TimestampHeapEntry *entries = data.bytes;
+    uint64_t ticks = entries[idx].timestamp;
+    return ticks ? m4_ticks_ns(d, ticks) : 0;
+}
+
+API_AVAILABLE(macos(26.0))
+static void m4_q_invalidate_and_free_slot(PMDevice *d, int slot, int used) {
+    if (slot < 0) return;
+    if (used > 0 && d->m4QHeap[slot]) {
+        [PM_OBJ(id<MTL4CounterHeap>, d->m4QHeap[slot]) invalidateCounterRange:NSMakeRange(0, (NSUInteger)used)];
+    }
+    atomic_store(&d->m4QBusy[slot], 0);
+}
+
+static void query_batch_release(PMQueryBatch *batch) {
+    if (!batch) return;
+    if (atomic_fetch_sub_explicit(&batch->refs, 1, memory_order_acq_rel) == 1) {
+        pthread_mutex_destroy(&batch->lock);
+        free(batch->items);
+        free(batch);
+    }
+}
+
+static PMQueryBatch *query_batch_take(PMDevice *d, uint64_t frame, bool hasCb) {
+    int slot = (int)(frame % PM_M4_FRAMES);
+    int m4Used = (d->m4 && hasCb) ? d->m4QUsed[slot] : 0;
+    if (d->m4 && hasCb) d->m4QUsed[slot] = 0;
+    if (d->pendingQueryCount <= 0 && m4Used <= 0) return NULL;
+    PMQueryBatch *batch = calloc(1, sizeof(PMQueryBatch));
+    if (!batch) {
+        for (int i = 0; i < d->pendingQueryCount; i++) pm_query_pool_release(d->pendingQueries[i].pool);
+        free(d->pendingQueries);
+        d->pendingQueries = NULL;
+        d->pendingQueryCount = 0;
+        d->pendingQueryCap = 0;
+        return NULL;
+    }
+    atomic_init(&batch->refs, 1);
+    pthread_mutex_init(&batch->lock, NULL);
+    batch->items = d->pendingQueries;
+    batch->count = d->pendingQueryCount;
+    d->pendingQueries = NULL;
+    d->pendingQueryCount = 0;
+    d->pendingQueryCap = 0;
+    if (d->m4 && hasCb && m4Used > 0) {
+        batch->m4Slot = slot;
+        batch->m4Used = m4Used;
+        bool allM4 = batch->count > 0;
+        for (int i = 0; i < batch->count; i++) {
+            if (batch->items[i].m4HeapIndex < 0) { allM4 = false; break; }
+        }
+        batch->allM4 = allM4;
+        atomic_store(&d->m4QBusy[slot], 1);
+    } else {
+        batch->m4Slot = -1;
+        batch->m4Used = 0;
+        batch->allM4 = false;
+    }
+    return batch;
+}
+
+static void query_batch_finish(PMDevice *d, PMQueryBatch *batch, CFTimeInterval start, CFTimeInterval end, bool failed, bool allowFallback) {
+    if (!batch) return;
+    pthread_mutex_lock(&batch->lock);
+    if (batch->done) {
+        pthread_mutex_unlock(&batch->lock);
+        return;
+    }
+    NSData *m4Data = nil;
+    int m4Slot = batch->m4Slot;
+    int m4Used = batch->m4Used;
+    PM_IF_M4(d) {
+        if (!failed && m4Slot >= 0 && m4Used > 0) {
+            m4Data = m4_q_resolve(d, m4Slot, m4Used);
+        }
+    }
+    if (!allowFallback) {
+        // Shared-event early path: only commit if every item resolved cleanly from the Metal 4 counter heap.
+        bool allResolved = false;
+        PM_IF_M4(d) {
+            if (m4Data && batch->count > 0) {
+                allResolved = true;
+                for (int i = 0; i < batch->count; i++) {
+                    int idx = batch->items[i].m4HeapIndex;
+                    if (idx < 0 || idx >= m4Used || m4_q_entry_ns(d, m4Data, idx) == 0) {
+                        allResolved = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!allResolved) {
+            pthread_mutex_unlock(&batch->lock);
+            return;
+        }
+    }
+    uint64_t startNs = pm_sec_ns(start);
+    uint64_t endNs = pm_sec_ns(end);
+    if (endNs < startNs) endNs = startNs;
+    if (!failed && startNs == 0) {
+        uint64_t now = pm_now_ns();
+        startNs = now;
+        endNs = now;
+    }
+    for (int i = 0; i < batch->count; i++) {
+        PMPendingQuery *q = &batch->items[i];
+        PMQueryPool *p = q->pool;
+        if (!failed) {
+            uint64_t ts = 0;
+            PM_IF_M4(d) {
+                if (m4Data && q->m4HeapIndex >= 0 && q->m4HeapIndex < m4Used) {
+                    ts = m4_q_entry_ns(d, m4Data, q->m4HeapIndex);
+                }
+            }
+            if (ts == 0) {
+                ts = q->isEnd ? endNs : startNs;
+            }
+            if (ts > 0) {
+                pthread_mutex_lock(&p->lock);
+                if (!p->closed && q->index < (uint32_t)p->size && p->slots[q->index].gen == q->gen) {
+                    p->slots[q->index].valueNs = ts;
+                    p->slots[q->index].ready = 1;
+                }
+                pthread_mutex_unlock(&p->lock);
+            }
+        }
+        pm_query_pool_release(p);
+    }
+    PM_IF_M4(d) {
+        m4_q_invalidate_and_free_slot(d, m4Slot, m4Used);
+    }
+    batch->done = true;
+    pthread_mutex_unlock(&batch->lock);
+}
+
+// Returns 1 if recorded (or pool is closed), 0 if recording capacity/allocation failed (leaving slot state unchanged).
+PM_EXPORT int pm_query_write(PMDevice *d, void *pool, int index, int inRenderPass) {
+    PMQueryPool *p = (PMQueryPool *)pool;
+    if (!d || !p || index < 0 || index >= p->size) return 0;
+    @autoreleasepool {
+        // Reserve pending-list capacity BEFORE bumping slot generation or writing into a Metal 4 counter heap.
+        if (d->pendingQueryCount >= PM_QUERY_PENDING_MAX) return 0;
+        if (d->pendingQueryCount == d->pendingQueryCap) {
+            int newCap = d->pendingQueryCap ? d->pendingQueryCap * 2 : 16;
+            if (newCap > PM_QUERY_PENDING_MAX) newCap = PM_QUERY_PENDING_MAX;
+            PMPendingQuery *grown = realloc(d->pendingQueries, (size_t)newCap * sizeof(PMPendingQuery));
+            if (!grown) return 0;
+            d->pendingQueries = grown;
+            d->pendingQueryCap = newCap;
+        }
+
+        pthread_mutex_lock(&p->lock);
+        if (p->closed) {
+            pthread_mutex_unlock(&p->lock);
+            return 1;
+        }
+        uint64_t gen = ++p->slots[index].gen;
+        p->slots[index].ready = 0;
+        p->slots[index].valueNs = 0;
+        pthread_mutex_unlock(&p->lock);
+
+        bool hasWork = (d->cb != NULL) || (d->uploadCb != NULL) || (d->render != NULL) || (d->parked != NULL)
+            || (d->blit != NULL) || (d->clearCount > 0) || (d->bgDst != NULL);
+        // On Metal 3, animated-texture/chunk uploads during tick() can open blit/uploadCb before TimerQuery.beginProfile()
+        // runs. Treat the first pre-render query of a submit as the start timestamp so begin/end don't collapse to GPUEndTime.
+        uint8_t isEnd = (inRenderPass || (hasWork && (d->pendingQueryCount > 0 || d->frameRendered))) ? 1 : 0;
+        int32_t m4HeapIndex = -1;
+
+        PM_IF_M4(d) {
+            if (m4_q_ensure_heaps(d)) {
+                if (inRenderPass && d->render) {
+                    int slot = (int)(d->m4Seq % PM_M4_FRAMES);
+                    if (d->m4QUsed[slot] < PM_M4_Q_ENTRIES) {
+                        int qIdx = d->m4QUsed[slot]++;
+                        [PM_OBJ(id<MTL4RenderCommandEncoder>, d->render)
+                            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                               afterStage:MTLRenderStageFragment
+                                                 intoHeap:PM_OBJ(id<MTL4CounterHeap>, d->m4QHeap[slot])
+                                                  atIndex:(NSUInteger)qIdx];
+                        m4HeapIndex = qIdx;
+                    }
+                } else if (!inRenderPass) {
+                    // Close open blit/parked encoders so the command-buffer timestamp orders strictly after prior GPU work.
+                    end_parked(d);
+                    end_blit(d);
+                    id<MTLCommandBuffer> cb = current_cb(d);
+                    if (cb) {
+                        int slot = (int)(d->m4Seq % PM_M4_FRAMES);
+                        if (d->m4QUsed[slot] < PM_M4_Q_ENTRIES) {
+                            int qIdx = d->m4QUsed[slot]++;
+                            [(id<MTL4CommandBuffer>)cb writeTimestampIntoHeap:PM_OBJ(id<MTL4CounterHeap>, d->m4QHeap[slot])
+                                                                      atIndex:(NSUInteger)qIdx];
+                            m4HeapIndex = qIdx;
+                        }
+                    }
+                }
+            }
+        }
+
+        pm_query_pool_retain(p);
+        d->pendingQueries[d->pendingQueryCount++] = (PMPendingQuery){
+            .pool = p,
+            .index = (uint32_t)index,
+            .gen = gen,
+            .isEnd = isEnd,
+            .m4HeapIndex = m4HeapIndex,
+        };
+        return 1;
+    }
+}
+
 // Commits the early-upload command buffer on its own and releases it. With -Dpuremetal.m4TrackedUploads the frame commits it together
 // with its own command buffer instead (m4_commit_buffers in pm_submit), so this path is then only taken by a frame that recorded nothing.
 // `index` is the submit that only carries these uploads, marked finished when they are (0 when a frame's commit covers them).
-static void commit_upload_cb(PMDevice *d, uint64_t index) {
+static void commit_upload_cb(PMDevice *d, uint64_t index, PMQueryBatch *queries) {
     id<MTLCommandBuffer> ucb = PM_OBJ(id<MTLCommandBuffer>, d->uploadCb);
     atomic_fetch_add(&d->handlers, 1);
     commit_cb(d, ucb, ^(CFTimeInterval start, CFTimeInterval end, NSString *failure) {
+        query_batch_finish(d, queries, start, end, failure != nil, true);
+        query_batch_release(queries);
         CFTimeInterval gpu = end - start;
         if (gpu > 0) {
             atomic_fetch_add(&d->uploadGpuNs, (uint64_t)(gpu * 1e9));
@@ -3114,7 +3574,7 @@ static void commit_upload_cb(PMDevice *d, uint64_t index) {
 // Ends and commits the early-upload command buffer; the frame's is committed after it.
 static void commit_uploads(PMDevice *d) {
     if (!end_uploads(d)) return;
-    commit_upload_cb(d, 0);
+    commit_upload_cb(d, 0, NULL);
 }
 
 PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
@@ -3132,14 +3592,19 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
         bool uploads = end_uploads(d);
         id<MTLCommandBuffer> ucb = paired && uploads ? PM_OBJ(id<MTLCommandBuffer>, d->uploadCb) : NULL;
         id<MTLCommandBuffer> cb = current_cb(d);
+        uint64_t frame = d->m4Seq;
+        PMQueryBatch *queries = query_batch_take(d, frame, cb != nil);
+        d->frameRendered = false;
         if (!cb) {
             // No frame command buffer to carry this submit's index, so its completion comes from whatever did run. Uploads committed
             // for this index were already sent to the GPU (unpaired: they are their own commit), so their callback has to mark it; only
             // a submit that committed nothing at all is finished right here. Without this the prefix would stall on the gap and every
             // later pm_wait would time out.
             if (uploads) {
-                commit_upload_cb(d, index);
+                commit_upload_cb(d, index, queries);
             } else {
+                query_batch_finish(d, queries, 0.0, 0.0, false, true);
+                query_batch_release(queries);
                 pthread_mutex_lock(&d->lock);
                 submit_finished(d, index);
                 pthread_cond_broadcast(&d->cond);
@@ -3149,10 +3614,9 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
         }
         // Unpaired uploads are a commit of their own, and commit order is execution order on the queue: they land ahead of the frame, so
         // the frame's completion covers them (index 0) instead of the uploads carrying this index.
-        if (!paired && uploads) commit_upload_cb(d, 0);
+        if (!paired && uploads) commit_upload_cb(d, 0, NULL);
         atomic_fetch_add(&d->handlers, 1);
         trace_ev(5, (int64_t)index, 0, 0);
-        uint64_t frame = d->m4Seq;
         PMProbeSlot *probe = d->probeCur; // this submit's probe buffers are free again once its commit has finished
         d->probeCur = NULL;
         PM_IF_M4(d) {
@@ -3173,6 +3637,8 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
             trace_ev(4, (int64_t)index, (int64_t)pm_sec_ns(start), (int64_t)pm_sec_ns(end));
             trace_ev(15, (int64_t)index, (int64_t)frame, 0); // commit feedback arrived (Metal 4) / completion handler fired
             PM_IF_M4(d) m4_ts_finish(d, frame);
+            query_batch_finish(d, queries, start, end, failure != nil, true);
+            query_batch_release(queries);
             CFTimeInterval gpu = end - start;
             if (gpu > 0) {
                 atomic_fetch_add(&d->gpuNs, (uint64_t)(gpu * 1e9));
@@ -3194,6 +3660,13 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
             pthread_mutex_unlock(&d->lock);
             atomic_fetch_sub(&d->handlers, 1);
         };
+        PMQueryBatch *eventQueries = NULL;
+        PM_IF_M4(d) {
+            if (d->m4EventCompletion && d->m4FrameEvent && queries && queries->allM4) {
+                eventQueries = queries;
+                atomic_fetch_add_explicit(&eventQueries->refs, 1, memory_order_relaxed);
+            }
+        }
         if (ucb) {
             // One commit, the uploads first: the GPU runs them in that order, so every encoder of the frame sees the copies as earlier
             // work on the queue (its tracked barriers wait for Blit) while nothing makes the frame wait for them to finish. The frame's
@@ -3212,7 +3685,7 @@ PM_EXPORT void pm_submit(PMDevice *d, uint64_t index) {
         }
         PM_IF_M4(d) {
             m4_flush_signals(d);
-            m4_signal_frame(d, frame, index);
+            m4_signal_frame(d, frame, index, eventQueries);
             atomic_fetch_add(&d->m4Seq, 1);
         }
         PM_ENC_COUNT(PM_ENC_CBS_COMMITTED, 1);
@@ -3354,12 +3827,23 @@ PM_EXPORT void pm_device_destroy(PMDevice *d) {
         // Clears that were never flushed still retain their texture.
         for (int i = 0; i < d->clearCount; i++) pm_release(d->clears[i].texture);
         d->clearCount = 0;
+        // Pending timestamp queries never submitted still retain their pool.
+        for (int i = 0; i < d->pendingQueryCount; i++) pm_query_pool_release(d->pendingQueries[i].pool);
+        free(d->pendingQueries);
+        d->pendingQueries = NULL;
+        d->pendingQueryCount = 0;
+        d->pendingQueryCap = 0;
         pm_release(d->bgDst);
         pm_release(d->bgSrc);
         pm_release(d->mtl4Compiler);
         pm_release(d->upscaleDepthPipeline);
         pm_release(d->presentPipeline);
         pm_release(d->presentLibrary);
+        pm_release(d->presentHdrPipeline);
+        pm_release(d->presentHdrLibrary);
+        pm_release(d->alphaZeroLibrary);
+        for (int i = 0; i < 3; i++) pm_release(d->alphaZeroPipelines[i]);
+        pm_release(d->alphaZeroDepthState);
         pm_release(d->depthClearLibrary);
         pm_release(d->depthClearPipeline);
         pm_release(d->depthClearState);
@@ -4046,7 +4530,7 @@ static bool partial_depth_clear(PMDevice *d, void *depth, double value, int widt
         rp.stencilAttachment.loadAction = MTLLoadActionLoad;
         rp.stencilAttachment.storeAction = MTLStoreActionStore;
     }
-    id<MTLRenderCommandEncoder> enc = new_render_encoder_kind(d, cb, rp, 1, "partial depth clear");
+    id<MTLRenderCommandEncoder> enc = new_render_encoder_kind(d, cb, rp, 1, "partial depth clear", -1);
     if (!enc) return false;
     [enc setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, d->partialDepthPipeline)];
     [enc setDepthStencilState:PM_OBJ(id<MTLDepthStencilState>, d->partialDepthState)];
@@ -4077,7 +4561,7 @@ static bool partial_color_clear(PMDevice *d, void *destination, const float *col
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(color[0], color[1], color[2], color[3]);
-    id<MTLRenderCommandEncoder> enc = new_render_encoder_kind(d, cb, rp, 1, "partial color clear");
+    id<MTLRenderCommandEncoder> enc = new_render_encoder_kind(d, cb, rp, 1, "partial color clear", -1);
     if (!enc) { pm_release(temporary); return false; }
     [enc endEncoding];
     id<MTLBlitCommandEncoder> blit = blit_encoder(d, 3);
@@ -4100,6 +4584,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
                             int sx, int sy, int sw, int sh, const char *label) {
     PM_ENC_SCOPE(PM_ENC_PASS);
     @autoreleasepool {
+        d->frameRendered = true;
         end_blit(d);
         bool partial = sx != 0 || sy != 0 || sw != width || sh != height;
         bool hasClear = depth && depthLoad == 1;
@@ -4164,6 +4649,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         // never stored and reloaded in between. Anything else (or any failure to set that up) flushes it as its own pass.
         void *backdropSrc = NULL;
         float backdropSharp = 0.0f;
+        bool backdropZeroAlpha = false;
         int backdropColor = -1;
         if (d->bgDst && !d->parked) {
             int only = -1, used = 0;
@@ -4181,7 +4667,9 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
                     && (depth ? ensure_upscale_depth_pipeline(d, bt.pixelFormat) : ensure_upscale_pipeline(d, bt.pixelFormat))) {
                 backdropSrc = d->bgSrc;
                 backdropSharp = d->bgSharp;
+                backdropZeroAlpha = d->bgZeroAlpha;
                 d->bgSharp = 0.0f;
+                d->bgZeroAlpha = false;
                 backdropColor = only;
                 d->bgSrc = NULL;
                 pm_release(d->bgDst);
@@ -4272,14 +4760,16 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         }
         id<MTLCommandBuffer> cb = current_cb(d);
         // -Dpuremetal.passTiming: this logical pass is its own encoder (merging is off above) with its own samples.
-        bool timed = d->passTiming && pass_time_begin(d, cb, rp, label, width, height, depth != NULL);
+        bool timed = !d->m4 && d->passTiming && pass_time_begin(d, cb, rp, label, width, height, depth != NULL);
+        int m4Key = d->m4 && d->passTiming ? pass_time_key(d, label, width, height, depth != NULL) : -1;
         id<MTLCounterSampleBuffer> samples = d->passTiming ? nil : profile_render(d, rp);
-        id<MTLRenderCommandEncoder> enc = new_render_encoder(d, cb, rp, label);
+        id<MTLRenderCommandEncoder> enc = new_render_encoder(d, cb, rp, label, m4Key);
         if (!enc) {
             if (timed) pass_time_undo(d);
             if (backdropSrc) { // keep the stretch pending: the next pass or the frame's end lands it
                 d->bgSrc = backdropSrc;
                 d->bgSharp = backdropSharp;
+                d->bgZeroAlpha = backdropZeroAlpha;
                 d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(colors[backdropColor])));
             }
             return 0;
@@ -4311,7 +4801,7 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         }
         if (label && d->debugLabels) enc.label = [NSString stringWithUTF8String:label];
         if (backdropSrc) {
-            draw_stretch(d, enc, PM_OBJ(id<MTLTexture>, backdropSrc), width, height, depth != NULL, backdropSharp);
+            draw_stretch(d, enc, PM_OBJ(id<MTLTexture>, backdropSrc), width, height, depth != NULL, backdropSharp, backdropZeroAlpha);
             pm_release(backdropSrc);
         }
         MTLViewport vp = { 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 };
@@ -4776,31 +5266,32 @@ typedef struct PMSurface {
     void *listener;        // MTLSharedEventListener, retained
     void *event;           // id<MTLSharedEvent>, retained
     void *presentQueue;    // id<MTLCommandQueue>, retained
-    void *pipeline;        // id<MTLRenderPipelineState>, retained, built for the layer's pixel format
+    void *sdrPipeline;     // id<MTLRenderPipelineState>, retained, BGRA8Unorm SDR presenting
+    void *hdrPipeline;     // id<MTLRenderPipelineState>, retained, RGBA16Float HDR presenting (lazy)
     _Atomic uint64_t targetSize; // packed drawable width/height, read by GPU completion callbacks
     uint64_t eventValue;   // last value signalled (render thread)
     int vsync;             // render thread
     int allowTearing;      // render thread, with vsync off: 1 never syncs, 0 always does, -1 (High Refresh Boost) syncs below 200 Hz
-    // Layer settings requested by pm_surface_configure, applied on the present queue before the next drawable is taken
-    // (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
+    // Layer settings requested by pm_surface_configure / pm_surface_set_hdr, applied on the present queue before the next drawable
+    // is taken (the layer must not change while that queue is inside nextDrawable, and the render thread must not wait for it).
     pthread_mutex_t cfgLock;
     int cfgPending, cfgWidth, cfgHeight, cfgDisplaySync;
-    // HDR highlights (experimental, fixed at creation): the layer is a linear RGBA16Float extended-range surface and the
-    // present pass boosts bright pixels up to hdrBoost (1.0 = SDR look). Set by pm_surface_set_hdr_boost.
+    int cfgHdr, cfgHdrPending;
+    // HDR highlights (live-toggleable): when enabled the layer is a linear RGBA16Float extended-range surface and the
+    // present pass boosts bright world pixels (where alpha < 1) up to slotHdrBoost (1.0 = SDR look). Set by pm_surface_set_hdr_boost.
     int hdr;
     atomic_uint hdrBoostBits;         // float bits of the boost target (from the potential headroom), 1.0f when off
-    void *hdrWatcher;                 // PMHdrWatcher, retained; NULL on a normal layer. Owns the screen snapshot (main thread writes it)
+    void *hdrWatcher;                 // PMHdrWatcher, retained (guarded by cfgLock); NULL when HDR is off
     atomic_int hdrLinear;             // the layer holds linear values in the display's own space (else sRGB passthrough); written by the present thread, read by it and by pm_surface_hdr_linear
+    float appliedHeadroom;            // last contentsHeadroom committed to CAMetalLayer (0 = standard/untagged, present thread only)
     float hdrSmoothed;                // headroom the present pass uses: eases toward the watcher's value (present thread only)
     uint64_t hdrSmoothedNs;           // when hdrSmoothed was last updated, 0 = never
-    // Chosen once at surface creation, so a normal layer runs exactly the code it always did and HDR adds nothing to it.
-    void (*applyConfig)(struct PMSurface *);
-    void (*bind)(struct PMSurface *, int, id<MTLRenderCommandEncoder>, id<MTLTexture>, uint32_t);
     void *staging[PM_PRESENT_SLOTS];          // id<MTLTexture>
     // The frame's own render target, retained, when it is presented without a staging copy (see pm_surface_blit).
     _Atomic(void *) direct[PM_PRESENT_SLOTS];
     uint64_t slotValue[PM_PRESENT_SLOTS];     // event value of the frame in each slot
     double slotTime[PM_PRESENT_SLOTS];        // CACurrentMediaTime() when the frame was submitted for presenting
+    float slotHdrBoost[PM_PRESENT_SLOTS];     // boost cap snapshotted for this slot's frame in pm_surface_blit
     atomic_int slotBusy[PM_PRESENT_SLOTS];    // set until the slot's frame is presented or skipped
     void *slotsFree;                          // dispatch_semaphore_t counting free slots, retained
     // With vsync every frame is shown in order, so the game must not run ahead by more than this many frames
@@ -4827,8 +5318,8 @@ typedef struct PMSurface {
     // frame's, anchored to the last time macOS reported a frame on screen.
     atomic_int pacing;                // option on and vsync on
     _Atomic uint64_t refreshNs;       // display refresh interval, 0 if unknown
-    _Atomic uint64_t anchorNs;        // presentedTime of the last frame shown, in ns of CACurrentMediaTime()
-    _Atomic uint64_t anchorSeq;       // that frame's present sequence number
+    uint64_t anchorNs;                // presentedTime of the last frame shown, in ns of CACurrentMediaTime() (guarded by cfgLock)
+    uint64_t anchorSeq;               // that frame's present sequence number (guarded by cfgLock)
     _Atomic uint64_t lastShownNs;     // presentedTime of the previous shown frame, for stats[7..8]
     uint64_t presentSeq;              // present dispatch queue only
 } PMSurface;
@@ -4877,10 +5368,25 @@ static NSString *const PRESENT_SHADER =
 // The result is applied as a whole scale so hue holds. The
 // trigger keeps a little content above 1.0 even at headroom 1.0 (the system clamps it, which is the same as an SDR clip for these
 // near-white pixels) so macOS has a reason to allocate headroom; once it does, the limit follows the current value up.
-#define HDR_WHITE_START "0.90"
-#define HDR_WARM_START "0.85"
-#define HDR_WARM_SAT "0.45"
+#define HDR_WHITE_START "0.92"
+#define HDR_WARM_START "0.78"
+#define HDR_WARM_END "0.90"
+#define HDR_WARM_SAT "0.34"
 #define HDR_TRIGGER "1.25"
+// Shared world highlight weight (0..1): computed at the world/HUD boundary before HUD draws and stored in alpha as (1 - w),
+// so subsequent HUD alpha blending (dstA = srcA + dstA*(1-srcA)) multiplies w by (1 - hudCoverage) and translucent HUD pixels
+// over non-highlight world pixels can never create false highlights.
+#define PM_HDR_WORLD_WEIGHT_FN \
+    "float pm_hdr_world_weight(float3 rgb) {\n" \
+    "  float mx = max(rgb.r, max(rgb.g, rgb.b)), mn = min(rgb.r, min(rgb.g, rgb.b));\n" \
+    "  float sat = (mx - mn) / max(mx, 1e-4);\n" \
+    "  float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));\n" \
+    "  float white = smoothstep(" HDR_WHITE_START ", 1.0, luma) * (1.0 - smoothstep(0.18, 0.38, sat));\n" \
+    "  float t = (rgb.g - rgb.b) / max(rgb.r - rgb.b, 1e-4);\n" \
+    "  float hue = smoothstep(-0.04, 0.0, rgb.r - rgb.g) * smoothstep(-0.02, 0.02, rgb.g - rgb.b) * smoothstep(0.08, 0.25, t);\n" \
+    "  float warm = smoothstep(" HDR_WARM_START ", " HDR_WARM_END ", mx) * smoothstep(" HDR_WARM_SAT ", 0.55, sat) * hue;\n" \
+    "  return max(white, warm);\n" \
+    "}\n"
 // Appended to PRESENT_SHADER (same V and vertex function) only when the layer is HDR.
 static NSString *const PRESENT_HDR_SHADER =
     @"float3 pm_srgb_decode(float3 c) {\n"
@@ -4889,20 +5395,18 @@ static NSString *const PRESENT_HDR_SHADER =
      "fragment float4 pm_present_hdr_fs(V in [[stage_in]], texture2d<float> src [[texture(0)]], constant float4 *pp [[buffer(0)]]) {\n"
      "  float4 p = pp[0], q = pp[1];\n"
      "  uint2 c = uint2(in.pos.xy);\n"
-     "  float3 rgb = src.read(uint2(c.x, uint(p.x) - 1 - c.y)).rgb;\n"
+     "  float4 s = src.read(uint2(c.x, uint(p.x) - 1 - c.y));\n"
+     "  float3 rgb = s.rgb;\n"
      "  if (p.z < 0.5) return float4(rgb, 1.0);\n"
-     "  float mx = max(rgb.r, max(rgb.g, rgb.b)), mn = min(rgb.r, min(rgb.g, rgb.b));\n"
-     "  float sat = (mx - mn) / max(mx, 1e-4);\n"
-     "  float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));\n"
-     "  float white = smoothstep(" HDR_WHITE_START ", 1.0, luma) * (1.0 - smoothstep(0.15, 0.4, sat));\n"
-     "  float t = (rgb.g - rgb.b) / max(rgb.r - rgb.b, 1e-4);\n"
-     "  float hue = step(rgb.g, rgb.r) * step(rgb.b, rgb.g) * smoothstep(0.1, 0.3, t);\n"
-     "  float warm = smoothstep(" HDR_WARM_START ", 1.0, mx) * smoothstep(" HDR_WARM_SAT ", 0.75, sat) * hue;\n"
-     "  float w = max(white, warm);\n"
-     "  float cap = p.y;\n"
+     // Alpha holds (1 - worldWeight) written at the world/HUD boundary and attenuated by HUD alpha blending:
+     // 1 - s.a == worldWeight * (1 - hudCoverage).
+     "  float w = saturate(1.0 - s.a);\n"
+     "  float cap = max(p.y, 1.0);\n"
      "  float3 lin = pm_srgb_decode(rgb);\n"
-     "  cap = max(cap, 1.0);\n"
-     "  float3 outc = lin * mix(1.0, cap, w);\n"
+     "  float linMax = max(lin.r, max(lin.g, lin.b));\n"
+     // Lift boosted warm/white pixels so their peak reaches cap (bounded <= cap for the roll-off and identity at cap == 1).
+     "  float targetScale = min(cap / max(linMax, 0.50), cap * 1.45);\n"
+     "  float3 outc = lin * mix(1.0, targetScale, w * saturate((cap - 1.0) * 4.0));\n"
      "  float limit = max(q.x, " HDR_TRIGGER ");\n"
      "  float m = max(outc.r, max(outc.g, outc.b));\n"
      "  float lim = min(limit, cap);\n"
@@ -4917,25 +5421,167 @@ static NSString *const PRESENT_HDR_SHADER =
      "}\n";
 
 static int ensure_present_pipeline(PMDevice *d, MTLPixelFormat format, char *err, int errCap) {
-    if (d->presentPipeline && d->presentFormat == format) return 1;
+    bool isHdr = format == MTLPixelFormatRGBA16Float;
+    void **libSlot = isHdr ? &d->presentHdrLibrary : &d->presentLibrary;
+    void **pipeSlot = isHdr ? &d->presentHdrPipeline : &d->presentPipeline;
+    if (*pipeSlot) return 1;
     NSError *error = nil;
-    if (!d->presentLibrary) {
-        id<MTLLibrary> lib = pm_new_library(d, format == MTLPixelFormatRGBA16Float ? [PRESENT_SHADER stringByAppendingString:PRESENT_HDR_SHADER] : PRESENT_SHADER, nil, &error);
+    if (!*libSlot) {
+        NSString *source = isHdr ? [PRESENT_SHADER stringByAppendingString:PRESENT_HDR_SHADER] : PRESENT_SHADER;
+        id<MTLLibrary> lib = pm_new_library(d, source, nil, &error);
         if (!lib) { pm_copy_string(error.localizedDescription, err, errCap); return 0; }
-        d->presentLibrary = pm_retain(lib);
+        *libSlot = pm_retain(lib);
     }
-    id<MTLLibrary> lib = PM_OBJ(id<MTLLibrary>, d->presentLibrary);
+    id<MTLLibrary> lib = PM_OBJ(id<MTLLibrary>, *libSlot);
     MTLRenderPipelineDescriptor *p = [MTLRenderPipelineDescriptor new];
-    p.label = @"Pure Metal present";
+    p.label = isHdr ? @"Pure Metal present (HDR)" : @"Pure Metal present";
     p.vertexFunction = [lib newFunctionWithName:@"pm_present_vs"];
-    p.fragmentFunction = [lib newFunctionWithName:format == MTLPixelFormatRGBA16Float ? @"pm_present_hdr_fs" : @"pm_present_fs"];
+    p.fragmentFunction = [lib newFunctionWithName:isHdr ? @"pm_present_hdr_fs" : @"pm_present_fs"];
     p.colorAttachments[0].pixelFormat = format;
     id<MTLRenderPipelineState> state = [DEV_MTL(d) newRenderPipelineStateWithDescriptor:p error:&error];
     if (!state) { pm_copy_string(error.localizedDescription, err, errCap); return 0; }
-    pm_release(d->presentPipeline);
-    d->presentPipeline = pm_retain(state);
-    d->presentFormat = format;
+    *pipeSlot = pm_retain(state);
     return 1;
+}
+
+static NSString *const ALPHA_ZERO_SHADER =
+    @"#include <metal_stdlib>\n"
+     "using namespace metal;\n"
+     PM_HDR_WORLD_WEIGHT_FN
+     "struct V { float4 pos [[position]]; };\n"
+     "vertex V pm_alpha_vs(uint vid [[vertex_id]]) {\n"
+     "  float2 p = float2((vid << 1) & 2, vid & 2);\n"
+     "  V o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;\n"
+     "}\n"
+     // Apple Silicon tile-memory framebuffer fetch: computes world highlight weight before HUD draws and stores (1 - w) in alpha.
+     "fragment float4 pm_alpha_zero_fs(float4 cur [[color(0)]]) {\n"
+     "  return float4(0.0, 0.0, 0.0, 1.0 - pm_hdr_world_weight(cur.rgb));\n"
+     "}\n";
+
+static int alpha_zero_depth_slot(MTLPixelFormat depthFormat) {
+    if (depthFormat == MTLPixelFormatInvalid) return 0;
+    if (depthFormat == MTLPixelFormatDepth32Float) return 1;
+    if (depthFormat == MTLPixelFormatDepth32Float_Stencil8) return 2;
+    return -1;
+}
+
+static id<MTLRenderPipelineState> ensure_alpha_zero_pipeline(PMDevice *d, MTLPixelFormat colorFormat, MTLPixelFormat depthFormat) {
+    int slot = alpha_zero_depth_slot(depthFormat);
+    if (slot < 0) return nil;
+    if (d->alphaZeroPipelines[slot] && d->alphaZeroColorFormats[slot] == colorFormat) {
+        return PM_OBJ(id<MTLRenderPipelineState>, d->alphaZeroPipelines[slot]);
+    }
+    NSError *error = nil;
+    if (!d->alphaZeroLibrary) {
+        id<MTLLibrary> lib = pm_new_library(d, ALPHA_ZERO_SHADER, nil, &error);
+        if (!lib) { set_error(d, error.localizedDescription); return nil; }
+        d->alphaZeroLibrary = pm_retain(lib);
+    }
+    if (!d->alphaZeroDepthState) {
+        MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
+        dd.depthCompareFunction = MTLCompareFunctionAlways;
+        dd.depthWriteEnabled = NO;
+        id<MTLDepthStencilState> ds = [DEV_MTL(d) newDepthStencilStateWithDescriptor:dd];
+        if (!ds) return nil;
+        d->alphaZeroDepthState = pm_retain(ds);
+    }
+    id<MTLLibrary> lib = PM_OBJ(id<MTLLibrary>, d->alphaZeroLibrary);
+    MTLRenderPipelineDescriptor *p = [MTLRenderPipelineDescriptor new];
+    p.label = @"Pure Metal HDR world mask";
+    p.vertexFunction = [lib newFunctionWithName:@"pm_alpha_vs"];
+    p.fragmentFunction = [lib newFunctionWithName:@"pm_alpha_zero_fs"];
+    p.colorAttachments[0].pixelFormat = colorFormat;
+    p.colorAttachments[0].writeMask = MTLColorWriteMaskAlpha;
+    if (depthFormat != MTLPixelFormatInvalid) {
+        p.depthAttachmentPixelFormat = depthFormat;
+        if (depthFormat == MTLPixelFormatDepth32Float_Stencil8) p.stencilAttachmentPixelFormat = depthFormat;
+    }
+    id<MTLRenderPipelineState> state = [DEV_MTL(d) newRenderPipelineStateWithDescriptor:p error:&error];
+    if (!state) { set_error(d, error.localizedDescription); return nil; }
+    pm_release(d->alphaZeroPipelines[slot]);
+    d->alphaZeroPipelines[slot] = pm_retain(state);
+    d->alphaZeroColorFormats[slot] = colorFormat;
+    return state;
+}
+
+static bool same_texture_view(void *a, void *b) {
+    if (a == b) return true;
+    if (!a || !b || root_texture(a) != root_texture(b)) return false;
+    id<MTLTexture> ta = PM_OBJ(id<MTLTexture>, a), tb = PM_OBJ(id<MTLTexture>, b);
+    return ta.parentRelativeLevel == tb.parentRelativeLevel
+        && ta.parentRelativeSlice == tb.parentRelativeSlice
+        && ta.width == tb.width && ta.height == tb.height;
+}
+
+// HDR Highlights: called at the world/HUD boundary (FogRenderer.endFrame) so world highlight weight is computed from pre-HUD
+// world RGB and stored in alpha as (1 - w) before GuiRenderer draws the 2D HUD and menus (whose alpha writes attenuate it).
+// Zero extra passes when folded into the RenderScale upscale draw or drawn directly into the parked world render pass.
+PM_EXPORT void pm_clear_alpha(PMDevice *d, void *colorView) {
+    PM_ENC_SCOPE(PM_ENC_PASS);
+    @autoreleasepool {
+        if (!colorView) return;
+        if (d->bgDst && same_texture_view(d->bgDst, colorView)) {
+            d->bgZeroAlpha = true;
+            return;
+        }
+        id<MTLTexture> color = PM_OBJ(id<MTLTexture>, colorView);
+        // Native 100% scale hot path: the world's last render pass is still parked on this exact subresource and full extent.
+        if (!d->render && d->parked && d->parkedColors[0]
+            && same_texture_view(d->parkedColors[0], colorView)
+            && d->parkedWidth == (int)color.width && d->parkedHeight == (int)color.height) {
+            bool singleColor = true;
+            for (int i = 1; i < PM_MAX_COLOR; i++) if (d->parkedColors[i]) { singleColor = false; break; }
+            if (singleColor) {
+                id<MTLTexture> c = PM_OBJ(id<MTLTexture>, d->parkedColors[0]);
+                MTLPixelFormat dfmt = d->parkedDepth ? PM_OBJ(id<MTLTexture>, d->parkedDepth).pixelFormat : MTLPixelFormatInvalid;
+                id<MTLRenderPipelineState> pipe = ensure_alpha_zero_pipeline(d, c.pixelFormat, dfmt);
+                if (pipe) {
+                    id<MTLRenderCommandEncoder> enc = PM_OBJ(id<MTLRenderCommandEncoder>, d->parked);
+                    [enc setRenderPipelineState:pipe];
+                    if (dfmt != MTLPixelFormatInvalid) [enc setDepthStencilState:PM_OBJ(id<MTLDepthStencilState>, d->alphaZeroDepthState)];
+                    [enc setViewport:(MTLViewport){ 0.0, 0.0, (double)d->parkedWidth, (double)d->parkedHeight, 0.0, 1.0 }];
+                    [enc setScissorRect:(MTLScissorRect){ 0, 0, (NSUInteger)d->parkedWidth, (NSUInteger)d->parkedHeight }];
+                    [enc setCullMode:MTLCullModeNone];
+                    [enc setTriangleFillMode:MTLTriangleFillModeFill];
+                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                    // Invalidate cached encoder state so a subsequent resumed pass re-binds its own pipeline/depth/fill state.
+                    d->bindings.pipeline = NULL;
+                    d->bindings.depth = NULL;
+                    d->stateSet = 0;
+                    return;
+                }
+            }
+        }
+        // Fallback (e.g. direct MetalFX Temporal, post-effect, or passTiming): alpha-only tile pass on colorView.
+        end_parked(d);
+        end_blit(d);
+        id<MTLRenderPipelineState> pipe = ensure_alpha_zero_pipeline(d, color.pixelFormat, MTLPixelFormatInvalid);
+        if (!pipe) return;
+        id<MTLCommandBuffer> cb = current_cb(d);
+        if (!cb) return;
+        MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
+        rp.colorAttachments[0].texture = color;
+        rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        bool timed = !d->m4 && d->passTiming && pass_time_begin(d, cb, rp, "Pure Metal HDR mask", (int)color.width, (int)color.height, false);
+        int m4Key = d->m4 && d->passTiming ? pass_time_key(d, "Pure Metal HDR mask", (int)color.width, (int)color.height, false) : -1;
+        id<MTLRenderCommandEncoder> enc = new_render_encoder(d, cb, rp, "Pure Metal HDR mask", m4Key);
+        if (!enc && timed) pass_time_undo(d);
+        if (!enc) return;
+        enc.label = @"Pure Metal HDR mask";
+        d->stats[0]++;
+        PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
+        d->stats[4] += color.allocatedSize;
+        d->stats[5] += color.allocatedSize;
+        [enc setRenderPipelineState:pipe];
+        [enc setViewport:(MTLViewport){ 0.0, 0.0, (double)color.width, (double)color.height, 0.0, 1.0 }];
+        [enc setScissorRect:(MTLScissorRect){ 0, 0, color.width, color.height }];
+        [enc setCullMode:MTLCullModeNone];
+        [enc setTriangleFillMode:MTLTriangleFillModeFill];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        PM_IF_M4(d) m4_ts_render_close(d, (id<MTL4RenderCommandEncoder>)enc);
+        [enc endEncoding];
+    }
 }
 
 
@@ -4944,6 +5590,7 @@ static int ensure_present_pipeline(PMDevice *d, MTLPixelFormat format, char *err
 static NSString *const UPSCALE_SHADER =
     @"#include <metal_stdlib>\n"
      "using namespace metal;\n"
+     PM_HDR_WORLD_WEIGHT_FN
      "struct V { float4 pos [[position]]; };\n"
      "vertex V pm_upscale_vs(uint vid [[vertex_id]]) {\n"
      "  float2 p = float2((vid << 1) & 2, vid & 2);\n"
@@ -4953,14 +5600,18 @@ static NSString *const UPSCALE_SHADER =
      "                              constant float4 &p [[buffer(0)]]) {\n"
      "  float2 uv = in.pos.xy * p.xy;\n"
      "  float4 c = src.sample(smp, uv);\n"
-     "  if (p.z <= 0.0) return c;\n"
-     "  float2 t = 1.0 / float2(src.get_width(), src.get_height());\n"
-     "  float3 n = src.sample(smp, uv - float2(0.0, t.y)).rgb, s = src.sample(smp, uv + float2(0.0, t.y)).rgb;\n"
-     "  float3 w = src.sample(smp, uv - float2(t.x, 0.0)).rgb, e = src.sample(smp, uv + float2(t.x, 0.0)).rgb;\n"
-     "  float3 mn = min(c.rgb, min(min(n, s), min(w, e))), mx = max(c.rgb, max(max(n, s), max(w, e)));\n"
-     "  float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));\n"
-     "  float3 k = -amp * mix(0.08, 0.2, p.z);\n"
-     "  return float4(saturate((c.rgb + (n + s + w + e) * k) / (1.0 + 4.0 * k)), c.a);\n"
+     "  float3 rgb = c.rgb;\n"
+     "  if (p.z > 0.0) {\n"
+     "    float2 t = 1.0 / float2(src.get_width(), src.get_height());\n"
+     "    float3 n = src.sample(smp, uv - float2(0.0, t.y)).rgb, s = src.sample(smp, uv + float2(0.0, t.y)).rgb;\n"
+     "    float3 w = src.sample(smp, uv - float2(t.x, 0.0)).rgb, e = src.sample(smp, uv + float2(t.x, 0.0)).rgb;\n"
+     "    float3 mn = min(rgb, min(min(n, s), min(w, e))), mx = max(rgb, max(max(n, s), max(w, e)));\n"
+     "    float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));\n"
+     "    float3 k = -amp * mix(0.08, 0.2, p.z);\n"
+     "    rgb = saturate((rgb + (n + s + w + e) * k) / (1.0 + 4.0 * k));\n"
+     "  }\n"
+     "  float a = p.w > 0.5 ? (1.0 - pm_hdr_world_weight(rgb)) : c.a;\n"
+     "  return float4(rgb, a);\n"
      "}\n";
 
 static int ensure_upscale_pipeline(PMDevice *d, MTLPixelFormat format) {
@@ -5014,14 +5665,14 @@ static int ensure_upscale_depth_pipeline(PMDevice *d, MTLPixelFormat format) {
 }
 
 // Bilinear stretch of `src` over the whole of a `width`x`height` target; the pipeline must already exist.
-static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness) {
+static void draw_stretch(PMDevice *d, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, int width, int height, bool withDepth, float sharpness, bool zeroAlpha) {
     [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, withDepth ? d->upscaleDepthPipeline : d->upscalePipeline)];
     [e setViewport:(MTLViewport){ 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 }];
     [e setScissorRect:(MTLScissorRect){ 0, 0, (NSUInteger)width, (NSUInteger)height }];
     [e setCullMode:MTLCullModeNone];
     bind_texture(d, e, PM_STAGE_FRAGMENT, src, 0);
     bind_sampler(d, e, PM_STAGE_FRAGMENT, PM_OBJ(id<MTLSamplerState>, d->upscaleSampler), 0);
-    float params[4] = { 1.0f / (float)width, 1.0f / (float)height, sharpness, 0.0f };
+    float params[4] = { 1.0f / (float)width, 1.0f / (float)height, sharpness, zeroAlpha ? 1.0f : 0.0f };
     bind_bytes(d, e, PM_STAGE_FRAGMENT, params, sizeof(params), 0);
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 }
@@ -5031,8 +5682,10 @@ static void flush_backdrop(PMDevice *d) {
     if (!d->bgDst) return;
     void *dstHandle = d->bgDst, *srcHandle = d->bgSrc;
     float sharp = d->bgSharp;
+    bool zeroAlpha = d->bgZeroAlpha;
     d->bgDst = d->bgSrc = NULL;
     d->bgSharp = 0.0f;
+    d->bgZeroAlpha = false;
     id<MTLTexture> dst = PM_OBJ(id<MTLTexture>, dstHandle);
     if (ensure_upscale_pipeline(d, dst.pixelFormat)) {
         MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
@@ -5040,15 +5693,16 @@ static void flush_backdrop(PMDevice *d) {
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLCommandBuffer> bcb = raw_cb(d);
-        bool timed = d->passTiming && pass_time_begin(d, bcb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
-        id<MTLRenderCommandEncoder> e = new_render_encoder(d, bcb, rp, "Pure Metal upscale");
+        bool timed = !d->m4 && d->passTiming && pass_time_begin(d, bcb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
+        int m4Key = d->m4 && d->passTiming ? pass_time_key(d, "Pure Metal upscale", (int)dst.width, (int)dst.height, false) : -1;
+        id<MTLRenderCommandEncoder> e = new_render_encoder(d, bcb, rp, "Pure Metal upscale", m4Key);
         if (!e && timed) pass_time_undo(d);
         if (e) {
             e.label = @"Pure Metal upscale";
             d->stats[0]++;
             PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
             d->stats[5] += dst.allocatedSize;
-            draw_stretch(d, e, PM_OBJ(id<MTLTexture>, srcHandle), (int)dst.width, (int)dst.height, false, sharp);
+            draw_stretch(d, e, PM_OBJ(id<MTLTexture>, srcHandle), (int)dst.width, (int)dst.height, false, sharp, zeroAlpha);
             PM_IF_M4(d) m4_ts_render_close(d, (id<MTL4RenderCommandEncoder>)e);
             [e endEncoding];
         } else {
@@ -5616,6 +6270,7 @@ PM_EXPORT int pm_temporal_upscale(PMDevice *d, void *srcView, void *handDepthVie
         d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(dstView)));
         d->bgSrc = pm_retain(PM_OBJ(id<MTLTexture>, d->txOut));
         d->bgSharp = 0.0f;
+        d->bgZeroAlpha = false;
         return 1;
     }
 }
@@ -5649,14 +6304,16 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
             d->bgDst = pm_retain(PM_OBJ(id<MTLTexture>, root_texture(dstView)));
             d->bgSrc = pm_retain(fx ? fx : src);
             d->bgSharp = sharpness;
+            d->bgZeroAlpha = false;
             return fx ? 1 : 0;
         }
         MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
         rp.colorAttachments[0].texture = dst;
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-        bool timed = d->passTiming && pass_time_begin(d, cb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
-        id<MTLRenderCommandEncoder> e = new_render_encoder(d, cb, rp, "Pure Metal upscale");
+        bool timed = !d->m4 && d->passTiming && pass_time_begin(d, cb, rp, "Pure Metal upscale", (int)dst.width, (int)dst.height, false);
+        int m4Key = d->m4 && d->passTiming ? pass_time_key(d, "Pure Metal upscale", (int)dst.width, (int)dst.height, false) : -1;
+        id<MTLRenderCommandEncoder> e = new_render_encoder(d, cb, rp, "Pure Metal upscale", m4Key);
         if (!e && timed) pass_time_undo(d);
         if (!e) { set_error(d, @"could not create the upscale encoder"); return -1; }
         e.label = @"Pure Metal upscale";
@@ -5676,9 +6333,7 @@ PM_EXPORT int pm_upscale(PMDevice *d, void *srcView, void *dstView, int metalfx,
     }
 }
 
-// Forward declarations for the per-surface function pointers chosen in pm_surface_create.
-static void apply_layer_config(PMSurface *s);
-static void apply_layer_config_hdr(PMSurface *s);
+static void apply_layer_config(PMSurface *s, float slotBoost);
 static void present_bind(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height);
 static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder> e, id<MTLTexture> src, uint32_t height);
 
@@ -5840,9 +6495,13 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
         l.opaque = YES;
         l.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         char err[256];
+        if (!ensure_present_pipeline(d, MTLPixelFormatBGRA8Unorm, err, sizeof(err))) {
+            NSLog(@"Pure Metal: present pipeline failed: %s", err);
+            return NULL;
+        }
         if (hdr) {
-            l.pixelFormat = MTLPixelFormatRGBA16Float;
-            if (ensure_present_pipeline(d, l.pixelFormat, err, sizeof(err))) {
+            if (ensure_present_pipeline(d, MTLPixelFormatRGBA16Float, err, sizeof(err))) {
+                l.pixelFormat = MTLPixelFormatRGBA16Float;
                 // Untagged and SDR until the watcher's first snapshot is applied on the present queue.
                 l.wantsExtendedDynamicRangeContent = NO;
                 l.colorspace = nil;
@@ -5851,10 +6510,6 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
                 l.pixelFormat = MTLPixelFormatBGRA8Unorm;
                 hdr = 0;
             }
-        }
-        if (!hdr && !ensure_present_pipeline(d, l.pixelFormat, err, sizeof(err))) {
-            NSLog(@"Pure Metal: present pipeline failed: %s", err);
-            return NULL;
         }
         dispatch_queue_t q = dispatch_queue_create("puremetal.present", dispatch_queue_attr_make_with_qos_class(
             DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
@@ -5879,15 +6534,15 @@ PM_EXPORT PMSurface *pm_surface_create(PMDevice *d, void *layer, int hdr) {
         s->device = d;
         s->vsync = 1;
         s->hdr = hdr ? 1 : 0;
+        s->cfgHdr = s->hdr;
         float one = 1.0f;
         uint32_t oneBits;
         memcpy(&oneBits, &one, sizeof(oneBits));
         atomic_init(&s->hdrBoostBits, oneBits);
-        s->applyConfig = hdr ? apply_layer_config_hdr : apply_layer_config;
-        s->bind = hdr ? present_bind_hdr : present_bind;
         if (hdr) s->hdrWatcher = (__bridge_retained void *)[[PMHdrWatcher alloc] initWithLayer:l];
         pthread_mutex_init(&s->cfgLock, NULL);
-        s->pipeline = pm_retain(PM_OBJ(id<MTLRenderPipelineState>, d->presentPipeline));
+        s->sdrPipeline = pm_retain(PM_OBJ(id<MTLRenderPipelineState>, d->presentPipeline));
+        if (hdr && d->presentHdrPipeline) s->hdrPipeline = pm_retain(PM_OBJ(id<MTLRenderPipelineState>, d->presentHdrPipeline));
         s->dispatch = (__bridge_retained void *)q;
         s->listener = pm_retain(listener);
         s->event = pm_retain(event);
@@ -5920,46 +6575,132 @@ static void drop_stale_staging(PMSurface *s, int slot) {
 }
 
 // On the present queue, before it takes the next drawable, so the layer never changes while that thread is inside nextDrawable.
-static void apply_layer_config(PMSurface *s) {
+static void apply_layer_config(PMSurface *s, float slotBoost) {
     pthread_mutex_lock(&s->cfgLock);
     int pending = s->cfgPending;
     int width = s->cfgWidth, height = s->cfgHeight, displaySync = s->cfgDisplaySync;
+    int hdrPending = s->cfgHdrPending;
+    int wantHdr = s->cfgHdr;
     s->cfgPending = 0;
+    s->cfgHdrPending = 0;
     pthread_mutex_unlock(&s->cfgLock);
-    if (!pending) return;
     CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
-    bool timing = atomic_load_explicit(&g_traceOn, memory_order_relaxed);
-    uint64_t start = timing ? pm_now_ns() : 0;
-    l.drawableSize = CGSizeMake(width, height);
-    l.displaySyncEnabled = displaySync ? YES : NO;
-    if (timing) pm_atomic_max(&s->device->layerConfigureMaxNs, pm_now_ns() - start);
-}
-
-// HDR layers: the usual layer settings, then the screen snapshot the watcher published (colorspace of the display the window is
-// on). Same place and thread as apply_layer_config, so the layer never changes inside nextDrawable.
-static void apply_layer_config_hdr(PMSurface *s) {
-    apply_layer_config(s);
-    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
-    pthread_mutex_lock(&w->lock);
-    int pending = w->pending;
-    CGColorSpaceRef space = w->pendingSpace ? CGColorSpaceRetain(w->pendingSpace) : NULL;
-    w->pending = 0;
-    pthread_mutex_unlock(&w->lock);
-    if (!pending) {
-        if (space) CGColorSpaceRelease(space);
-        return;
+    bool txOpen = false;
+    #define PM_BEGIN_TX() do { if (!txOpen) { [CATransaction begin]; [CATransaction setDisableActions:YES]; txOpen = true; } } while (0)
+    if (pending) {
+        PM_BEGIN_TX();
+        bool timing = atomic_load_explicit(&g_traceOn, memory_order_relaxed);
+        uint64_t start = timing ? pm_now_ns() : 0;
+        if (width > 0 && height > 0) l.drawableSize = CGSizeMake(width, height);
+        l.displaySyncEnabled = displaySync ? YES : NO;
+        if (timing) pm_atomic_max(&s->device->layerConfigureMaxNs, pm_now_ns() - start);
     }
-    CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
-    l.colorspace = space;
-    l.wantsExtendedDynamicRangeContent = space ? YES : NO;
+    if (hdrPending) {
+        if (wantHdr && !s->hdr) {
+            char err[256];
+            if (!s->hdrPipeline && ensure_present_pipeline(s->device, MTLPixelFormatRGBA16Float, err, sizeof(err))) {
+                s->hdrPipeline = pm_retain(PM_OBJ(id<MTLRenderPipelineState>, s->device->presentHdrPipeline));
+            }
+            if (s->hdrPipeline) {
+                PMHdrWatcher *watcher = [[PMHdrWatcher alloc] initWithLayer:l];
+                bool shuttingDown = false;
+                pthread_mutex_lock(&s->cfgLock);
+                if (atomic_load(&s->shutdown)) {
+                    shuttingDown = true;
+                } else {
+                    s->hdrWatcher = (__bridge_retained void *)watcher;
+                }
+                pthread_mutex_unlock(&s->cfgLock);
+                if (shuttingDown) {
+                    [watcher stop];
+                } else {
+                    PM_BEGIN_TX();
+                    l.pixelFormat = MTLPixelFormatRGBA16Float;
+                    l.wantsExtendedDynamicRangeContent = NO;
+                    l.colorspace = nil;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
-    // macOS 26+: ask for full dynamic range on this layer only (the setting is new there; older systems use the flag above).
-    if (@available(macOS 26.0, *)) {
-        l.preferredDynamicRange = space ? CADynamicRangeHigh : CADynamicRangeStandard;
-    }
+                    if (@available(macOS 26.0, *)) {
+                        l.preferredDynamicRange = CADynamicRangeStandard;
+                        l.contentsHeadroom = 0.0;
+                    }
 #endif
-    atomic_store_explicit(&s->hdrLinear, space ? 1 : 0, memory_order_relaxed);
-    if (space) CGColorSpaceRelease(space);
+                    s->appliedHeadroom = 0.0f;
+                    s->hdr = 1;
+                    s->hdrSmoothed = 1.0f;
+                    s->hdrSmoothedNs = 0;
+                    atomic_store_explicit(&s->hdrLinear, 0, memory_order_relaxed);
+                }
+            } else {
+                NSLog(@"Pure Metal: HDR highlights unavailable, staying on the normal layer: %s", err);
+            }
+        } else if (!wantHdr && s->hdr) {
+            pthread_mutex_lock(&s->cfgLock);
+            PMHdrWatcher *oldWatcher = s->hdrWatcher ? (__bridge_transfer PMHdrWatcher *)s->hdrWatcher : nil;
+            s->hdrWatcher = NULL;
+            pthread_mutex_unlock(&s->cfgLock);
+            if (oldWatcher) [oldWatcher stop];
+            PM_BEGIN_TX();
+            l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+            l.wantsExtendedDynamicRangeContent = NO;
+            l.colorspace = nil;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+            if (@available(macOS 26.0, *)) {
+                l.preferredDynamicRange = CADynamicRangeStandard;
+                l.contentsHeadroom = 0.0;
+            }
+#endif
+            s->appliedHeadroom = 0.0f;
+            s->hdr = 0;
+            s->hdrSmoothed = 1.0f;
+            s->hdrSmoothedNs = 0;
+            atomic_store_explicit(&s->hdrLinear, 0, memory_order_relaxed);
+        }
+    }
+    if (s->hdr) {
+        pthread_mutex_lock(&s->cfgLock);
+        PMHdrWatcher *w = s->hdrWatcher ? (__bridge PMHdrWatcher *)s->hdrWatcher : nil;
+        pthread_mutex_unlock(&s->cfgLock);
+        float targetHeadroom = slotBoost > 1.0f ? slotBoost : 0.0f;
+        bool updatedHeadroom = false;
+        if (w) {
+            pthread_mutex_lock(&w->lock);
+            int spacePending = w->pending;
+            CGColorSpaceRef space = w->pendingSpace ? CGColorSpaceRetain(w->pendingSpace) : NULL;
+            w->pending = 0;
+            pthread_mutex_unlock(&w->lock);
+            if (spacePending) {
+                PM_BEGIN_TX();
+                l.colorspace = space;
+                l.wantsExtendedDynamicRangeContent = space ? YES : NO;
+                float want = space ? targetHeadroom : 0.0f;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+                // macOS 26+: preferredDynamicRange requires contentsHeadroom > 1.0 on CAMetalLayer to actually activate EDR.
+                if (@available(macOS 26.0, *)) {
+                    l.preferredDynamicRange = want > 1.0f ? CADynamicRangeHigh : CADynamicRangeStandard;
+                    l.contentsHeadroom = (CGFloat)want;
+                }
+#endif
+                s->appliedHeadroom = want;
+                updatedHeadroom = true;
+                atomic_store_explicit(&s->hdrLinear, space ? 1 : 0, memory_order_relaxed);
+            }
+            if (space) CGColorSpaceRelease(space);
+        }
+        if (!updatedHeadroom && atomic_load_explicit(&s->hdrLinear, memory_order_relaxed) && targetHeadroom != s->appliedHeadroom) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+            if (@available(macOS 26.0, *)) {
+                PM_BEGIN_TX();
+                l.preferredDynamicRange = targetHeadroom > 1.0f ? CADynamicRangeHigh : CADynamicRangeStandard;
+                l.contentsHeadroom = (CGFloat)targetHeadroom;
+            }
+#endif
+            s->appliedHeadroom = targetHeadroom;
+        }
+    }
+    #undef PM_BEGIN_TX
+    if (txOpen) {
+        [CATransaction commit];
+    }
 }
 
 // With vsync off, frames that miss a refresh are skipped (like Vulkan's MAILBOX) instead of tearing, which needs display
@@ -6089,7 +6830,7 @@ static id<MTLCommandBuffer> present_cb(PMSurface *s, int slot) {
 }
 
 static id<MTLRenderCommandEncoder> present_encoder(PMSurface *s, id<MTLCommandBuffer> pcb, MTLRenderPassDescriptor *rp) {
-    PM_IF_M4(s->device) return m4_render_encoder(s->device, (id<MTL4CommandBuffer>)pcb, (MTL4RenderPassDescriptor *)rp, s->device->m4PresentTable, false, false, "Pure Metal present");
+    PM_IF_M4(s->device) return m4_render_encoder(s->device, (id<MTL4CommandBuffer>)pcb, (MTL4RenderPassDescriptor *)rp, s->device->m4PresentTable, false, false, "Pure Metal present", -1);
     return [pcb renderCommandEncoderWithDescriptor:rp];
 }
 
@@ -6114,8 +6855,7 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
     int linear = atomic_load_explicit(&s->hdrLinear, memory_order_relaxed);
     float params[8] = { (float)height, 1.0f, linear ? 1.0f : 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f };
     if (linear) {
-        uint32_t bits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
-        memcpy(&params[1], &bits, sizeof(bits));
+        params[1] = s->slotHdrBoost[slot] >= 1.0f ? s->slotHdrBoost[slot] : 1.0f;
         // The watcher samples AppKit about once a second, so its value steps while macOS ramps EDR; ease toward it per present
         // (time constant ~200 ms). No allocation, no locks.
         float target = pm_surface_edr_headroom(s);
@@ -6147,15 +6887,32 @@ static void present_bind_hdr(PMSurface *s, int slot, id<MTLRenderCommandEncoder>
 // When the frame with this present sequence number should reach the screen (CACurrentMediaTime() seconds), or 0 for
 // as soon as possible: one refresh per frame after the last frame macOS reported on screen, a quarter refresh early so
 // the present lands on the intended refresh and not the one after. A frame that is already late goes out at once.
-static double pacing_target(PMSurface *s, uint64_t seq) {
+static double pacing_target_at(PMSurface *s, uint64_t seq, double now) {
     if (!atomic_load(&s->pacing)) return 0;
-    uint64_t refresh = atomic_load(&s->refreshNs), anchorNs = atomic_load(&s->anchorNs), anchorSeq = atomic_load(&s->anchorSeq);
-    if (!refresh || !anchorNs || seq <= anchorSeq || seq - anchorSeq > 4) return 0;
-    double now = CACurrentMediaTime();
+    uint64_t refresh = atomic_load(&s->refreshNs);
+    if (!refresh) return 0;
+    pthread_mutex_lock(&s->cfgLock);
+    uint64_t anchorNs = s->anchorNs;
+    uint64_t anchorSeq = s->anchorSeq;
+    pthread_mutex_unlock(&s->cfgLock);
+    if (!anchorNs || seq <= anchorSeq || seq - anchorSeq > 4) return 0;
     double anchor = anchorNs / 1e9, interval = refresh / 1e9;
     if (now - anchor > 0.25) return 0;
     double target = anchor + (double)(seq - anchorSeq) * interval - interval * 0.25;
     return target > now + 0.0005 && target < now + 4 * interval ? target : 0;
+}
+
+static double pacing_target(PMSurface *s, uint64_t seq) {
+    return pacing_target_at(s, seq, CACurrentMediaTime());
+}
+
+static void pacing_record_anchor(PMSurface *s, uint64_t seq, uint64_t shownNs) {
+    pthread_mutex_lock(&s->cfgLock);
+    if (seq > s->anchorSeq) {
+        s->anchorSeq = seq;
+        s->anchorNs = shownNs;
+    }
+    pthread_mutex_unlock(&s->cfgLock);
 }
 
 static void present_commit(PMSurface *s, id<MTLCommandBuffer> pcb, id<CAMetalDrawable> drawable, double presentAt,
@@ -6194,7 +6951,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
     @autoreleasepool {
         CAMetalLayer *l = PM_OBJ(CAMetalLayer *, s->layer);
         trace_ev(7, slot, 0, 0);
-        if (!atomic_load(&s->shutdown)) s->applyConfig(s);
+        if (!atomic_load(&s->shutdown)) apply_layer_config(s, s->slotHdrBoost[slot]);
         bool timing = atomic_load_explicit(&g_traceOn, memory_order_relaxed);
         uint64_t drawableStart = timing ? pm_now_ns() : 0;
         id<CAMetalDrawable> drawable = atomic_load(&s->shutdown) ? nil : [l nextDrawable];
@@ -6238,9 +6995,10 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         }
         e.label = @"Pure Metal present";
         [e setViewport:(MTLViewport){ 0.0, 0.0, (double)w, (double)h, 0.0, 1.0 }];
-        [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, s->pipeline)];
+        bool useHdr = s->hdr && dst.pixelFormat == MTLPixelFormatRGBA16Float && s->hdrPipeline != NULL;
+        [e setRenderPipelineState:PM_OBJ(id<MTLRenderPipelineState>, useHdr ? s->hdrPipeline : s->sdrPipeline)];
         uint32_t height = (uint32_t)h;
-        s->bind(s, slot, e, src, height);
+        if (useHdr) present_bind_hdr(s, slot, e, src, height); else present_bind(s, slot, e, src, height);
         [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [e endEncoding];
         double submitted = s->slotTime[slot];
@@ -6262,8 +7020,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
                 trace_ev(9, (int64_t)pm_sec_ns(done.presentedTime), 0, 0);
                 if (done.presentedTime > 0) {
                     uint64_t shownNs = (uint64_t)(done.presentedTime * 1e9);
-                    atomic_store(&s->anchorSeq, seq);
-                    atomic_store(&s->anchorNs, shownNs);
+                    pacing_record_anchor(s, seq, shownNs);
                     uint64_t previous = atomic_exchange(&s->lastShownNs, shownNs);
                     uint64_t refresh = atomic_load(&s->refreshNs);
                     if (atomic_load(&s->statsEnabled) && refresh && previous && shownNs > previous && shownNs - previous < 250000000ULL) {
@@ -6367,6 +7124,10 @@ PM_EXPORT int pm_surface_blit(PMDevice *d, PMSurface *s, void *texture, char *er
             return 0;
         }
         s->slotVsync[slot] = vsync;
+        uint32_t boostBits = atomic_load_explicit(&s->hdrBoostBits, memory_order_relaxed);
+        float boost = 1.0f;
+        memcpy(&boost, &boostBits, sizeof(boost));
+        s->slotHdrBoost[slot] = boost;
         // Zero-copy: the present pass samples the frame's own render target. The caller must not write that texture
         // again until pm_surface_texture_busy says the slot is done with it (it rotates to a spare texture instead).
         if (allowDirect && (src.usage & MTLTextureUsageShaderRead) && src.textureType == MTLTextureType2D
@@ -6447,13 +7208,19 @@ PM_EXPORT void pm_surface_take_stats(PMSurface *s, uint64_t *out) {
 // Display refresh interval (0 if unknown), whether presents are paced (the option is on and vsync is on) and what vsync
 // off does (see PMSurface.allowTearing).
 PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacing, int allowTearing) {
-    atomic_store(&s->refreshNs, refreshNs);
-    atomic_store(&s->pacing, pacing && refreshNs ? 1 : 0);
+    int wantPacing = pacing && refreshNs ? 1 : 0;
+    uint64_t prevRefresh = atomic_exchange(&s->refreshNs, refreshNs);
+    int prevPacing = atomic_exchange(&s->pacing, wantPacing);
     s->allowTearing = allowTearing;
     // The refresh rate arrives after the first configure and changes when the window moves to another display; High
     // Refresh Boost can be toggled at any time.
     int displaySync = surface_display_sync(s);
     pthread_mutex_lock(&s->cfgLock);
+    if (prevRefresh != refreshNs || prevPacing != wantPacing) {
+        // Drop any anchor captured under a different refresh rate or before pacing turned on.
+        s->anchorNs = 0;
+        s->anchorSeq = 0;
+    }
     if (s->cfgWidth > 0 && s->cfgDisplaySync != displaySync) {
         s->cfgDisplaySync = displaySync;
         s->cfgPending = 1;
@@ -6470,9 +7237,16 @@ PM_EXPORT int pm_surface_display_sync(PMSurface *s) {
     return displaySync;
 }
 
-// Boost cap for the HDR present pass (1.0 = SDR look). Cheap, any thread; ignored on a normal layer.
+// Requests switching the layer between SDR (BGRA8Unorm) and HDR (RGBA16Float) on the present queue before the next drawable.
+PM_EXPORT void pm_surface_set_hdr(PMSurface *s, int enable) {
+    pthread_mutex_lock(&s->cfgLock);
+    s->cfgHdr = enable ? 1 : 0;
+    s->cfgHdrPending = 1;
+    pthread_mutex_unlock(&s->cfgLock);
+}
+
+// Boost cap for the HDR present pass (1.0 = SDR look). Lock-free, any thread; snapshotted per slot in pm_surface_blit.
 PM_EXPORT void pm_surface_set_hdr_boost(PMSurface *s, float boost) {
-    if (!s->hdr) return;
     uint32_t bits;
     memcpy(&bits, &boost, sizeof(bits));
     atomic_store_explicit(&s->hdrBoostBits, bits, memory_order_relaxed);
@@ -6484,10 +7258,12 @@ PM_EXPORT int pm_surface_hdr_linear(PMSurface *s) {
 }
 
 // 0 = HDR layer not applied yet (or this layer is not HDR), 1 = HDR active, 2 = the screen the window is on has no HDR (layer untagged,
-// picture as in SDR). Any thread, atomics only.
+// picture as in SDR). Any thread, safe against live HDR toggling.
 PM_EXPORT int pm_surface_hdr_state(PMSurface *s) {
-    if (!s->hdrWatcher) return 0;
-    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    pthread_mutex_lock(&s->cfgLock);
+    PMHdrWatcher *w = s->hdrWatcher ? (__bridge PMHdrWatcher *)s->hdrWatcher : nil;
+    pthread_mutex_unlock(&s->cfgLock);
+    if (!w) return 0;
     if (atomic_load_explicit(&w->screenNoHdr, memory_order_relaxed)) return 2;
     return atomic_load_explicit(&s->hdrLinear, memory_order_relaxed) ? 1 : 0;
 }
@@ -6495,8 +7271,10 @@ PM_EXPORT int pm_surface_hdr_state(PMSurface *s) {
 // The most EDR headroom the screen could ever offer (maximumPotentialExtendedDynamicRangeColorComponentValue), as last published
 // by the main-thread watcher. Any thread, no AppKit.
 PM_EXPORT float pm_surface_edr_max(PMSurface *s) {
-    if (!s->hdrWatcher) return 1.0f;
-    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    pthread_mutex_lock(&s->cfgLock);
+    PMHdrWatcher *w = s->hdrWatcher ? (__bridge PMHdrWatcher *)s->hdrWatcher : nil;
+    pthread_mutex_unlock(&s->cfgLock);
+    if (!w) return 1.0f;
     uint32_t bits = atomic_load_explicit(&w->maxHeadroomBits, memory_order_relaxed);
     float v;
     memcpy(&v, &bits, sizeof(v));
@@ -6506,8 +7284,10 @@ PM_EXPORT float pm_surface_edr_max(PMSurface *s) {
 // The EDR headroom of the screen the window is on (1.0 = none), as last published by the main-thread watcher. Any thread,
 // no AppKit: just an atomic read.
 PM_EXPORT float pm_surface_edr_headroom(PMSurface *s) {
-    if (!s->hdrWatcher) return 1.0f;
-    PMHdrWatcher *w = (__bridge PMHdrWatcher *)s->hdrWatcher;
+    pthread_mutex_lock(&s->cfgLock);
+    PMHdrWatcher *w = s->hdrWatcher ? (__bridge PMHdrWatcher *)s->hdrWatcher : nil;
+    pthread_mutex_unlock(&s->cfgLock);
+    if (!w) return 1.0f;
     uint32_t bits = atomic_load_explicit(&w->headroomBits, memory_order_relaxed);
     float v;
     memcpy(&v, &bits, sizeof(v));
@@ -6529,10 +7309,23 @@ PM_EXPORT void pm_surface_take_present_gpu(PMSurface *s, uint64_t *out) {
     out[1] = atomic_exchange(&s->stats[6], 0);
 }
 
-PM_EXPORT void pm_surface_destroy(PMSurface *s) {
+static int surface_dispatch_wait(PMSurface *s, uint64_t timeoutNs, void (^block)(void)) {
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async((__bridge dispatch_queue_t)s->dispatch, ^{
+        if (block) block();
+        dispatch_semaphore_signal(done);
+    });
+    return dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutNs)) == 0;
+}
+
+// Returns 1 when fully drained and freed, or 0 when a drain/wait timed out and the surface (and caller's view/device) must be leaked.
+PM_EXPORT int pm_surface_destroy(PMSurface *s) {
     // From here on callbacks release their slots without presenting, so no new listener or presented handler work starts.
     atomic_store(&s->shutdown, 1);
-    if (s->hdrWatcher) [(__bridge PMHdrWatcher *)s->hdrWatcher stop];
+    pthread_mutex_lock(&s->cfgLock);
+    PMHdrWatcher *w = s->hdrWatcher ? (__bridge PMHdrWatcher *)s->hdrWatcher : nil;
+    pthread_mutex_unlock(&s->cfgLock);
+    if (w) [w stop];
     PMShownContext *shownContext = s->shownContext;
     if (shownContext) {
         pthread_mutex_lock(&shownContext->lock);
@@ -6551,12 +7344,20 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     }
     if (!drained) {
         NSLog(@"Pure Metal: surface frames did not drain; leaking the surface state");
-        return;
+        return 0;
     }
     @autoreleasepool {
-        dispatch_sync((__bridge dispatch_queue_t)s->dispatch, ^{
+        if (!surface_dispatch_wait(s, 5 * NSEC_PER_SEC, ^{
             if (s->waitingSlot >= 0) { release_slot(s, s->waitingSlot); s->waitingSlot = -1; }
-        });
+            pthread_mutex_lock(&s->cfgLock);
+            PMHdrWatcher *finalWatcher = s->hdrWatcher ? (__bridge_transfer PMHdrWatcher *)s->hdrWatcher : nil;
+            s->hdrWatcher = NULL;
+            pthread_mutex_unlock(&s->cfgLock);
+            if (finalWatcher) [finalWatcher stop];
+        })) {
+            NSLog(@"Pure Metal: surface present queue did not drain; leaking the surface state");
+            return 0;
+        }
         id<MTLCommandBuffer> last = [PM_OBJ(id<MTLCommandQueue>, s->presentQueue) commandBuffer];
         dispatch_semaphore_t finished = dispatch_semaphore_create(0);
         [last addCompletedHandler:^(id<MTLCommandBuffer> done) { dispatch_semaphore_signal(finished); }];
@@ -6564,9 +7365,12 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
         // Bounded like pm_wait_idle, so a stuck GPU cannot hang shutdown; the leak matches the drain failure above.
         if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
             NSLog(@"Pure Metal: surface present work did not finish; leaking the surface state");
-            return;
+            return 0;
         }
-        dispatch_sync((__bridge dispatch_queue_t)s->dispatch, ^{});
+        if (!surface_dispatch_wait(s, 5 * NSEC_PER_SEC, nil)) {
+            NSLog(@"Pure Metal: surface present queue did not drain after present completion; leaking the surface state");
+            return 0;
+        }
         PM_IF_M4(s->device) [PM_OBJ(id<MTL4CommandQueue>, s->device->m4PresentQueue) removeResidencySet:PM_OBJ(CAMetalLayer *, s->layer).residencySet];
     }
     for (int i = 0; i < PM_PRESENT_SLOTS; i++) {
@@ -6575,7 +7379,8 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
         if (direct) pm_release(direct);
     }
     if (s->hdrWatcher) CFRelease(s->hdrWatcher);
-    pm_release(s->pipeline);
+    pm_release(s->sdrPipeline);
+    pm_release(s->hdrPipeline);
     pm_release(s->presentQueue);
     pm_release(s->event);
     pm_release(s->listener);
@@ -6586,4 +7391,5 @@ PM_EXPORT void pm_surface_destroy(PMSurface *s) {
     pthread_mutex_destroy(&s->cfgLock);
     free(s);
     if (shownContext) shown_context_release(shownContext);
+    return 1;
 }

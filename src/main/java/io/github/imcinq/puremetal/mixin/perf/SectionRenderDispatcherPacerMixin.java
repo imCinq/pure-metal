@@ -92,6 +92,10 @@ public abstract class SectionRenderDispatcherPacerMixin {
     private void puremetal$pacedSchedule(
         final TracingExecutor executor, final Runnable task, final Operation<Void> original
     ) {
+        if (!io.github.imcinq.puremetal.MixinHooks.pacerReady()) {
+            original.call(executor, task);
+            return;
+        }
         int limit = ChunkBuildPacer.maxConcurrentBuilds();
         if (limit == Integer.MAX_VALUE) {
             this.puremetal$poolStarved = false;

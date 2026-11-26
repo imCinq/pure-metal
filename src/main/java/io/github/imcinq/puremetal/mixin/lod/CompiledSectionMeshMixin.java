@@ -18,7 +18,9 @@ public abstract class CompiledSectionMeshMixin implements LodState {
 
     @Inject(method = "<init>(Lnet/minecraft/client/renderer/chunk/TranslucencyPointOfView;Lnet/minecraft/client/renderer/chunk/SectionCompiler$Results;J)V", at = @At("TAIL"))
     private void puremetal$copyLod(final TranslucencyPointOfView pov, final SectionCompiler.Results results, final long start, final CallbackInfo ci) {
-        this.puremetal$lod = ((LodState) (Object) results).puremetal$lodState();
+        if ((Object) results instanceof LodState lod) {
+            this.puremetal$lod = lod.puremetal$lodState();
+        }
     }
 
     @Override

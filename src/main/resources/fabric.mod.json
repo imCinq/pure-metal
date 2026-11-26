@@ -15,7 +15,7 @@
   "environment": "client",
   "entrypoints": { "sodium:config_api_user": ["io.github.imcinq.puremetal.scale.SodiumScaleOptions"] },
   "accessWidener": "puremetal.accesswidener",
-  "mixins": ["puremetal.mixins.json"],
+  "mixins": ["puremetal.mixins.json", "puremetal.optional.mixins.json"],
   "depends": { "fabricloader": ">=0.19.0", "minecraft": "26.3", "java": ">=25" },
   "suggests": { "sodium": "*" }
 }

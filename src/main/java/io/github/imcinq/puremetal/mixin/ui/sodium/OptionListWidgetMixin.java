@@ -37,9 +37,11 @@ public abstract class OptionListWidgetMixin {
         @Local(index = 7) final ModOptions mod,
         @Local(index = 5) final LocalIntRef offset
     ) {
-        if (!"puremetal".equals(mod.configId())) return;
+        if (!"puremetal".equals(mod.configId())
+            || !io.github.imcinq.puremetal.MixinHooks.sodiumUiBridgeReady()
+            || !((Object) this instanceof AbstractParentWidgetInvoker parent)) return;
         final SodiumNoteWidget note = SodiumNoteWidget.create((OptionListWidget) (Object) this, x, y + offset.get() + entryHeight, width);
-        ((AbstractParentWidgetInvoker) this).puremetal$addRenderableChild(note);
+        parent.puremetal$addRenderableChild(note);
         offset.set(offset.get() + note.height());
     }
 
@@ -51,10 +53,12 @@ public abstract class OptionListWidgetMixin {
         @Local(index = 12) final Page page,
         @Local(index = 5) final LocalIntRef offset
     ) {
-        if (!"puremetal".equals(mod.configId()) || GitHubCardDismissal.hidden() || mod.pages().get(mod.pages().size() - 1) != page) return;
+        if (!"puremetal".equals(mod.configId()) || GitHubCardDismissal.hidden() || mod.pages().get(mod.pages().size() - 1) != page
+            || !io.github.imcinq.puremetal.MixinHooks.sodiumUiBridgeReady()
+            || !((Object) this instanceof AbstractParentWidgetInvoker parent)) return;
         final SodiumStarWidget card = SodiumStarWidget.create((OptionListWidget) (Object) this, screen, x, y + offset.get() + 4, width, mod.theme());
-        ((AbstractParentWidgetInvoker) this).puremetal$addRenderableChild(card.closeButton());
-        ((AbstractParentWidgetInvoker) this).puremetal$addRenderableChild(card);
+        parent.puremetal$addRenderableChild(card.closeButton());
+        parent.puremetal$addRenderableChild(card);
         offset.set(offset.get() + card.getHeight() + 4);
     }
 }

@@ -30,6 +30,7 @@ final class MetalSurface implements GpuSurfaceBackend {
     private int statsFrames;
     private int configuredWidth, configuredHeight;
     private boolean configuredVsync;
+    private boolean hdrLayerEnabled;
     private long hdrCheckedNs;
     private float hdrHeadroom = 1.0F;
     private float hdrSentBoost = -1.0F;
@@ -45,7 +46,8 @@ final class MetalSurface implements GpuSurfaceBackend {
             throw new IllegalStateException("SDL could not create a Metal view: " + SDLError.SDL_GetError());
         }
         long layer = SDLMetal.SDL_Metal_GetLayer(this.view);
-        this.surface = MetalNative.surfaceCreate(device.handle(), layer, io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE ? 1 : 0);
+        this.hdrLayerEnabled = io.github.imcinq.puremetal.perf.HdrHighlights.enabled();
+        this.surface = MetalNative.surfaceCreate(device.handle(), layer, this.hdrLayerEnabled ? 1 : 0);
         if (this.surface == 0L) {
             SDLMetal.SDL_Metal_DestroyView(this.view);
             throw new IllegalStateException("Pure Metal could not set up presenting (see the log)");
@@ -90,8 +92,23 @@ final class MetalSurface implements GpuSurfaceBackend {
             MetalNative.surfaceSetPacing(this.surface, io.github.imcinq.puremetal.perf.FramePacing.refreshNs(),
                 io.github.imcinq.puremetal.perf.FramePacing.pacing(), io.github.imcinq.puremetal.perf.FramePacing.allowTearing());
         }
-        if (io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE) {
-            this.updateHdr();
+        io.github.imcinq.puremetal.perf.HdrHighlights.beginFrame();
+        boolean wantHdr = io.github.imcinq.puremetal.perf.HdrHighlights.enabled();
+        if (wantHdr != this.hdrLayerEnabled) {
+            this.hdrLayerEnabled = wantHdr;
+            this.hdrCheckedNs = 0L;
+            this.hdrSentBoost = -1.0F;
+            this.hdrHeadroom = 1.0F;
+            this.hdrMaxHeadroom = 1.0F;
+            this.hdrLinear = false;
+            this.hdrState = 0;
+            MetalNative.surfaceSetHdr(this.surface, wantHdr ? 1 : 0);
+            if (!wantHdr) {
+                io.github.imcinq.puremetal.perf.HdrHighlights.publish(1.0F, 1.0F, 1.0F, false, false);
+            }
+        }
+        if (this.hdrLayerEnabled) {
+            this.pollHdrState();
         }
         if (PRESENT_STATS) {
             this.logPresentStats();
@@ -107,16 +124,20 @@ final class MetalSurface implements GpuSurfaceBackend {
         FrameTrace.mark(FrameTrace.FRAME, 0);
     }
 
-    /** HDR highlights only: the screen's EDR headroom is read once a second, the boost target (from the potential headroom) is sent when it changes. */
-    private void updateHdr() {
+    /** HDR highlights only: reads the watcher's latest headroom/colorspace snapshot once a second (or each frame while settling). */
+    private void pollHdrState() {
         long now = System.nanoTime();
-        if (this.hdrCheckedNs == 0L || now - this.hdrCheckedNs > io.github.imcinq.puremetal.perf.HdrHighlights.HEADROOM_RECHECK_NS) {
+        if (this.hdrCheckedNs == 0L || this.hdrState == 0 || now - this.hdrCheckedNs > io.github.imcinq.puremetal.perf.HdrHighlights.HEADROOM_RECHECK_NS) {
             this.hdrCheckedNs = now;
             this.hdrHeadroom = MetalNative.surfaceEdrHeadroom(this.surface);
             this.hdrMaxHeadroom = MetalNative.surfaceEdrMax(this.surface);
             this.hdrLinear = MetalNative.surfaceHdrLinear(this.surface);
             this.hdrState = MetalNative.surfaceHdrState(this.surface);
         }
+    }
+
+    /** Called at present time (after the world/HUD boundary) so the boost matches this exact frame's slot. */
+    private void updateHdrBoost() {
         float boost = io.github.imcinq.puremetal.perf.HdrHighlights.boost(this.hdrMaxHeadroom);
         if (boost != this.hdrSentBoost) {
             this.hdrSentBoost = boost;
@@ -192,6 +213,9 @@ final class MetalSurface implements GpuSurfaceBackend {
         if (NO_PRESENT) {
             return;
         }
+        if (this.hdrLayerEnabled) {
+            this.updateHdrBoost();
+        }
         try (MemoryStack stack = MemoryStack.stackPush()) {
             ByteBuffer err = stack.calloc(512);
             MetalTextureView view = (MetalTextureView)textureView;
@@ -225,9 +249,13 @@ final class MetalSurface implements GpuSurfaceBackend {
         encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
             try {
                 java.nio.file.Path out = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().resolve("puremetal-capture.png");
-                // Render targets use Vulkan's row order, so flip like the present pass.
+                // Render targets use Vulkan's row order, so flip like the present pass; force opaque alpha since HDR stores HUD coverage in A.
+                ByteBuffer pixels = MemoryUtil.memByteBuffer(buffer.contents(), width * height * 4);
+                for (int i = 3; i < pixels.limit(); i += 4) {
+                    pixels.put(i, (byte)0xFF);
+                }
                 org.lwjgl.stb.STBImageWrite.stbi_flip_vertically_on_write(true);
-                org.lwjgl.stb.STBImageWrite.stbi_write_png(out.toString(), width, height, 4, MemoryUtil.memByteBuffer(buffer.contents(), width * height * 4), width * 4);
+                org.lwjgl.stb.STBImageWrite.stbi_write_png(out.toString(), width, height, 4, pixels, width * 4);
                 org.slf4j.LoggerFactory.getLogger(MetalSurface.class).info("Pure Metal capture: frame {} saved to {}", CAPTURE_FRAME, out.getFileName());
             } finally {
                 org.lwjgl.stb.STBImageWrite.stbi_flip_vertically_on_write(false);
@@ -253,8 +281,12 @@ final class MetalSurface implements GpuSurfaceBackend {
             if (this.device.presentSurface == this.surface) {
                 this.device.presentSurface = 0L;
             }
-            MetalNative.surfaceDestroy(this.surface);
-            SDLMetal.SDL_Metal_DestroyView(this.view);
+            if (MetalNative.surfaceDestroy(this.surface) != 0) {
+                SDLMetal.SDL_Metal_DestroyView(this.view);
+            } else {
+                // Presenter may still be blocked in nextDrawable; keep the view and owning device alive to prevent UAF.
+                this.device.markSurfaceNotDrained();
+            }
             // Only after teardown: a concurrent MetalDevice.close() then still finds this surface and waits on its monitor.
             if (this.device.liveSurface == this) {
                 this.device.liveSurface = null;

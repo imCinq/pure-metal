@@ -1,14 +1,16 @@
 package io.github.imcinq.puremetal.perf;
 
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
+import io.github.imcinq.puremetal.backend.MetalUpscaler;
 import io.github.imcinq.puremetal.scale.ScaleConfig;
 import java.util.Properties;
-import net.minecraft.client.Minecraft;
 
 /**
- * Experimental HDR highlights: on a screen with extended dynamic range (EDR) headroom, the present pass lets near-clipping
- * pixels (the sun, lava, fire, glowing blocks) go brighter than SDR white. Off by default; toggled in Pure Metal's settings
- * (hdrHighlights in config/puremetal.properties) or forced with -Dpuremetal.hdrHighlights=true|false.
- * The layer format is chosen when the window surface is created, so a change needs a restart: ACTIVE is read once.
+ * HDR highlights: on a screen with extended dynamic range (EDR) headroom, the present pass lets near-clipping world pixels
+ * (the sun, lava, fire, glowing blocks) go brighter than SDR white while excluding the 2D HUD and menus via alpha coverage.
+ * Off by default; toggled live in Pure Metal's settings (hdrHighlights in config/puremetal.properties) or forced with
+ * -Dpuremetal.hdrHighlights=true|false.
  */
 public final class HdrHighlights {
     /** Most the highlights are ever pushed past SDR white (1.0), whatever the screen can do. */
@@ -16,15 +18,9 @@ public final class HdrHighlights {
     /** How often the screen's current EDR headroom is read. */
     public static final long HEADROOM_RECHECK_NS = 1_000_000_000L;
 
-    /** How long the boost takes to fade out when a screen opens, and back in when it closes. */
-    private static final long RAMP_NS = 200_000_000L;
-    /** 0 = no boost, 1 = full boost; moves toward the goal by the time passed since the last frame. */
-    private static float level = 1.0F;
-    private static long rampNs;
-
     private static volatile boolean enabled = readEnabled();
-    /** What the surface was created with: true when the layer is the HDR one for this run. */
-    public static final boolean ACTIVE = enabled;
+    /** Whether a 3D level rendered on the latest frame (menus without a world stay strictly SDR). */
+    private static boolean worldRendered;
 
     // Latest snapshot, published by the present surface about once a second (the values come from the native main-thread watcher).
     private static volatile float shownHeadroom = 1.0F;
@@ -35,12 +31,33 @@ public final class HdrHighlights {
     private static String debugText = "";
     private static long debugBuiltNs;
 
-    /** True when HDR Highlights is on for this run and the screen the window is on has no HDR (so nothing is boosted). */
+    /** True when HDR Highlights is on and the screen the window is on has no HDR (so nothing is boosted). */
     public static boolean screenHasNoHdr() {
-        return ACTIVE && enabled && shownNoHdr;
+        return enabled && shownNoHdr;
     }
 
     private HdrHighlights() {
+    }
+
+    /** Called at frame start so frames that skip world rendering (splash/loading/title screens) always stay SDR. */
+    public static void beginFrame() {
+        worldRendered = false;
+    }
+
+    /**
+     * Called at the world/HUD boundary ({@code FogRenderer.endFrame}) after 3D rendering and any Render Scale upscale have
+     * landed in {@code main} and before {@code GuiRenderer} draws the 2D HUD and menus. Computes each world pixel's highlight
+     * weight into {@code main}'s alpha channel as {@code 1 - w} so HUD alpha writes attenuate it without creating new highlights.
+     */
+    public static void endWorld(final RenderTarget main, final boolean renderedLevel) {
+        worldRendered = renderedLevel;
+        if (!renderedLevel || !enabled || !MetalUpscaler.active()) {
+            return;
+        }
+        GpuTextureView color = main.getColorTextureView();
+        if (color != null) {
+            MetalUpscaler.clearHdrWorldAlpha(color);
+        }
     }
 
     /** Called from the render thread by the surface. */
@@ -52,9 +69,9 @@ public final class HdrHighlights {
         shownNoHdr = screenNoHdr;
     }
 
-    /** The F3 line, or null when this run has no HDR layer. Rebuilt at most once a second. */
+    /** The F3 line, or null when HDR Highlights is off. Rebuilt at most once a second. */
     public static String debugLine() {
-        if (!ACTIVE) {
+        if (!enabled) {
             return null;
         }
         long now = System.nanoTime();
@@ -89,33 +106,22 @@ public final class HdrHighlights {
             return;
         }
         enabled = value;
+        debugText = "";
         ScaleConfig.writeProperties(p -> p.setProperty("hdrHighlights", Boolean.toString(value)));
     }
 
     /**
-     * The boost cap for the present pass, 1.0 meaning no change. The final image already has the HUD and menus in it and
-     * cannot tell them from the world, so the boost fades out over RAMP_NS whenever a screen is open (the HUD still shows during
-     * play) and back in when it closes, instead of snapping. It is always 1.0 while Battery Saver is on. Render thread, once per
-     * frame; no allocation.
+     * The boost cap for the present pass, 1.0 meaning no change. Menus and HUD elements are excluded per-pixel via alpha
+     * coverage in the present shader, so no screen-open fade is needed; frames without a 3D world (title/loading screens) and
+     * Battery Saver stay at 1.0. Render thread, once per frame; no allocation.
      * The target comes from the screen's potential (maximum) headroom, not its current one: macOS only grants EDR headroom once
      * content above 1.0 is actually presented, so a target based on the current headroom (1.0 at rest) would never ask for any.
      * The present shader rolls the boosted range off toward the current headroom, so the image stays right while it ramps up.
      */
     public static float boost(final float maxHeadroom) {
-        long now = System.nanoTime();
-        if (BatterySaver.enabled()) {
-            level = 0.0F;
-            rampNs = now;
+        if (!enabled || BatterySaver.enabled() || !worldRendered) {
             return 1.0F;
         }
-        float goal = Minecraft.getInstance().gui.screen() != null ? 0.0F : 1.0F;
-        if (rampNs != 0L && level != goal) {
-            float step = (float) ((now - rampNs) / (double) RAMP_NS);
-            level = goal > level ? Math.min(goal, level + step) : Math.max(goal, level - step);
-        } else if (rampNs == 0L) {
-            level = goal;
-        }
-        rampNs = now;
-        return 1.0F + (Math.max(1.0F, Math.min(maxHeadroom, MAX_BOOST)) - 1.0F) * level;
+        return Math.max(1.0F, Math.min(maxHeadroom, MAX_BOOST));
     }
 }

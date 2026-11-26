@@ -4,7 +4,7 @@ Pure Metal adds a native Apple Metal backend to Minecraft 26.3 (Fabric). Render 
 distant detail or rendering resolution for performance. Terrain LOD defaults on at RD16+ with an 80% full-detail
 radius; it can be disabled. In the outer band it also merges plain leaf blocks and calm water tops and skips small
 plants; glass is unchanged. Auto Render Scale (off by default) steps the scale between 100, 85, 70 and 60% to keep up
-with the FPS target. Smooth Frame Pacing (experimental, off by default, VSync only) evens out when frames are shown.
+with the FPS target. Smooth Frame Pacing (off by default, VSync only) evens out when frames are shown.
 
 ## How it plugs in
 

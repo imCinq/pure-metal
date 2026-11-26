@@ -125,6 +125,18 @@ public final class TestLodMixins {
                 + ", extractor=" + extractFlushHook + ", expected=" + expectedEarlyUpload + ")");
         }
         System.out.println("PASS: perf mixins transformed cleanly (sodium=" + sodium + ", pacer=" + pacerHook + ", earlyUpload=" + earlyUploadHook + ", soundQos=" + soundHook + ")");
+        Class<?> hooks = Class.forName("io.github.imcinq.puremetal.MixinHooks", true, loader);
+        int mask = (int) hooks.getMethod("bits").invoke(null);
+        if (sodium) {
+            if (!(boolean) hooks.getMethod("sodiumLodReady").invoke(null)) throw new AssertionError("MixinHooks.sodiumLodReady() false, bits=0x" + Integer.toHexString(mask));
+            if (!(boolean) hooks.getMethod("sodiumWaterReady").invoke(null)) throw new AssertionError("MixinHooks.sodiumWaterReady() false, bits=0x" + Integer.toHexString(mask));
+        } else {
+            if (!(boolean) hooks.getMethod("vanillaLodReady").invoke(null)) throw new AssertionError("MixinHooks.vanillaLodReady() false, bits=0x" + Integer.toHexString(mask));
+            if (!(boolean) hooks.getMethod("vanillaWaterReady").invoke(null)) throw new AssertionError("MixinHooks.vanillaWaterReady() false, bits=0x" + Integer.toHexString(mask));
+            if ((boolean) hooks.getMethod("pacerReady").invoke(null) != expectedPacer) throw new AssertionError("MixinHooks.pacerReady() mismatch, bits=0x" + Integer.toHexString(mask));
+            if ((boolean) hooks.getMethod("earlyUploadReady").invoke(null) != expectedEarlyUpload) throw new AssertionError("MixinHooks.earlyUploadReady() mismatch, bits=0x" + Integer.toHexString(mask));
+        }
+        System.out.println("PASS: MixinHooks post-apply verification confirmed for all active coupled groups");
     }
 
     static void checkSodiumCondition(ClassLoader loader, String gameDir) throws Exception {

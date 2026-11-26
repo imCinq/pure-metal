@@ -8,9 +8,9 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
 - Battery Saver caps FPS at 60 (30 FPS while your Mac is hot) to save power and heat (optional)
-- Experimental HDR Highlights make the sun, bright sky and white highlights brighter on Mac screens with HDR headroom (needs a restart)
+- HDR Highlights make the sun, bright sky, lava and glowing blocks brighter on Mac screens with HDR headroom, without boosting menus or the HUD (optional)
+- Smooth Frame Pacing with VSync shows frames at an even pace (optional)
 - Experimental Metal 4 mode (macOS 26+)
-- Experimental Smooth Frame Pacing with VSync tries to show frames at an even pace
 - With VSync off, Minecraft can render at a higher FPS without screen tearing by default
 - Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
 - A Pure Metal line on the F3 screen for bug reports, including the Fast Terrain status
@@ -108,11 +108,11 @@ Optional, off by default. Draws the 3D world at fewer pixels and scales it up. M
 Miscellaneous:
 - **Faster World Generation** (singleplayer): caps FPS while nearby chunks are still loading, so they build faster.
 - **Battery Saver:** caps FPS at 60, or 30 while your Mac is hot.
+- **HDR Highlights:** makes the sun, bright sky, lava and glowing blocks brighter than normal white on screens with HDR headroom, without boosting menus or the HUD. Turns itself off on screens without HDR and while Battery Saver is on.
+- **Smooth Frame Pacing** (needs VSync): shows frames at an even pace.
 
 Experimental:
 - **Metal 4** (macOS 26): Metal 3 is currently faster.
-- **Smooth Frame Pacing** (needs VSync): shows frames at an even pace.
-- **HDR Highlights** (needs a restart): makes the sun, bright sky and white highlights brighter on screens with HDR headroom. Turns itself off on screens without HDR and while Battery Saver is on.
 - **High Refresh Boost** (200 Hz+ displays, VSync off): shows frames as soon as they are ready. May tear.
 
 ## Distant Horizons

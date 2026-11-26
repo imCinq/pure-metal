@@ -53,7 +53,7 @@ final class MetalDevice implements GpuDeviceBackend {
     private final MetalCommandEncoder commandEncoder;
     private final Object compilationLock = new Object();
     private int activeCompilations;
-    private boolean shuttingDown;
+    private volatile boolean shuttingDown;
     private final MetalResourceCache<SamplerKey> samplers = new MetalResourceCache<>();
     private record ShaderKey(String sourceHash, String entryPoint, boolean safeMath, int constantId, int constantValue) {}
     private record DepthKey(int enabled, int compare, int write) {}
@@ -180,7 +180,7 @@ final class MetalDevice implements GpuDeviceBackend {
         if (io.github.imcinq.puremetal.bench.PassTiming.ENABLED) {
             int timing = MetalNative.passTimingEnable(handle);
             LOGGER.info("Pure Metal: per-pass GPU timing {}", timing > 0 ? "enabled (every render pass is its own encoder)"
-                : timing < 0 ? "unsupported on Metal 4" : "unsupported (no stage-boundary timestamp counters)");
+                : "unsupported (no GPU timestamp counters)");
         }
         if (io.github.imcinq.puremetal.bench.SubmissionProfile.ENABLED) {
             LOGGER.info("Pure Metal: GPU stage diagnostics {}", MetalNative.profileEnable(handle) != 0 ? "enabled" : "unsupported");
@@ -553,14 +553,28 @@ final class MetalDevice implements GpuDeviceBackend {
         }
     }
 
+    boolean isShuttingDown() {
+        return this.shuttingDown;
+    }
+
     @Override
     public GpuQueryPool createTimestampQueryPool(final int size) {
-        return new MetalQueryPool(size);
+        return new MetalQueryPool(this, size);
     }
 
     @Override
     public long getTimestampCalibrationOffset() {
-        return 0L;
+        if (this.shuttingDown) {
+            return 0L;
+        }
+        long before = System.nanoTime();
+        long gpuNs = MetalNative.sampleGpuTimestampNs(this.handle);
+        long after = System.nanoTime();
+        if (gpuNs <= 0L) {
+            return 0L;
+        }
+        long cpuNs = before + ((after - before) >>> 1);
+        return cpuNs - gpuNs;
     }
 
     @Override
@@ -568,16 +582,30 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.deviceInfo;
     }
 
+    private static final long SHUTDOWN_COMPILE_WAIT_NS = 5_000_000_000L;
+    private volatile boolean surfaceNotDrained;
+
+    void markSurfaceNotDrained() {
+        this.surfaceNotDrained = true;
+    }
+
     @Override
     public void close() {
         boolean interrupted = false;
+        boolean compilationsDrained = true;
+        long deadline = System.nanoTime() + SHUTDOWN_COMPILE_WAIT_NS;
         synchronized (this.compilationLock) {
             if (this.shuttingDown) return;
             this.shuttingDown = true;
             // Track the whole pipeline build, including native state creation after shader acquisition.
             while (this.activeCompilations != 0) {
+                long remainingNs = deadline - System.nanoTime();
+                if (remainingNs <= 0L) {
+                    compilationsDrained = false;
+                    break;
+                }
                 try {
-                    this.compilationLock.wait();
+                    this.compilationLock.wait(remainingNs / 1_000_000L, (int) (remainingNs % 1_000_000L));
                 } catch (InterruptedException e) {
                     interrupted = true;
                 }
@@ -585,6 +613,11 @@ final class MetalDevice implements GpuDeviceBackend {
         }
         if (interrupted) Thread.currentThread().interrupt();
         current = null;
+        if (!compilationsDrained) {
+            // A compilation thread may still be inside native device calls; leak the device rather than free under it.
+            LOGGER.error("Pure Metal: background shader compilation did not finish at shutdown; the Metal device is left alive");
+            return;
+        }
         try {
             this.commandEncoder.destroy();
         } catch (MetalCommandEncoder.NotDrainedException error) {
@@ -609,6 +642,10 @@ final class MetalDevice implements GpuDeviceBackend {
         closeIsolated("buffer pool", this::closeBufferPool);
         MetalSurface surface = this.liveSurface;
         if (surface != null) closeIsolated("surface", surface::close);
+        if (this.surfaceNotDrained) {
+            LOGGER.error("Pure Metal: surface did not drain at shutdown; the Metal device is left alive");
+            return;
+        }
         MetalNative.deviceDestroy(this.handle);
     }
 

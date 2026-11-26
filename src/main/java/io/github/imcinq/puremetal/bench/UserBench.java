@@ -68,7 +68,7 @@ public final class UserBench {
             out.append("Terrain LOD: ").append(io.github.imcinq.puremetal.lod.TerrainLodConfig.enabled() ? "on" : "off")
                 .append(", ratio ").append(io.github.imcinq.puremetal.lod.TerrainLodConfig.ratioPercent()).append("% (default, forced for the benchmark)\n");
             out.append("Battery Saver: ").append(io.github.imcinq.puremetal.perf.BatterySaver.enabled() ? "on" : "off").append(" (forced for the benchmark)\n");
-            out.append("HDR Highlights: ").append(io.github.imcinq.puremetal.perf.HdrHighlights.ACTIVE ? "on" : "off").append(" (forced for the benchmark)\n");
+            out.append("HDR Highlights: ").append(io.github.imcinq.puremetal.perf.HdrHighlights.enabled() ? "on" : "off").append(" (forced for the benchmark)\n");
             out.append("VSync: off (forced for the benchmark)\n");
             out.append("Max FPS: unlimited (forced for the benchmark)\n");
             out.append("Generation FPS cap: off (forced for the benchmark)\n");

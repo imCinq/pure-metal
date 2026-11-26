@@ -23,6 +23,8 @@ public abstract class UploadedMeshBoundsMixin {
     private void puremetal$uploadedBounds(SectionRenderDataStorage storage, int index, BufferSegment allocation, int[] segments, Operation<Void> original) {
         original.call(storage, index, allocation, segments);
         var metadata = TerrainDrawProfile.metadata(segments);
-        ((LayerBounds) storage).puremetal$setBounds(index, metadata.isEmpty() ? null : metadata.getFirst().bounds());
+        if ((Object) storage instanceof LayerBounds measured) {
+            measured.puremetal$setBounds(index, metadata.isEmpty() ? null : metadata.getFirst().bounds());
+        }
     }
 }

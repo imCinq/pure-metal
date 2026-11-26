@@ -43,6 +43,7 @@ public final class MetalNative {
     private static MethodHandle H_passTimingEnable, H_passTimingReset, H_takePassTiming, H_takePassTimingDropped;
     private static MethodHandle H_probeEnable, H_takeProbeStats, H_passProbeQueries, H_takePassTrace, H_setOption, H_metal4Enable, H_metal4Encoding;
     private static MethodHandle H_submit, H_completed, H_waitSubmit, H_waitIdle;
+    private static MethodHandle H_sampleGpuTimestampNs, H_queryPoolCreate, H_queryPoolDestroy, H_queryWrite, H_queryRead, H_queryReadRange;
     // Resources.
     private static MethodHandle H_bufferCreate, H_bufferContents, H_deviceAllocatedSize, H_textureCreate, H_textureView, H_bufferTexture, H_samplerCreate;
     private static MethodHandle H_libraryCreate, H_libraryFunction, H_libraryFunctionBool, H_pipelineCreate, H_depthStateCreate;
@@ -54,8 +55,8 @@ public final class MetalNative {
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
     // Surface.
-    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceDisplaySync, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear, H_surfaceHdrState;
-    private static MethodHandle H_upscale, H_upscaleReset, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
+    private static MethodHandle H_surfaceCreate, H_surfaceConfigure, H_surfaceBlit, H_surfaceDestroy, H_surfaceTakeStats, H_surfaceTakePresentGpu, H_surfaceTextureBusy, H_surfaceSetPacing, H_surfaceDisplaySync, H_surfaceSetHdr, H_surfaceSetHdrBoost, H_surfaceEdrHeadroom, H_surfaceEdrMax, H_surfaceHdrLinear, H_surfaceHdrState;
+    private static MethodHandle H_upscale, H_upscaleReset, H_clearAlpha, H_temporalSupported, H_temporalPrepare, H_temporalUpscale, H_temporalInfo;
 
     private MetalNative() {
     }
@@ -120,6 +121,12 @@ public final class MetalNative {
         H_completed = fn("pm_completed", true, L, L);
         H_waitSubmit = fn("pm_wait", false, I, L, L, L);
         H_waitIdle = fn("pm_wait_idle", false, I, L);
+        H_sampleGpuTimestampNs = fn("pm_sample_gpu_timestamp_ns", false, L, L);
+        H_queryPoolCreate = fn("pm_query_pool_create", false, L, I);
+        H_queryPoolDestroy = fn("pm_query_pool_destroy", false, null, L);
+        H_queryWrite = fn("pm_query_write", false, I, L, L, I, I);
+        H_queryRead = fn("pm_query_read", false, L, L, I);
+        H_queryReadRange = fn("pm_query_read_range", false, null, L, I, I, L);
         H_traceEnable = fn("pm_trace_enable", false, null);
         H_traceMark = fn("pm_trace_mark", false, null, I, L, L, L);
         H_traceRead = fn("pm_trace_read", false, I, L, I);
@@ -187,6 +194,7 @@ public final class MetalNative {
         H_surfaceConfigure = fn("pm_surface_configure", false, null, L, I, I, I, I);
         H_surfaceSetPacing = fn("pm_surface_set_pacing", false, null, L, L, I, I);
         H_surfaceDisplaySync = fn("pm_surface_display_sync", false, I, L);
+        H_surfaceSetHdr = fn("pm_surface_set_hdr", false, null, L, I);
         H_surfaceSetHdrBoost = fn("pm_surface_set_hdr_boost", false, null, L, F);
         H_surfaceEdrHeadroom = fn("pm_surface_edr_headroom", false, F, L);
         H_surfaceEdrMax = fn("pm_surface_edr_max", false, F, L);
@@ -194,11 +202,12 @@ public final class MetalNative {
         H_surfaceHdrState = fn("pm_surface_hdr_state", false, I, L);
         H_surfaceBlit = fn("pm_surface_blit", false, I, L, L, L, L, I, I);
         H_surfaceTextureBusy = fn("pm_surface_texture_busy", false, I, L, L);
-        H_surfaceDestroy = fn("pm_surface_destroy", false, null, L);
+        H_surfaceDestroy = fn("pm_surface_destroy", false, I, L);
         H_surfaceTakeStats = fn("pm_surface_take_stats", true, null, L, L);
         H_surfaceTakePresentGpu = fn("pm_surface_take_present_gpu", true, null, L, L);
         H_upscale = fn("pm_upscale", false, I, L, L, L, I, F);
         H_upscaleReset = fn("pm_upscale_reset", false, null, L);
+        H_clearAlpha = fn("pm_clear_alpha", false, null, L, L);
         H_temporalSupported = fn("pm_temporal_supported", false, I, L);
         H_temporalPrepare = fn("pm_temporal_prepare", false, I, L, L, L, L, L);
         H_temporalUpscale = fn("pm_temporal_upscale", false, I, L, L, L, L, F, F, I);
@@ -713,6 +722,22 @@ public final class MetalNative {
         }
     }
 
+    static void surfaceSetHdr(final long surface, final int enable) {
+        try {
+            H_surfaceSetHdr.invokeExact(surface, enable);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void clearAlpha(final long device, final long colorView) {
+        try {
+            H_clearAlpha.invokeExact(device, colorView);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     static float surfaceEdrMax(final long a0) {
         try {
             return (float) H_surfaceEdrMax.invokeExact(a0);
@@ -871,9 +896,9 @@ public final class MetalNative {
         }
     }
 
-    static void surfaceDestroy(final long a0) {
+    static int surfaceDestroy(final long a0) {
         try {
-            H_surfaceDestroy.invokeExact(a0);
+            return (int) H_surfaceDestroy.invokeExact(a0);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -978,6 +1003,54 @@ public final class MetalNative {
     static long takeGpuFrames(final long a0) {
         try {
             return (long) H_takeGpuFrames.invokeExact(a0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static long sampleGpuTimestampNs(final long device) {
+        try {
+            return (long) H_sampleGpuTimestampNs.invokeExact(device);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static long queryPoolCreate(final int size) {
+        try {
+            return (long) H_queryPoolCreate.invokeExact(size);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void queryPoolDestroy(final long pool) {
+        try {
+            H_queryPoolDestroy.invokeExact(pool);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static int queryWrite(final long device, final long pool, final int index, final int inRenderPass) {
+        try {
+            return (int) H_queryWrite.invokeExact(device, pool, index, inRenderPass);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static long queryRead(final long pool, final int index) {
+        try {
+            return (long) H_queryRead.invokeExact(pool, index);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void queryReadRange(final long pool, final int index, final int count, final long out) {
+        try {
+            H_queryReadRange.invokeExact(pool, index, count, out);
         } catch (Throwable t) {
             throw rethrow(t);
         }

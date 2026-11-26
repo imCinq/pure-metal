@@ -79,6 +79,8 @@ public final class StartupGuard {
             return false;
         }
         boolean restore = false;
+        long previousMetalPid = -1L;
+        boolean checkGlCrash = false;
         try {
             try {
                 Minecraft minecraft = Minecraft.getInstance();
@@ -88,6 +90,10 @@ public final class StartupGuard {
                     disabled = true;
                     LOGGER.debug("Pure Metal startup recovery is off for this launch because another instance owns the startup marker");
                     return false;
+                }
+                checkGlCrash = true;
+                if (previous != null && previous.metal) {
+                    previousMetalPid = previous.pid;
                 }
                 setting = forced ? FORCED : current.name();
                 if (previous != null && sawUncleanDefault && !forced && current == PreferredGraphicsApi.OPENGL
@@ -110,10 +116,13 @@ public final class StartupGuard {
                 LOGGER.debug("Pure Metal startup check failed: {}", Redact.error(t));
             }
             writeLocked();
-            return restore;
         } finally {
             lock.close();
         }
+        if (checkGlCrash) {
+            DirectGlCrashAttribution.checkPreviousCrash(previousMetalPid);
+        }
+        return restore;
     }
 
     /**

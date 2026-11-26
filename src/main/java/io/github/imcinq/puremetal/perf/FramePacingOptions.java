@@ -16,8 +16,11 @@ public final class FramePacingOptions {
     }
 
     public static Component tooltip() {
-        return Lang.experimentalTooltip(Lang.text("puremetal.options.smoothFramePacing.tooltip"),
-            Minecraft.getInstance().options.enableVsync().get() ? null : Lang.text("puremetal.options.smoothFramePacing.vsyncOff"));
+        Component description = Lang.text("puremetal.options.smoothFramePacing.tooltip");
+        if (Minecraft.getInstance().options.enableVsync().get()) {
+            return description;
+        }
+        return Component.empty().append(description).append("\n\n").append(Lang.text("puremetal.options.smoothFramePacing.vsyncOff"));
     }
 
     /** Built on each call so the initial value is read from the live option (Sodium's page can change it). */

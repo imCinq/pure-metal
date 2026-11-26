@@ -110,6 +110,7 @@ public abstract class GameRendererMixin {
             this.puremetal$fullSizeSettings.run();
             this.puremetal$fullSizeSettings = null;
         }
+        io.github.imcinq.puremetal.perf.HdrHighlights.endWorld(this.mainRenderTarget, this.gameRenderState.shouldRenderLevel);
     }
 
     // MetalFX temporal: the world's projection is jittered by a sub-pixel amount each frame. These three injections are

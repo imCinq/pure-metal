@@ -84,7 +84,8 @@ public abstract class LevelRendererEarlyUploadMixin implements EarlyTerrainUploa
     private void puremetal$deferTerrainUpload(
         final SectionRenderDispatcher dispatcher, final Operation<Void> original
     ) {
-        if (!EarlyTerrainUpload.active() || this.levelRenderState.playerCompiledSectionCallback != null) {
+        if (!io.github.imcinq.puremetal.MixinHooks.earlyUploadReady()
+            || !EarlyTerrainUpload.active() || this.levelRenderState.playerCompiledSectionCallback != null) {
             this.puremetal$clearDeferred();
             original.call(dispatcher);
             return;

@@ -24,12 +24,12 @@ public abstract class ArenaAggregatorMixin {
     @Unique private GpuBuffer[] puremetal$seenBuffers = new GpuBuffer[0];
     @Unique private long[] puremetal$retiredAt = new long[0];
 
-    @Inject(method = "releaseBufferForReuse", at = @At("RETURN"), require = 1)
+    @Inject(method = "releaseBufferForReuse", at = @At("RETURN"))
     private void puremetal$limitRetiredBuffers(final GpuBuffer buffer, final CallbackInfo ci) {
         this.puremetal$trimRetiredBuffers(buffer);
     }
 
-    @Inject(method = "update", at = @At("TAIL"), require = 1)
+    @Inject(method = "update", at = @At("TAIL"))
     private void puremetal$expireRetiredBuffers(final CallbackInfo ci) {
         this.puremetal$trimRetiredBuffers(null);
     }

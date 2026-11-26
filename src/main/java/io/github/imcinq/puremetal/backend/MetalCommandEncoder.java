@@ -601,6 +601,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public void writeTimestamp(final GpuQueryPool pool, final int index) {
+        this.checkNotInRenderPass("writeTimestamp");
+        if (pool instanceof MetalQueryPool metalPool) {
+            if (metalPool.device() != this.device) {
+                throw new IllegalArgumentException("Query pool does not belong to this Metal device");
+            }
+            metalPool.writeTimestamp(index, false);
+        }
     }
 
     MetalTransientMemory transientMemoryImpl() {

@@ -32,13 +32,15 @@ public abstract class RenderSectionManagerMixin {
     @Shadow
     public abstract void scheduleRebuild(int x, int y, int z, boolean important);
 
-    @Inject(method = "updateWithResult", at = @At("HEAD"), require = 1)
+    @Inject(method = "updateWithResult", at = @At("HEAD"))
     private void puremetal$trackLod(
         final Viewport viewport, final RenderSection section, final ChunkBuildOutput output, final List<RenderSection> touched,
         final CallbackInfoReturnable<Integer> cir
     ) {
-        byte state = ((LodState) output).puremetal$lodState();
-        LodState lod = (LodState) section;
+        if (!((Object) output instanceof LodState outLod) || !((Object) section instanceof LodState lod)) {
+            return;
+        }
+        byte state = outLod.puremetal$lodState();
         lod.puremetal$setLodState(state);
         lod.puremetal$setLodRequested(false);
         if (state != TerrainLod.NONE) {
@@ -49,7 +51,7 @@ public abstract class RenderSectionManagerMixin {
         }
     }
 
-    @Inject(method = "prepareFrame", at = @At("TAIL"), require = 1)
+    @Inject(method = "prepareFrame", at = @At("TAIL"))
     private void puremetal$lodTransitions(final Vector3dc camera, final CallbackInfo ci) {
         boolean moved = TerrainLod.update(camera.x(), camera.z());
         // A fixed camera and unchanged meshes cannot acquire a new LOD mismatch. Completed builds
@@ -63,7 +65,10 @@ public abstract class RenderSectionManagerMixin {
                 it.remove();
                 continue;
             }
-            LodState lod = (LodState) section;
+            if (!((Object) section instanceof LodState lod)) {
+                it.remove();
+                continue;
+            }
             if (!lod.puremetal$lodRequested() && TerrainLod.needsRebuild(lod.puremetal$lodState(), section.getChunkX(), section.getChunkZ())) {
                 lod.puremetal$setLodRequested(true);
                 this.scheduleRebuild(section.getChunkX(), section.getChunkY(), section.getChunkZ(), false);

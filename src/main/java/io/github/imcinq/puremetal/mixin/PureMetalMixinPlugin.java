@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal.mixin;
 
+import io.github.imcinq.puremetal.MixinHooks;
 import java.util.List;
 import java.util.Set;
 import net.fabricmc.loader.api.FabricLoader;
@@ -13,13 +14,16 @@ import org.spongepowered.asm.service.MixinService;
 /** Keeps benchmark/profile hooks out of normal play and picks the terrain LOD hooks. */
 public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
     private static final Logger LOGGER = LoggerFactory.getLogger("Pure Metal");
+    private static final java.util.concurrent.atomic.AtomicBoolean BOOT_APPLIED = new java.util.concurrent.atomic.AtomicBoolean();
     private static final boolean SODIUM = FabricLoader.getInstance().isModLoaded("sodium");
     private static Boolean sodiumMemoryTrimSupported;
     private static Boolean sodiumOptionListSupported;
     private static Boolean sodiumLodSupported;
     @Override
     public void onLoad(final String mixinPackage) {
-        io.github.imcinq.puremetal.bench.UserBenchBoot.apply();
+        if (BOOT_APPLIED.compareAndSet(false, true)) {
+            io.github.imcinq.puremetal.bench.UserBenchBoot.apply();
+        }
     }
 
     @Override
@@ -89,7 +93,7 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
             return !Boolean.getBoolean("puremetal.disableThreadQos");
         }
         if (mixinClassName.endsWith(".perf.SectionRenderDispatcherPacerMixin")) {
-            return !SODIUM && !Boolean.getBoolean("puremetal.disableChunkBuildPacer");
+            return !SODIUM && !Boolean.getBoolean("puremetal.disableChunkBuildPacer") && isChunkBuildPacerSupported(targetClassName);
         }
         if (mixinClassName.endsWith(".perf.LevelRendererEarlyUploadMixin")
             || mixinClassName.endsWith(".perf.LevelExtractorEarlyUploadMixin")) {
@@ -107,12 +111,11 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.contains(".lod.sodium.DefaultFluidRenderer")) {
             // Water tops are only merged when a hook is there to skip them. Sodium 0.9.2 tests the top face with
             // isFullBlockFluidVisible, 0.9.3 with isFullBlockFluidSideVisible; each mixin hooks one, others keep the tops.
+            // WaterTopHook is enabled in postApply only once the injection actually lands in DefaultFluidRenderer.
             String top = SODIUM ? sodiumFluidTopCall(targetClassName) : null;
             String wanted = mixinClassName.endsWith("SideVisibleMixin") ? "isFullBlockFluidSideVisible" : "isFullBlockFluidVisible";
             boolean supported = wanted.equals(top);
-            if (supported) {
-                io.github.imcinq.puremetal.lod.sodium.WaterTopHook.setSupported(true);
-            } else if (SODIUM && top == null && mixinClassName.endsWith(".DefaultFluidRendererMixin")) {
+            if (!supported && SODIUM && top == null && mixinClassName.endsWith(".DefaultFluidRendererMixin")) {
                 LOGGER.info("Pure Metal: Terrain LOD keeps Sodium's water surfaces as they are, this Sodium version is not supported");
             }
             return supported;
@@ -340,15 +343,201 @@ public final class PureMetalMixinPlugin implements IMixinConfigPlugin {
     public void preApply(final String targetClassName, final ClassNode targetClass, final String mixinClassName, final IMixinInfo mixinInfo) {
     }
 
+    private static boolean isChunkBuildPacerSupported(final String targetClassName) {
+        try {
+            final ClassNode node = MixinService.getService().getBytecodeProvider().getClassNode(targetClassName, false);
+            if (!hasField(node, "queue", "Lnet/minecraft/client/renderer/chunk/SectionTaskDynamicQueue;")
+                || !hasField(node, "executor", "Lnet/minecraft/TracingExecutor;")
+                || !hasField(node, "closed", "Z")
+                || !hasMethod(node, "getFreeBufferCount", "()I")) {
+                return false;
+            }
+            boolean scheduleOk = false, runTaskOk = false;
+            for (final org.objectweb.asm.tree.MethodNode m : node.methods) {
+                if (m.instructions == null) continue;
+                if ("schedule".equals(m.name)) {
+                    for (final org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
+                        if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call
+                            && "net/minecraft/TracingExecutor".equals(call.owner)
+                            && "execute".equals(call.name) && "(Ljava/lang/Runnable;)V".equals(call.desc)) {
+                            scheduleOk = true;
+                        }
+                    }
+                } else if ("runTask".equals(m.name) && "()V".equals(m.desc)) {
+                    boolean acquire = false, execute = false;
+                    for (final org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
+                        if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call) {
+                            if ("net/minecraft/client/renderer/SectionBufferBuilderPool".equals(call.owner)
+                                && "acquire".equals(call.name)) acquire = true;
+                            if ("net/minecraft/TracingExecutor".equals(call.owner)
+                                && "execute".equals(call.name) && "(Ljava/lang/Runnable;)V".equals(call.desc)) execute = true;
+                        }
+                    }
+                    runTaskOk = acquire && execute;
+                }
+            }
+            return scheduleOk && runTaskOk;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static boolean hasWovenCall(final ClassNode targetClass, final String hookFragment) {
+        for (final org.objectweb.asm.tree.MethodNode m : targetClass.methods) {
+            if (m.instructions == null) continue;
+            for (final org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
+                if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call
+                    && targetClass.name.equals(call.owner) && call.name.contains(hookFragment)) {
+                    return true;
+                }
+                if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode indy && indy.bsmArgs != null) {
+                    for (final Object arg : indy.bsmArgs) {
+                        if (arg instanceof org.objectweb.asm.Handle h
+                            && targetClass.name.equals(h.getOwner()) && h.getName().contains(hookFragment)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasMethodContaining(final ClassNode targetClass, final String fragment) {
+        for (final org.objectweb.asm.tree.MethodNode m : targetClass.methods) {
+            if (m.name.contains(fragment)) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasTargetCall(final ClassNode targetClass, final String methodName, final String callOwner, final String callName) {
+        for (final org.objectweb.asm.tree.MethodNode m : targetClass.methods) {
+            if (!methodName.equals(m.name) || m.instructions == null) continue;
+            for (final org.objectweb.asm.tree.AbstractInsnNode insn : m.instructions) {
+                if (insn instanceof org.objectweb.asm.tree.MethodInsnNode call
+                    && callOwner.equals(call.owner) && callName.equals(call.name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasConcreteMethod(final ClassNode targetClass, final String methodName) {
+        for (final org.objectweb.asm.tree.MethodNode m : targetClass.methods) {
+            if (methodName.equals(m.name) && (m.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean implementsInterface(final ClassNode targetClass, final String internalName) {
+        return targetClass.interfaces != null && targetClass.interfaces.contains(internalName);
+    }
+
     @Override
     public void postApply(final String targetClassName, final ClassNode targetClass, final String mixinClassName, final IMixinInfo mixinInfo) {
         if (mixinClassName.endsWith(".perf.FabricFluidCallbacksMixin")) {
             boolean applied = io.github.imcinq.puremetal.perf.FabricFluidCallbacks.apply(targetClass);
             LOGGER.info("Pure Metal: fluid scope carrier cache {}", applied ? "enabled" : "skipped (scope shape changed)");
-        }
-        if (mixinClassName.endsWith(".perf.sodium.BlockRendererCallbacksMixin")) {
+        } else if (mixinClassName.endsWith(".perf.sodium.BlockRendererCallbacksMixin")) {
             boolean applied = io.github.imcinq.puremetal.perf.SodiumBlockCallbacks.apply(targetClass);
             LOGGER.info("Pure Metal: Sodium block callback cache {}", applied ? "enabled" : "skipped (factory shape changed)");
+        } else if (mixinClassName.endsWith(".lod.SectionCompilerMixin")) {
+            // MixinExtras (@WrapOperation/@WrapWithCondition) runs in Extensions.postApply right after plugin postApply,
+            // so verify standard @Inject calls directly and confirm MixinExtras handler methods + post-mixin target calls exist.
+            if (hasWovenCall(targetClass, "puremetal$beginLod")
+                && hasWovenCall(targetClass, "puremetal$endLod")
+                && hasMethodContaining(targetClass, "puremetal$coarseBlock")
+                && hasTargetCall(targetClass, "compile", "net/minecraft/client/renderer/block/ModelBlockRenderer", "tesselateBlock")) {
+                MixinHooks.confirm(MixinHooks.VLOD_COMPILER);
+            }
+            if (hasMethodContaining(targetClass, "puremetal$coarseWater")
+                && hasTargetCall(targetClass, "compile", "net/minecraft/client/renderer/block/FluidRenderer", "tesselate")) {
+                MixinHooks.confirm(MixinHooks.VLOD_WATER_EMIT);
+            }
+        } else if (mixinClassName.endsWith(".lod.FluidRendererMixin")) {
+            if (hasMethodContaining(targetClass, "puremetal$skipMergedTop")
+                && hasTargetCall(targetClass, "tesselate", "net/minecraft/client/renderer/block/FluidRenderer", "isNeighborSameFluid")) {
+                MixinHooks.confirm(MixinHooks.VLOD_WATER_SKIP);
+            }
+        } else if (mixinClassName.endsWith(".lod.SectionCompilerResultsMixin")) {
+            if (implementsInterface(targetClass, "io/github/imcinq/puremetal/lod/LodState")) {
+                MixinHooks.confirm(MixinHooks.VLOD_RESULTS);
+            }
+        } else if (mixinClassName.endsWith(".lod.CompiledSectionMeshMixin")) {
+            if (implementsInterface(targetClass, "io/github/imcinq/puremetal/lod/LodState")
+                && hasWovenCall(targetClass, "puremetal$copyLod")) {
+                MixinHooks.confirm(MixinHooks.VLOD_MESH);
+            }
+        } else if (mixinClassName.endsWith(".lod.LevelExtractorMixin")) {
+            if (hasWovenCall(targetClass, "puremetal$lodTransitions")) {
+                MixinHooks.confirm(MixinHooks.VLOD_EXTRACTOR);
+            }
+        } else if (mixinClassName.endsWith(".lod.sodium.ChunkBuilderMeshingTaskMixin")) {
+            if (hasWovenCall(targetClass, "puremetal$beginLod")
+                && hasWovenCall(targetClass, "puremetal$endLod")
+                && hasMethodContaining(targetClass, "puremetal$coarseBlock")
+                && hasTargetCall(targetClass, "execute", "net/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/BlockRenderer", "renderModel")) {
+                MixinHooks.confirm(MixinHooks.SLOD_TASK);
+            }
+            if (hasMethodContaining(targetClass, "puremetal$coarseWater")
+                && hasTargetCall(targetClass, "execute", "net/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/FluidRenderer", "render")) {
+                MixinHooks.confirm(MixinHooks.SLOD_WATER_EMIT);
+            }
+        } else if (mixinClassName.contains(".lod.sodium.DefaultFluidRenderer")) {
+            String targetMethod = mixinClassName.endsWith("SideVisibleMixin") ? "isFullBlockFluidSideVisible" : "isFullBlockFluidVisible";
+            if (hasMethodContaining(targetClass, "puremetal$skipMergedTop")
+                && hasTargetCall(targetClass, "render", "net/caffeinemc/mods/sodium/client/render/chunk/compile/pipeline/DefaultFluidRenderer", targetMethod)) {
+                MixinHooks.confirm(MixinHooks.SLOD_WATER_SKIP);
+                io.github.imcinq.puremetal.lod.sodium.WaterTopHook.setSupported(true);
+            }
+        } else if (mixinClassName.endsWith(".lod.sodium.ChunkBuildOutputMixin")) {
+            if (implementsInterface(targetClass, "io/github/imcinq/puremetal/lod/LodState")) {
+                MixinHooks.confirm(MixinHooks.SLOD_OUTPUT);
+            }
+        } else if (mixinClassName.endsWith(".lod.sodium.RenderSectionMixin")) {
+            if (implementsInterface(targetClass, "io/github/imcinq/puremetal/lod/LodState")) {
+                MixinHooks.confirm(MixinHooks.SLOD_SECTION);
+            }
+        } else if (mixinClassName.endsWith(".lod.sodium.RenderSectionManagerMixin")) {
+            if (hasWovenCall(targetClass, "puremetal$trackLod")
+                && hasWovenCall(targetClass, "puremetal$lodTransitions")) {
+                MixinHooks.confirm(MixinHooks.SLOD_MANAGER);
+            }
+        } else if (mixinClassName.endsWith(".perf.LevelRendererEarlyUploadMixin")) {
+            if (implementsInterface(targetClass, "io/github/imcinq/puremetal/perf/EarlyTerrainUpload$DeferredFlush")
+                && hasWovenCall(targetClass, "puremetal$flushPendingBeforeRender")
+                && hasWovenCall(targetClass, "puremetal$flushDeferredTerrainUpload")
+                && hasWovenCall(targetClass, "puremetal$clearDeferredOnInvalidate")
+                && hasWovenCall(targetClass, "puremetal$clearDeferredOnReset")
+                && hasWovenCall(targetClass, "puremetal$clearDeferredOnClose")
+                && hasMethodContaining(targetClass, "puremetal$deferTerrainUpload")
+                && hasTargetCall(targetClass, "render", "net/minecraft/client/renderer/chunk/SectionRenderDispatcher", "uploadTerrainBuffersToGpu")
+                && hasMethodContaining(targetClass, "puremetal$deferOcclusionUpdate")
+                && hasTargetCall(targetClass, "render", "net/minecraft/client/renderer/SectionOcclusionGraph", "update")) {
+                MixinHooks.confirm(MixinHooks.EARLY_RENDERER);
+            }
+        } else if (mixinClassName.endsWith(".perf.LevelExtractorEarlyUploadMixin")) {
+            if (hasWovenCall(targetClass, "puremetal$flushDeferredBeforeExtract")) {
+                MixinHooks.confirm(MixinHooks.EARLY_EXTRACTOR);
+            }
+        } else if (mixinClassName.endsWith(".perf.SectionRenderDispatcherPacerMixin")) {
+            if (hasWovenCall(targetClass, "puremetal$initLoadingState")
+                && hasWovenCall(targetClass, "puremetal$onFrameUpload")
+                && hasMethodContaining(targetClass, "puremetal$pacedSchedule")
+                && hasTargetCall(targetClass, "schedule", "net/minecraft/TracingExecutor", "execute")
+                && hasMethodContaining(targetClass, "puremetal$trackAcquire")
+                && hasTargetCall(targetClass, "runTask", "net/minecraft/client/renderer/SectionBufferBuilderPool", "acquire")
+                && hasMethodContaining(targetClass, "puremetal$suppressRecursiveDispatch")
+                && hasTargetCall(targetClass, "runTask", "net/minecraft/TracingExecutor", "execute")) {
+                MixinHooks.confirm(MixinHooks.PACER_ALL);
+            }
+        } else if (mixinClassName.endsWith(".ui.sodium.AbstractParentWidgetInvoker")) {
+            if (hasConcreteMethod(targetClass, "puremetal$addRenderableChild")) {
+                MixinHooks.confirm(MixinHooks.SODIUM_UI_BRIDGE);
+            }
         }
     }
 }

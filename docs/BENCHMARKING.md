@@ -91,9 +91,9 @@ Terrain LOD is on by default at render distance 16 and above, with an 80% full-d
 
 Results also depend heavily on the Mac, the world and the render distance, so compare runs on the same machine only.
 
-## GPU time per render pass (Metal 3)
+## GPU time per render pass (Metal 3 & Metal 4)
 
-`-Dpuremetal.passTiming=true` (Gradle: `-PpassTiming`) reports where the frame's GPU time goes, per logical render pass. It is off by default and changes nothing then. It is for the in-game bench (`-Pbench=<seconds>`) on the Metal 3 path (`-Pmetal4=false`); on Metal 4 it logs "unsupported" and does nothing.
+`-Dpuremetal.passTiming=true` (Gradle: `-PpassTiming`) reports where the frame's GPU time goes, per logical render pass, on both Metal 3 and Metal 4. It is off by default and changes nothing then. On Metal 3 it uses stage-boundary counter sample buffers (`vertexMs/f`, `fragmentMs/f`, `totalMs/f`); on Metal 4 it uses `MTL4CounterHeap` timestamps (`vertexSpanMs/f` from encoder start to vertex end, `fragTailMs/f` from vertex end to fragment end, and `totalMs/f` for the whole encoder span).
 
 Example, with a fixed spot:
 

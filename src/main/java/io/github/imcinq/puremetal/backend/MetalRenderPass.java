@@ -42,6 +42,7 @@ final class MetalRenderPass implements RenderPassBackend {
     private @Nullable MetalPipeline pipeline;
     private final List<@Nullable Object> uniforms = new ArrayList<>();
     private boolean bindingsDirty;
+    private boolean closed;
     private @Nullable MetalBuffer indexBuffer;
     private IndexType indexType = IndexType.SHORT;
     private int debugGroups;
@@ -71,6 +72,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     void end() {
+        this.closed = true;
         while (this.debugGroups > 0) {
             this.popDebugGroup();
         }
@@ -458,5 +460,14 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void writeTimestamp(final GpuQueryPool pool, final int index) {
+        if (this.closed) {
+            throw new IllegalStateException("Cannot writeTimestamp on a closed render pass");
+        }
+        if (pool instanceof MetalQueryPool metalPool) {
+            if (metalPool.device() != this.encoder.device()) {
+                throw new IllegalArgumentException("Query pool does not belong to this Metal device");
+            }
+            metalPool.writeTimestamp(index, true);
+        }
     }
 }

@@ -8,9 +8,9 @@ import java.util.Map;
 import org.slf4j.Logger;
 
 /**
- * Opt-in GPU time per logical render pass (-Dpuremetal.passTiming=true, Metal 3 only). The native side gives every logical pass its
- * own encoder with stage-boundary samples and reports per "label WxH[+d]" totals; this class sums them over the measured frames and
- * prints the BENCH-PASS lines. Splitting disables encoder merging, so the totals are larger than an unsplit frame's.
+ * Opt-in GPU time per logical render pass (-Dpuremetal.passTiming=true, Metal 3 and Metal 4). The native side gives every logical
+ * pass its own encoder with timestamp samples and reports per "label WxH[+d]" totals; this class sums them over the measured frames
+ * and prints the BENCH-PASS lines. Splitting disables encoder merging, so the totals are larger than an unsplit frame's.
  */
 public final class PassTiming {
     public static final boolean ENABLED = Boolean.getBoolean("puremetal.passTiming");
@@ -48,9 +48,10 @@ public final class PassTiming {
     public static void report(final Logger log, final int frames, final long gpuNs, final long gpuFrames, final long blitNs) {
         if (!ENABLED || frames <= 0) return;
         if (KEYS.isEmpty()) {
-            log.info("BENCH-PASS no per-pass samples (unsupported here, e.g. Metal 4, or no timed passes)");
+            log.info("BENCH-PASS no per-pass samples (unsupported here or no timed passes)");
             return;
         }
+        boolean metal4 = io.github.imcinq.puremetal.backend.EncodeProfile.metal4Active();
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(KEYS.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[3], a.getValue()[3]));
         long vertex = 0, fragment = 0, span = 0, count = 0;
@@ -60,10 +61,17 @@ public final class PassTiming {
             fragment += v[2];
             span += v[3];
         }
-        log.info("BENCH-PASS-SUMMARY mode=split splitGpuMsPerFrame={} passSpanSumMs/f={} vertexSumMs/f={} fragmentSumMs/f={} blitMs/f={} timedPasses/f={} droppedPasses/f={} partialPasses/f={} keys={} (split mode: every logical pass is its own encoder, so totals are inflated against unsplit gpuMsPerFrame)",
-            gpuFrames == 0 ? "n/a" : fmt(gpuNs / 1e6 / frames), fmt(span / 1e6 / frames), fmt(vertex / 1e6 / frames),
-            fmt(fragment / 1e6 / frames), fmt(blitNs / 1e6 / frames), fmt((double)count / frames),
-            fmt((double)droppedPasses / frames), fmt((double)partialPasses / frames), KEYS.size());
+        if (metal4) {
+            log.info("BENCH-PASS-SUMMARY mode=split api=metal4 splitGpuMsPerFrame={} passSpanSumMs/f={} vertexSpanSumMs/f={} fragTailSumMs/f={} blitMs/f={} timedPasses/f={} droppedPasses/f={} partialPasses/f={} keys={} (Metal 4 split mode: every logical pass is its own encoder; vertexSpan is start..vertex-end and fragTail is vertex-end..fragment-end)",
+                gpuFrames == 0 ? "n/a" : fmt(gpuNs / 1e6 / frames), fmt(span / 1e6 / frames), fmt(vertex / 1e6 / frames),
+                fmt(fragment / 1e6 / frames), fmt(blitNs / 1e6 / frames), fmt((double)count / frames),
+                fmt((double)droppedPasses / frames), fmt((double)partialPasses / frames), KEYS.size());
+        } else {
+            log.info("BENCH-PASS-SUMMARY mode=split splitGpuMsPerFrame={} passSpanSumMs/f={} vertexSumMs/f={} fragmentSumMs/f={} blitMs/f={} timedPasses/f={} droppedPasses/f={} partialPasses/f={} keys={} (split mode: every logical pass is its own encoder, so totals are inflated against unsplit gpuMsPerFrame)",
+                gpuFrames == 0 ? "n/a" : fmt(gpuNs / 1e6 / frames), fmt(span / 1e6 / frames), fmt(vertex / 1e6 / frames),
+                fmt(fragment / 1e6 / frames), fmt(blitNs / 1e6 / frames), fmt((double)count / frames),
+                fmt((double)droppedPasses / frames), fmt((double)partialPasses / frames), KEYS.size());
+        }
         long[] other = new long[4];
         int otherKeys = 0;
         for (int i = 0; i < rows.size(); i++) {
@@ -73,15 +81,21 @@ public final class PassTiming {
                 otherKeys++;
                 continue;
             }
-            line(log, rows.get(i).getKey(), v, frames, span);
+            line(log, rows.get(i).getKey(), v, frames, span, metal4);
         }
-        if (otherKeys > 0) line(log, "other (" + otherKeys + " more)", other, frames, span);
+        if (otherKeys > 0) line(log, "other (" + otherKeys + " more)", other, frames, span, metal4);
     }
 
-    private static void line(final Logger log, final String label, final long[] v, final int frames, final long spanTotal) {
-        log.info("BENCH-PASS label=\"{}\" count/f={} vertexMs/f={} fragmentMs/f={} totalMs/f={} percent={}",
-            label, fmt((double)v[0] / frames), fmt(v[1] / 1e6 / frames), fmt(v[2] / 1e6 / frames), fmt(v[3] / 1e6 / frames),
-            spanTotal == 0 ? "n/a" : fmt(100.0 * v[3] / spanTotal));
+    private static void line(final Logger log, final String label, final long[] v, final int frames, final long spanTotal, final boolean metal4) {
+        if (metal4) {
+            log.info("BENCH-PASS label=\"{}\" count/f={} vertexSpanMs/f={} fragTailMs/f={} totalMs/f={} percent={}",
+                label, fmt((double)v[0] / frames), fmt(v[1] / 1e6 / frames), fmt(v[2] / 1e6 / frames), fmt(v[3] / 1e6 / frames),
+                spanTotal == 0 ? "n/a" : fmt(100.0 * v[3] / spanTotal));
+        } else {
+            log.info("BENCH-PASS label=\"{}\" count/f={} vertexMs/f={} fragmentMs/f={} totalMs/f={} percent={}",
+                label, fmt((double)v[0] / frames), fmt(v[1] / 1e6 / frames), fmt(v[2] / 1e6 / frames), fmt(v[3] / 1e6 / frames),
+                spanTotal == 0 ? "n/a" : fmt(100.0 * v[3] / spanTotal));
+        }
     }
 
     private static String fmt(final double v) {

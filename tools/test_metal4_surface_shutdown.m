@@ -17,7 +17,7 @@ int main(void) { @autoreleasepool {
     atomic_fetch_add(&context->refs, 1);
     atomic_fetch_add(&surface->onScreenPending, 1);
     double start = CACurrentMediaTime();
-    pm_surface_destroy(surface);
+    assert(pm_surface_destroy(surface) == 1);
     double elapsed = CACurrentMediaTime() - start;
     pthread_mutex_lock(&context->lock);
     assert(context->surface == NULL);

@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
 @Mixin(FrontendGpuDevice.class)
 public abstract class LodTextureShaderMixin {
     @Shadow @Final private GpuDeviceBackend backend;
-    @ModifyVariable(method = "compilePipeline", at = @At("HEAD"), argsOnly = true, require = 1)
+    @ModifyVariable(method = "compilePipeline", at = @At("HEAD"), argsOnly = true)
     private ShaderSource puremetal$repeatSource(ShaderSource source) {
         return PureMetalBackend.isMetalDevice(this.backend) ? LodTextureRepeat.wrap(source) : source;
     }

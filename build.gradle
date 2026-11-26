@@ -167,6 +167,12 @@ loom {
 			if (project.hasProperty("passTiming")) vmArgs "-Dpuremetal.passTiming=true"
 			if (project.hasProperty("hdrHighlights")) vmArgs "-Dpuremetal.hdrHighlights=" + (project.property("hdrHighlights").toString().equalsIgnoreCase("false") ? "false" : "true")
 			if (project.hasProperty("metal4")) vmArgs "-Dpuremetal.metal4=" + project.property("metal4")
+			if (project.hasProperty("m4TrackedUploads")) vmArgs "-Dpuremetal.m4TrackedUploads=" + project.property("m4TrackedUploads")
+			if (project.hasProperty("m4PreciseBarriers")) vmArgs "-Dpuremetal.m4PreciseBarriers=" + project.property("m4PreciseBarriers")
+			if (project.hasProperty("m4Pipelines")) vmArgs "-Dpuremetal.m4Pipelines=" + project.property("m4Pipelines")
+			if (project.hasProperty("m4TileSize")) vmArgs "-Dpuremetal.m4TileSize=" + project.property("m4TileSize")
+			if (project.hasProperty("m4BarrierLog")) vmArgs "-Dpuremetal.m4BarrierLog=" + project.property("m4BarrierLog")
+			if (project.hasProperty("m4BarrierLogSkip")) vmArgs "-Dpuremetal.m4BarrierLogSkip=" + project.property("m4BarrierLogSkip")
 			if (project.hasProperty("terrainDiagnostics")) vmArgs "-Dpuremetal.terrainDiagnostics=true"
 			if (project.hasProperty("terrainOcclusionProbe")) vmArgs "-Dpuremetal.terrainOcclusionProbe=true", "-Dpuremetal.terrainDiagnostics=true", "-Dpuremetal.profile=true"
 			if (project.hasProperty("disableLodTextures")) vmArgs "-Dpuremetal.experimentalLodTextures=false"

@@ -42,7 +42,9 @@ public abstract class SectionCompilerMixin {
         final SectionPos sectionPos, final RenderSectionRegion region, final VertexSorting sorting, final SectionBufferBuilderPack builders,
         final CallbackInfoReturnable<SectionCompiler.Results> cir
     ) {
-        CoarseMesher.begin(region, sectionPos.x(), sectionPos.y(), sectionPos.z(), this.ambientOcclusion, this.blockModelSet, this.blockColors, this.fluidModelSet);
+        if (!io.github.imcinq.puremetal.MixinHooks.vanillaLodReady()) return;
+        CoarseMesher.begin(region, sectionPos.x(), sectionPos.y(), sectionPos.z(), this.ambientOcclusion, this.blockModelSet, this.blockColors,
+            io.github.imcinq.puremetal.MixinHooks.vanillaWaterReady() ? this.fluidModelSet : null);
     }
 
     @WrapOperation(
@@ -93,7 +95,10 @@ public abstract class SectionCompilerMixin {
         final SectionPos sectionPos, final RenderSectionRegion region, final VertexSorting sorting, final SectionBufferBuilderPack builders,
         final CallbackInfoReturnable<SectionCompiler.Results> cir
     ) {
-        ((LodState) (Object) cir.getReturnValue()).puremetal$setLodState(CoarseMesher.end());
+        byte state = CoarseMesher.end();
+        if ((Object) cir.getReturnValue() instanceof LodState lod) {
+            lod.puremetal$setLodState(state);
+        }
         VanillaEmitter.end();
     }
 }

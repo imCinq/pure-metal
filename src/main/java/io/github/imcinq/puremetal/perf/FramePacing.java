@@ -10,8 +10,8 @@ import net.minecraft.client.Minecraft;
 /**
  * Optional smooth frame pacing: with VSync on, each frame is scheduled for the display refresh after the previous one
  * instead of going out the moment it is ready, so frames reach the screen at an even rhythm. It never delays a late frame.
- * Off by default and experimental; toggled in Pure Metal's settings (stored as smoothFramePacing in
- * config/puremetal.properties), or forced at startup with -Dpuremetal.smoothFramePacing=true|false.
+ * Off by default; toggled in Pure Metal's settings (stored as smoothFramePacing in config/puremetal.properties),
+ * or forced at startup with -Dpuremetal.smoothFramePacing=true|false.
  *
  * Also holds High Refresh Boost (off by default and experimental, stored as highRefreshBoost): with VSync off on a display
  * of 200 Hz or more, each frame is shown as soon as it is ready instead of at the next refresh, which may tear.
