@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Run the benchmark JAR first, see [Benchmark your Mac](https://github.com/imCinq/Pure-Metal/blob/main/docs/BENCHMARKING.md#benchmark-your-mac).
+        Run the Fabric-only benchmark JAR first, see [Benchmark your Mac](https://github.com/imCinq/Pure-Metal/blob/main/docs/BENCHMARKING.md#benchmark-your-mac).
         For a result that compares with the table: fullscreen (F11), no Sodium, a singleplayer world with seed `-4953692208966999560`.
   - type: input
     id: mac

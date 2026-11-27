@@ -5,7 +5,7 @@
 **New**
 - NeoForge 26.3 support: Pure Metal now ships a NeoForge jar alongside the Fabric jar, with Metal 3 and Metal 4 rendering, Fast Terrain, Terrain LOD, Render Scale, HDR Highlights, Smooth Frame Pacing, Sodium's Pure Metal settings page, and NeoForge viewport/stencil support. Distant Horizons support stays Fabric-only for now and falls back to the normal backend on NeoForge.
 - Native F3 GPU % and profiler timing: Pure Metal now reports real frame GPU times on both Metal 3 and Metal 4.
-- Crash log check for OpenGL-only mods: if another mod calls OpenGL directly while Metal is active and crashes the game, Pure Metal checks the crash log on the next launch and logs which mod caused it instead of leaving you guessing why Metal turned off.
+- Crash log check for OpenGL-only mods: if another mod calls OpenGL directly while Metal is active and crashes the game, Pure Metal checks recent JVM crash logs on the next launch and reports the likely mod or calling class when identifiable instead of leaving you guessing why Metal turned off.
 
 **Improvements**
 - HDR Highlights now apply only to the 3D world, leaving menus, chat and the HUD at normal brightness. It also toggles on and off live without restarting, uses macOS 26 display headroom info where available, and has moved from Experimental to Miscellaneous.

@@ -8,7 +8,7 @@ modId = "puremetal"
 version = "${version}"
 displayName = "Pure Metal"
 displayURL = "https://github.com/imCinq/pure-metal"
-iconFile = "assets/puremetal/icon.png"
+logoFile = "assets/puremetal/icon.png"
 authors = "imCinq"
 description = '''A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Metal instead of OpenGL. Works with Sodium. Terrain LOD for extra FPS at long render distances, plus optional Render Scale.'''
 

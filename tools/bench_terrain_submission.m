@@ -1,6 +1,6 @@
 // Offscreen submission experiment. No game, window, display settings or presenter changes.
 // clang -fobjc-arc -O2 -Wall -Werror -framework Metal -framework MetalFX -framework QuartzCore
-//   -framework Foundation -framework AppKit tools/bench_terrain_submission.m -o /tmp/pm-terrain-bench
+//   -framework Foundation -framework AppKit -framework IOSurface tools/bench_terrain_submission.m -o /tmp/pm-terrain-bench
 // /tmp/pm-terrain-bench (requires GPU access; run without Metal API validation for timings)
 // This deliberately tiny shader measures submission overhead, not Minecraft FPS or terrain GPU cost.
 #include "../src/main/native/puremetal.m"

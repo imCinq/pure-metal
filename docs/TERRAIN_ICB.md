@@ -71,7 +71,7 @@ flight, buffer churn, and whole-batch fallback before a matched in-game A/B.
 ```
 clang -fobjc-arc -O2 -Wall -Werror -framework Metal -framework MetalFX \
   -framework QuartzCore -framework Foundation -framework AppKit \
-  tools/bench_terrain_submission.m -o /tmp/pm-terrain-bench
+  -framework IOSurface tools/bench_terrain_submission.m -o /tmp/pm-terrain-bench
 /tmp/pm-terrain-bench
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog /tmp/pm-terrain-bench
 ```

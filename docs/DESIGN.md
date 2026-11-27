@@ -44,7 +44,7 @@ Pure Metal is a third backend modelled on the vanilla Vulkan one:
 
 | Risk | Where others hit it | Plan |
 |---|---|---|
-| Mods that call OpenGL directly (no GL context exists) | JourneyMap native crash on Metallum | `StartupGuard` + `DirectGlCrashAttribution` inspect `hs_err_pid*.log` on the next launch, name the offending mod, and recover Graphics API cleanly. |
+| Mods that call OpenGL directly (no GL context exists) | JourneyMap native crash on Metallum | `StartupGuard` + `DirectGlCrashAttribution` inspect recent `hs_err_pid*.log` files on the next launch, report the likely mod or calling class when identifiable, and recover Graphics API cleanly. |
 | Mods with their own renderer setting | Better Clouds needed OPENGL→METAL by hand | Core vs fail-soft optional mixins (`puremetal.mixins.json` / `puremetal.optional.mixins.json`) with post-apply `MixinHooks` gating. |
 | Core-shader resource packs that fail to translate | Metallum #3 | Shader failures are logged with the pack/shader name; the frontend's fallback rules decide, no hard crash. |
 | Using a resource after it is closed / freed too early | Essential "Color texture 0 is closed" | Command buffers retain resources; destruction is deferred two submits like Vulkan. |

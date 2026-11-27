@@ -17,7 +17,7 @@ body:
   - type: input
     id: mods
     attributes:
-      label: Minecraft, Fabric Loader and Sodium versions, other mods
+      label: Minecraft version, loader and version (Fabric or NeoForge), Sodium version if installed, and other mods
   - type: textarea
     id: what
     attributes:
