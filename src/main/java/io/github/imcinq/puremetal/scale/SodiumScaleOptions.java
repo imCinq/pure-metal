@@ -99,6 +99,7 @@ public final class SodiumScaleOptions implements ConfigEntryPoint {
                         .setTooltip(value -> io.github.imcinq.puremetal.perf.HdrHighlightsOptions.tooltip())
                         .setImpact(OptionImpact.LOW)
                         .setDefaultValue(false)
+                        .setEnabled(!io.github.imcinq.puremetal.perf.HdrHighlights.forced())
                         .setStorageHandler(() -> {
                         })
                         .setBinding(io.github.imcinq.puremetal.perf.HdrHighlights::setEnabled, io.github.imcinq.puremetal.perf.HdrHighlights::enabled))

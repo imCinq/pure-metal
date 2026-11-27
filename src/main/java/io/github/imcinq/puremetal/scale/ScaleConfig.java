@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal.scale;
 
+import io.github.imcinq.puremetal.ModPlatform;
 import io.github.imcinq.puremetal.Redact;
 import com.mojang.blaze3d.platform.Window;
 import java.io.IOException;
@@ -12,7 +13,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.function.Consumer;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 /** Render-scale settings, stored in config/puremetal.properties. */
 public final class ScaleConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Pure Metal");
-    private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("puremetal.properties");
+    private static final Path FILE = ModPlatform.get().configDir().resolve("puremetal.properties");
     public static final int MIN_SCALE = 50;
     public static final int MAX_SCALE = 100;
 

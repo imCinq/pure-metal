@@ -1,0 +1,39 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "Apache-2.0"
+issueTrackerURL = "https://github.com/imCinq/pure-metal/issues"
+
+[[mods]]
+modId = "puremetal"
+version = "${version}"
+displayName = "Pure Metal"
+displayURL = "https://github.com/imCinq/pure-metal"
+iconFile = "assets/puremetal/icon.png"
+authors = "imCinq"
+description = '''A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as vanilla, rendered through Metal instead of OpenGL. Works with Sodium. Terrain LOD for extra FPS at long render distances, plus optional Render Scale.'''
+
+[[mixins]]
+config = "puremetal.mixins.json"
+
+[[mixins]]
+config = "puremetal.optional.mixins.json"
+
+[[accessTransformers]]
+file = "META-INF/accesstransformer.cfg"
+
+[[dependencies.puremetal]]
+modId = "neoforge"
+type = "required"
+versionRange = "[26.3,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.puremetal]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.3,26.4)"
+ordering = "NONE"
+side = "CLIENT"
+
+[modproperties.puremetal]
+"sodium:config_api_user" = "io.github.imcinq.puremetal.scale.SodiumScaleOptions"

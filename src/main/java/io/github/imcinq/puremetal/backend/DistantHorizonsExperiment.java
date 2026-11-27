@@ -13,7 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
-import net.fabricmc.loader.api.FabricLoader;
+import io.github.imcinq.puremetal.ModPlatform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +31,7 @@ public final class DistantHorizonsExperiment {
             "com/seibel/distanthorizons/fabric/mixins/client/MixinLightTexture.class", "5717a3c5cc3a5cbffa5ef76cedd36c3c532801f4852db3021dc78b1b1e6dc76e");
     private static final String TESTED_VERSION = "3.3.4";
     private static final Logger LOGGER = LoggerFactory.getLogger("Pure Metal");
-    private static final long MAX_CLASS_BYTES = 2L * 1024 * 1024;
+    private static final int MAX_CLASS_BYTES = 2 * 1024 * 1024;
     private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
     private static Boolean enabled;
     private static Object nonGlApi;
@@ -59,6 +59,7 @@ public final class DistantHorizonsExperiment {
         ACTIVE_UNTESTED("DH: on (untested version)"),
         IRIS("DH: off (Iris)"),
         VERSION("DH: off (version)"),
+        LOADER("DH: off (Fabric only)"),
         MODIFIED("DH: off (modified build)"),
         ENGINE("DH: off (engine setting)"),
         CONFIG_UNREADABLE("DH: off (config unreadable)"),
@@ -99,23 +100,27 @@ public final class DistantHorizonsExperiment {
         String switchValue = System.getProperty(PROPERTY);
         if (switchValue != null && switchValue.trim().equalsIgnoreCase("false")) return Status.OFF;
         try {
-            FabricLoader loader = FabricLoader.getInstance();
-            var mod = loader.getModContainer("distanthorizons");
+            ModPlatform platform = ModPlatform.get();
+            var mod = platform.mod("distanthorizons");
             if (mod.isEmpty()) return Status.NOT_INSTALLED;
-            if (loader.isModLoaded("iris")) {
+            if (!"Fabric".equals(platform.loaderName())) {
+                LOGGER.warn("Pure Metal: Distant Horizons support is currently Fabric-only (running on {}); the game uses its normal graphics backend instead of Metal.", platform.loaderName());
+                return Status.LOADER;
+            }
+            if (platform.isModLoaded("iris")) {
                 LOGGER.warn("Pure Metal: Distant Horizons is installed together with Iris, which Pure Metal's DH support does not cover; the game uses its normal graphics backend instead of Metal.");
                 return Status.IRIS;
             }
-            String version = mod.get().getMetadata().getVersion().getFriendlyString();
+            String version = mod.get().version();
             if (!isSupportedLine(version)) {
                 LOGGER.warn("Pure Metal: Distant Horizons {} found, Pure Metal's DH support needs 3.3.x (tested on {}); the game uses its normal graphics backend instead of Metal.", version, TESTED_VERSION);
                 return Status.VERSION;
             }
-            if (!hasVerifiedClasses(mod.get()::findPath)) {
+            if (!hasVerifiedClassesBytes(path -> platform.readEntry("distanthorizons", path, MAX_CLASS_BYTES))) {
                 LOGGER.warn("Pure Metal: this Distant Horizons {} build is modified or unofficial or changed its key classes (they differ from the official 3.3.4 release); the game uses its normal graphics backend instead of Metal.", version);
                 return Status.MODIFIED;
             }
-            EngineCheck engine = checkEngine(loader.getConfigDir().resolve("DistantHorizons.toml"));
+            EngineCheck engine = checkEngine(platform.configDir().resolve("DistantHorizons.toml"));
             if (engine.state() == EngineState.WRONG_ENGINE) {
                 LOGGER.warn("Pure Metal: Distant Horizons is set to {} rendering engine, which Pure Metal's DH support cannot use. Set DH's rendering engine to AUTO (renderingEngine in DistantHorizons.toml) and restart; until then the game uses its normal graphics backend instead of Metal.",
                     engine.value() == null ? "an unsupported" : "the " + engine.value());
@@ -146,6 +151,17 @@ public final class DistantHorizonsExperiment {
         for (var entry : DH_CLASSES.entrySet()) {
             Optional<Path> path = findPath.apply(entry.getKey());
             if (path.isEmpty() || !Files.isRegularFile(path.get()) || !entry.getValue().equals(sha256(path.get()))) return false;
+        }
+        return true;
+    }
+
+    static boolean hasVerifiedClassesBytes(Function<String, Optional<byte[]>> readEntry) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        for (var entry : DH_CLASSES.entrySet()) {
+            Optional<byte[]> bytes = readEntry.apply(entry.getKey());
+            if (bytes.isEmpty() || bytes.get().length > MAX_CLASS_BYTES) return false;
+            digest.reset();
+            if (!entry.getValue().equals(HexFormat.of().formatHex(digest.digest(bytes.get())))) return false;
         }
         return true;
     }

@@ -599,6 +599,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         };
     }
 
+    /** NeoForge RenderPearl extension: clears the stencil aspect of a depth-stencil texture. */
+    public void clearStencilTexture(final GpuTexture texture, final int stencilValue) {
+        this.checkNotInRenderPass("clear a stencil texture");
+        ((MetalTexture)texture).beforeWrite(false);
+        MetalNative.clearStencil(this.handle(), ((MetalTexture)texture).handle(), stencilValue);
+    }
+
     @Override
     public void writeTimestamp(final GpuQueryPool pool, final int index) {
         this.checkNotInRenderPass("writeTimestamp");

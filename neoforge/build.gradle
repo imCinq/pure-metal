@@ -1,0 +1,132 @@
+plugins {
+	id 'java-library'
+	id 'net.neoforged.moddev' version "${moddev_version}"
+}
+
+version = rootProject.version
+group = rootProject.group
+base { archivesName = 'pure-metal' }
+
+repositories {
+	exclusiveContent {
+		forRepository { maven { url = 'https://api.modrinth.com/maven' } }
+		filter { includeGroup 'maven.modrinth' }
+	}
+	mavenCentral()
+}
+
+configurations {
+	sodiumBundle { transitive = false }
+}
+
+dependencies {
+	// Sodium NeoForge on Modrinth wraps the actual mod jar inside META-INF/jarjar/*-mod.jar.
+	// Extract the inner jar for compileOnly; at runtime NeoForge's Jar-in-Jar loader unpacks the outer jar directly.
+	def neoforgeSodiumVersion = project.findProperty('neoforgeSodiumVersion') ?: 'mc26.3-0.9.3-neoforge'
+	sodiumBundle "maven.modrinth:sodium:${neoforgeSodiumVersion}"
+	compileOnly files(provider {
+		def outDir = layout.buildDirectory.dir('tmp/sodium-api').get().asFile
+		outDir.mkdirs()
+		def bundle = configurations.sodiumBundle.singleFile
+		def inner = zipTree(bundle).matching { include 'META-INF/jarjar/*-mod.jar' }.singleFile
+		def bytes = inner.bytes
+		def target = new File(outDir, inner.name)
+		if (!target.exists() || !java.util.Arrays.equals(target.bytes, bytes)) {
+			target.bytes = bytes
+		}
+		target
+	})
+	if (project.hasProperty('sodium')) {
+		runtimeOnly "maven.modrinth:sodium:${neoforgeSodiumVersion}"
+	}
+}
+
+sourceSets {
+	main {
+		java {
+			srcDir '../src/main/java'
+			exclude 'io/github/imcinq/puremetal/FabricPlatform.java'
+		}
+		resources {
+			srcDir '../src/main/resources'
+			exclude 'fabric.mod.json'
+			exclude 'puremetal.accesswidener'
+		}
+	}
+}
+
+neoForge {
+	version = project.neoforge_version
+	validateAccessTransformers = true
+
+	runs {
+		neoforgeClient {
+			client()
+			gameDirectory = rootProject.file('run-neoforge')
+			jvmArgument '--enable-native-access=ALL-UNNAMED'
+			if (project.hasProperty('vanilla')) jvmArgument '-Dpuremetal.disable=true'
+			if (project.hasProperty('debug')) jvmArgument '-Dpuremetal.debug=true'
+			if (project.hasProperty('metal4')) jvmArgument "-Dpuremetal.metal4=${project.property('metal4')}"
+			if (project.hasProperty('world')) programArguments.addAll('--quickPlaySingleplayer', project.property('world').toString())
+		}
+	}
+
+	mods {
+		puremetal {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+def nativeOut = rootProject.layout.buildDirectory.file('native/libpuremetal.dylib')
+
+processResources {
+	dependsOn rootProject.tasks.named('buildNative')
+	from(nativeOut) { into 'natives' }
+	def ver = project.version.toString()
+	inputs.property 'version', ver
+	filesMatching('META-INF/neoforge.mods.toml') { expand 'version': ver }
+}
+
+tasks.register('checkNeoForgePrivacy') {
+	dependsOn 'processResources'
+	def resourcesDir = layout.buildDirectory.dir('resources/main')
+	def userName = System.getProperty('user.name')
+	def patterns = [
+		~('/Us' + 'ers/[^\\s]'),
+		~('/ho' + 'me/[^\\s]'),
+		~('C:' + '\\\\Us' + 'ers\\\\'),
+	]
+	if (System.getenv('CI') == null && userName && userName.length() >= 3) {
+		patterns << ~('(?i)(?<![\\p{Alnum}_])' + java.util.regex.Pattern.quote(userName) + '(?![\\p{Alnum}_])')
+	}
+	doLast {
+		def leaks = []
+		def res = resourcesDir.get().asFile
+		if (res.isDirectory()) {
+			res.eachFileRecurse { f ->
+				if (f.isFile()) {
+					new String(f.bytes, 'ISO-8859-1').eachLine { line, n ->
+						if (patterns.any { it.matcher(line).find() }) leaks << "neoforge-jar:${res.toPath().relativize(f.toPath())}:${n + 1}"
+					}
+				}
+			}
+		}
+		if (leaks) throw new GradleException('Personal path or user name found (NeoForge privacy check):\n  ' + leaks.join('\n  '))
+	}
+}
+
+tasks.named('jar') {
+	dependsOn rootProject.tasks.named('checkPrivacy'), 'checkNeoForgePrivacy'
+	archiveClassifier = 'neoforge'
+	from(rootProject.layout.projectDirectory.files('LICENSE', 'NOTICE'))
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release = 25
+}
+
+java {
+	toolchain { languageVersion = JavaLanguageVersion.of(25) }
+}

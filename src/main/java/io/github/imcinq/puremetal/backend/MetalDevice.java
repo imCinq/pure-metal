@@ -56,7 +56,7 @@ final class MetalDevice implements GpuDeviceBackend {
     private volatile boolean shuttingDown;
     private final MetalResourceCache<SamplerKey> samplers = new MetalResourceCache<>();
     private record ShaderKey(String sourceHash, String entryPoint, boolean safeMath, int constantId, int constantValue) {}
-    private record DepthKey(int enabled, int compare, int write) {}
+    private record DepthKey(int enabled, int compare, int write, io.github.imcinq.puremetal.ModPlatform.@Nullable StencilState stencil) {}
     private final MetalResourceCache<ShaderKey> functions = new MetalResourceCache<>();
     private final MetalResourceCache<DepthKey> depthStates = new MetalResourceCache<>();
     /** A closed native buffer, reusable once the submit that last referenced it (tag) has completed. */
@@ -323,8 +323,19 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     long acquireDepthState(final int enabled, final int compare, final int write) {
-        return this.depthStates.acquire(new DepthKey(enabled, compare, write),
-            () -> MetalNative.depthStateCreate(this.handle, enabled, compare, write));
+        return this.acquireDepthState(enabled, compare, write, null);
+    }
+
+    long acquireDepthState(final int enabled, final int compare, final int write,
+                           final io.github.imcinq.puremetal.ModPlatform.@Nullable StencilState stencil) {
+        return this.depthStates.acquire(new DepthKey(enabled, compare, write, stencil), () -> stencil == null
+            ? MetalNative.depthStateCreate(this.handle, enabled, compare, write)
+            : MetalNative.depthStencilStateCreate(
+                this.handle, enabled, compare, write,
+                stencil.frontFail(), stencil.frontDepthFail(), stencil.frontPass(), stencil.frontCompare(),
+                stencil.backFail(), stencil.backDepthFail(), stencil.backPass(), stencil.backCompare(),
+                stencil.readMask(), stencil.writeMask()
+            ));
     }
 
     void releaseDepthState(final long state) {

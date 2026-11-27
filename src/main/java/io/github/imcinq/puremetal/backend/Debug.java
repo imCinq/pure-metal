@@ -5,7 +5,7 @@ import com.mojang.logging.LogUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import net.fabricmc.loader.api.FabricLoader;
+import io.github.imcinq.puremetal.ModPlatform;
 import org.slf4j.Logger;
 
 /** Development diagnostics, all off by default: -Dpuremetal.debug=true, -Dpuremetal.dumpShaders=true. */
@@ -54,7 +54,7 @@ final class Debug {
 
     static synchronized void dumpShader(final String label, final String source) {
         try {
-            Path dir = FabricLoader.getInstance().getGameDir().resolve("puremetal-shaders");
+            Path dir = ModPlatform.get().gameDir().resolve("puremetal-shaders");
             Files.createDirectories(dir);
             Files.writeString(dir.resolve(label.replaceAll("[^A-Za-z0-9._-]", "_") + ".metal"), source);
         } catch (IOException e) {

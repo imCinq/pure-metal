@@ -85,6 +85,8 @@ public final class HdrHighlights {
         return debugText;
     }
 
+    private static final boolean FORCED = System.getProperty("puremetal.hdrHighlights") != null;
+
     private static boolean readEnabled() {
         String property = System.getProperty("puremetal.hdrHighlights");
         if (property != null) {
@@ -94,12 +96,16 @@ public final class HdrHighlights {
         return p != null && Boolean.parseBoolean(p.getProperty("hdrHighlights", "false").trim());
     }
 
+    public static boolean forced() {
+        return FORCED;
+    }
+
     public static boolean enabled() {
         return enabled;
     }
 
     public static void setEnabled(final boolean value) {
-        if (ScaleConfig.benchLocked()) {
+        if (FORCED || ScaleConfig.benchLocked()) {
             return;
         }
         if (value == enabled) {

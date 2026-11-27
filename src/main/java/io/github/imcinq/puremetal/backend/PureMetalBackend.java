@@ -10,7 +10,7 @@ import com.mojang.renderpearl.frontend.FrontendGpuDevice;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import net.fabricmc.loader.api.FabricLoader;
+import io.github.imcinq.puremetal.ModPlatform;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.sdl.SDLVideo;
 import org.lwjgl.system.MemoryStack;
@@ -61,12 +61,12 @@ public final class PureMetalBackend implements GpuBackend {
                 ids.add(extra.strip());
             }
         }
-        FabricLoader loader = FabricLoader.getInstance();
+        ModPlatform platform = ModPlatform.get();
         for (String id : ids) {
-            var mod = loader.getModContainer(id);
+            var mod = platform.mod(id);
             if (mod.isPresent()) {
                 if ("distanthorizons".equals(id) && DistantHorizonsExperiment.enabled()) continue;
-                return mod.get().getMetadata().getName() + " (" + id + ")";
+                return mod.get().name() + " (" + id + ")";
             }
         }
         return null;

@@ -1,6 +1,7 @@
 build/
 .gradle/
 run/
+run-neoforge/
 out/
 *.iml
 .idea/

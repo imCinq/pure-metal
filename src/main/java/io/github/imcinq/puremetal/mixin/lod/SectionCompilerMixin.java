@@ -3,12 +3,11 @@ package io.github.imcinq.puremetal.mixin.lod;
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.mojang.blaze3d.vertex.VertexSorting;
+import com.llamalad7.mixinextras.sugar.Local;
 import io.github.imcinq.puremetal.lod.CoarseMesher;
 import io.github.imcinq.puremetal.lod.LodState;
 import io.github.imcinq.puremetal.lod.VanillaEmitter;
 import net.minecraft.client.color.block.BlockColors;
-import net.minecraft.client.renderer.SectionBufferBuilderPack;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.client.renderer.block.BlockQuadOutput;
 import net.minecraft.client.renderer.block.BlockStateModelSet;
@@ -22,6 +21,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -37,10 +37,16 @@ public abstract class SectionCompilerMixin {
     @Shadow @Final private BlockColors blockColors;
     @Shadow @Final private FluidStateModelSet fluidModelSet;
 
-    @Inject(method = "compile", at = @At("HEAD"))
+    // Anchored on SectionPos.origin() so NeoForge's 4-arg delegator is skipped while both Fabric's 4-arg
+    // and NeoForge's 5-arg compile bodies are hooked without descriptor mismatch.
+    @Inject(
+        method = "compile",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/core/SectionPos;origin()Lnet/minecraft/core/BlockPos;")
+    )
     private void puremetal$beginLod(
-        final SectionPos sectionPos, final RenderSectionRegion region, final VertexSorting sorting, final SectionBufferBuilderPack builders,
-        final CallbackInfoReturnable<SectionCompiler.Results> cir
+        final CallbackInfoReturnable<SectionCompiler.Results> cir,
+        @Local(argsOnly = true) final SectionPos sectionPos,
+        @Local(argsOnly = true) final RenderSectionRegion region
     ) {
         if (!io.github.imcinq.puremetal.MixinHooks.vanillaLodReady()) return;
         CoarseMesher.begin(region, sectionPos.x(), sectionPos.y(), sectionPos.z(), this.ambientOcclusion, this.blockModelSet, this.blockColors,
@@ -90,13 +96,21 @@ public abstract class SectionCompilerMixin {
         return true;
     }
 
-    @Inject(method = "compile", at = @At("RETURN"))
+    @Inject(
+        method = "compile",
+        at = @At(
+            value = "FIELD",
+            target = "Lnet/minecraft/client/renderer/chunk/SectionCompiler$Results;visibilitySet:Lnet/minecraft/client/renderer/chunk/VisibilitySet;",
+            opcode = Opcodes.PUTFIELD,
+            shift = At.Shift.AFTER
+        )
+    )
     private void puremetal$endLod(
-        final SectionPos sectionPos, final RenderSectionRegion region, final VertexSorting sorting, final SectionBufferBuilderPack builders,
-        final CallbackInfoReturnable<SectionCompiler.Results> cir
+        final CallbackInfoReturnable<SectionCompiler.Results> cir,
+        @Local final SectionCompiler.Results results
     ) {
         byte state = CoarseMesher.end();
-        if ((Object) cir.getReturnValue() instanceof LodState lod) {
+        if ((Object) results instanceof LodState lod) {
             lod.puremetal$setLodState(state);
         }
         VanillaEmitter.end();

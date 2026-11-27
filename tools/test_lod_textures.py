@@ -12,14 +12,14 @@ if not env.get("JAVA_HOME"):
 with tempfile.TemporaryDirectory(prefix="pm-texture-check-") as directory:
     temp = Path(directory)
     init = temp / "classpath.gradle"
-    init.write_text("""allprojects { afterEvaluate {
+    init.write_text("""rootProject { afterEvaluate {
 tasks.register('pmTextureCheckClasspath') {
 dependsOn tasks.named('classes')
 doLast { println 'PM_CP=' + (sourceSets.main.output + configurations.compileClasspath + configurations.runtimeClasspath).asPath }
 }
 } }
 """)
-    result = subprocess.run([str(root / "gradlew"), "--offline", "-q", "-I", str(init), "pmTextureCheckClasspath"], cwd=root, env=env, text=True, capture_output=True, check=True)
+    result = subprocess.run([str(root / "gradlew"), "--offline", "-q", "-I", str(init), ":pmTextureCheckClasspath"], cwd=root, env=env, text=True, capture_output=True, check=True)
     cp = next(line[6:] for line in result.stdout.splitlines() if line.startswith("PM_CP="))
     subprocess.run([env["JAVA_HOME"]+"/bin/javac", "-cp", cp, "-d", str(temp), str(root/"tools/TestLodTextureShaders.java")], check=True)
     reference = env.get("PM_LOD_SHADER_REFERENCE")

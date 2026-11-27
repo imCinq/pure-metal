@@ -6,8 +6,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import io.github.imcinq.puremetal.ModPlatform;
 import java.util.concurrent.TimeUnit;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 
@@ -40,7 +40,7 @@ public final class UserBench {
                 out.append("NOT PURE METAL: this run used the ").append(backend)
                     .append(" backend, so the result is INVALID. Set Graphics API to Default in Video Settings and run it again.\n\n");
             }
-            if (FabricLoader.getInstance().isModLoaded("sodium")) {
+            if (ModPlatform.get().isModLoaded("sodium")) {
                 out.append("WARNING: Sodium installed: compare only with other Sodium runs.\n\n");
             }
             String seed = worldSeed(minecraft);
@@ -51,13 +51,13 @@ public final class UserBench {
             }
             out.append("Pure Metal benchmark\n");
             out.append("World seed: ").append(seed == null ? "unknown" : seed).append('\n');
-            out.append("Pure Metal: ").append(FabricLoader.getInstance().getModContainer("puremetal")
-                .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("?")).append('\n');
-            out.append("Minecraft: ").append(FabricLoader.getInstance().getModContainer("minecraft")
-                .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("?")).append('\n');
+            out.append("Pure Metal: ").append(ModPlatform.get().mod("puremetal")
+                .map(ModPlatform.ModMeta::version).orElse("?")).append('\n');
+            out.append("Minecraft: ").append(ModPlatform.get().mod("minecraft")
+                .map(ModPlatform.ModMeta::version).orElse("?")).append('\n');
             out.append("Backend: ").append(backend).append('\n');
             out.append("Metal 4 setting: ").append(io.github.imcinq.puremetal.backend.Metal4Config.effective() ? "on" : "off (forced for the benchmark, Metal 3)").append('\n');
-            out.append("Sodium: ").append(FabricLoader.getInstance().isModLoaded("sodium") ? "yes" : "no").append('\n');
+            out.append("Sodium: ").append(ModPlatform.get().isModLoaded("sodium") ? "yes" : "no").append('\n');
             out.append("Chip: ").append(sysctl("machdep.cpu.brand_string")).append('\n');
             out.append("Memory GB: ").append(memoryGb()).append('\n');
             out.append("macOS: ").append(System.getProperty("os.version")).append('\n');

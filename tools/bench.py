@@ -35,7 +35,7 @@ def run_client(api, log, extra):
     set_api(api)
     with open(log, "w") as out:
         sodium = [] if os.environ.get("NO_SODIUM") else ["-Psodium"]
-        subprocess.run(["./gradlew", "runClient", *sodium, "-Pworld=New World", "-Pbench=" + os.environ.get("BENCH_SECONDS", "25"), "-PbenchWarmup=" + os.environ.get("BENCH_WARMUP", "10"), *extra],
+        subprocess.run(["./gradlew", ":runClient", *sodium, "-Pworld=New World", "-Pbench=" + os.environ.get("BENCH_SECONDS", "25"), "-PbenchWarmup=" + os.environ.get("BENCH_WARMUP", "10"), *extra],
                        cwd=PROJECT, env=ENV, stdout=out, stderr=subprocess.STDOUT)
     with open(log) as f:
         return [l.split("BENCH", 1)[1].strip() for l in f if "BENCH backend" in l or "BENCH encoders" in l]

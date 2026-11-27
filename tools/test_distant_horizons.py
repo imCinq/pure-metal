@@ -39,12 +39,12 @@ def check(jar, root, env, home):
     with tempfile.TemporaryDirectory(prefix="puremetal-dh-check-") as directory:
         temp = Path(directory)
         init = temp / "classpath.gradle"
-        init.write_text("""allprojects { afterEvaluate { tasks.register('dhCheckClasspath') {
+        init.write_text("""rootProject { afterEvaluate { tasks.register('dhCheckClasspath') {
             dependsOn tasks.named('classes')
             doLast { println 'DH_CP=' + (sourceSets.main.output + configurations.compileClasspath + configurations.runtimeClasspath).asPath }
         } } }
 """)
-        result = subprocess.run([str(root / "gradlew"), "--offline", "-q", "-I", str(init), "dhCheckClasspath"], cwd=root, env=env, text=True, capture_output=True)
+        result = subprocess.run([str(root / "gradlew"), "--offline", "-q", "-I", str(init), ":dhCheckClasspath"], cwd=root, env=env, text=True, capture_output=True)
         if result.returncode:
             raise RuntimeError("Failed to prepare test classpath:\n" + result.stdout + result.stderr)
         cp = next(line[6:] for line in result.stdout.splitlines() if line.startswith("DH_CP="))

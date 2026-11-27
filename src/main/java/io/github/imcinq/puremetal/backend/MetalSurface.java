@@ -248,7 +248,7 @@ final class MetalSurface implements GpuSurfaceBackend {
         MetalBuffer buffer = new MetalBuffer(this.device, com.mojang.renderpearl.api.buffers.GpuBuffer.USAGE_MAP_READ, (long)width * height * 4, null);
         encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
             try {
-                java.nio.file.Path out = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().resolve("puremetal-capture.png");
+                java.nio.file.Path out = io.github.imcinq.puremetal.ModPlatform.get().gameDir().resolve("puremetal-capture.png");
                 // Render targets use Vulkan's row order, so flip like the present pass; force opaque alpha since HDR stores HUD coverage in A.
                 ByteBuffer pixels = MemoryUtil.memByteBuffer(buffer.contents(), width * height * 4);
                 for (int i = 3; i < pixels.limit(); i += 4) {

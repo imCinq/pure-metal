@@ -329,8 +329,8 @@ public final class TerrainShaderProof implements AutoCloseable {
     private static final java.util.Set<String> PINNED_SODIUM_VERSIONS=java.util.Set.of("0.9.2","0.9.3-beta.1","0.9.3-beta.5","0.9.3","0.9.4-beta.1","0.9.4-beta.2");
     private static boolean pinnedSodiumVersion() {
         try {
-            return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("sodium")
-                .map(container->container.getMetadata().getVersion().getFriendlyString())
+            return io.github.imcinq.puremetal.ModPlatform.get().mod("sodium")
+                .map(io.github.imcinq.puremetal.ModPlatform.ModMeta::version)
                 .map(version->PINNED_SODIUM_VERSIONS.contains(version.split("\\+",2)[0]))
                 .orElse(true);
         } catch(RuntimeException unavailable) {return true;}

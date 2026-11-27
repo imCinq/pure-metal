@@ -74,7 +74,7 @@ tasks.register('checkPrivacy') {
 		} catch (IOException ignored) {}
 		if (tracked == null) {
 			// No git (or not a checkout): scan the source tree directly instead of silently skipping.
-			def skip = ["build", ".gradle", "run", ".git"] as Set
+			def skip = ["build", ".gradle", "run", "run-neoforge", ".git"] as Set
 			tracked = []
 			root.eachFileRecurse { f ->
 				def rel = root.toPath().relativize(f.toPath()).toString()

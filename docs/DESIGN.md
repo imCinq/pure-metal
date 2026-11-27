@@ -1,6 +1,6 @@
 # Pure Metal: design notes
 
-Pure Metal adds a native Apple Metal backend to Minecraft 26.3 (Fabric). Render Scale and Terrain LOD trade
+Pure Metal adds a native Apple Metal backend to Minecraft 26.3 (Fabric or NeoForge). Render Scale and Terrain LOD trade
 distant detail or rendering resolution for performance. Terrain LOD defaults on at RD16+ with an 80% full-detail
 radius; it can be disabled. In the outer band it also merges plain leaf blocks and calm water tops and skips small
 plants; glass is unchanged. Auto Render Scale (off by default) steps the scale between 100, 85, 70 and 60% to keep up
@@ -44,14 +44,14 @@ Pure Metal is a third backend modelled on the vanilla Vulkan one:
 
 | Risk | Where others hit it | Plan |
 |---|---|---|
-| Mods that call OpenGL directly (no GL context exists) | JourneyMap native crash on Metallum | Detect GL calls with no context, show which mod, fall back to OpenGL for that instance (later milestone). |
-| Mods with their own renderer setting | Better Clouds needed OPENGL→METAL by hand | Small optional compat mixins (`require = 0`) for known mods. |
+| Mods that call OpenGL directly (no GL context exists) | JourneyMap native crash on Metallum | `StartupGuard` + `DirectGlCrashAttribution` inspect `hs_err_pid*.log` on the next launch, name the offending mod, and recover Graphics API cleanly. |
+| Mods with their own renderer setting | Better Clouds needed OPENGL→METAL by hand | Core vs fail-soft optional mixins (`puremetal.mixins.json` / `puremetal.optional.mixins.json`) with post-apply `MixinHooks` gating. |
 | Core-shader resource packs that fail to translate | Metallum #3 | Shader failures are logged with the pack/shader name; the frontend's fallback rules decide, no hard crash. |
 | Using a resource after it is closed / freed too early | Essential "Color texture 0 is closed" | Command buffers retain resources; destruction is deferred two submits like Vulkan. |
 | Writes racing the GPU | Visual artifacts reports | Never memcpy into a buffer the GPU may be reading; ordered blit from staging. |
 | TRIANGLE_FAN (no Metal equivalent) | – | Converted to an indexed triangle list. |
 | 3-component texture formats (RGB8, RGB16, RGB32) | – | No Metal pixel format; reported clearly if a mod asks for one. Vertex formats are fine. |
-| Timestamp queries / F3 profiler | Metallum F3+1 crash | Query pool returns "no value" instead of crashing until real GPU timestamps are implemented. |
+| Timestamp queries / F3 profiler | Metallum F3+1 crash | `MetalQueryPool` and GPU timestamp calibration report frame-level GPU timing on Metal 3 and Metal 4. |
 | Device loss / GPU error | – | Command buffer errors are captured and surfaced as `GpuDeviceLossException`, not a JVM crash. |
 | Intel Macs / old macOS | – | Requires Apple Silicon (Apple7+ GPU family) and macOS 14; otherwise Pure Metal stays off. |
 

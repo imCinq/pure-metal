@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal.backend;
 
+import io.github.imcinq.puremetal.ModPlatform;
 import io.github.imcinq.puremetal.Redact;
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,7 +17,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
-import net.fabricmc.loader.api.FabricLoader;
 
 import static java.lang.foreign.ValueLayout.JAVA_DOUBLE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
@@ -46,11 +46,11 @@ public final class MetalNative {
     private static MethodHandle H_sampleGpuTimestampNs, H_queryPoolCreate, H_queryPoolDestroy, H_queryWrite, H_queryRead, H_queryReadRange;
     // Resources.
     private static MethodHandle H_bufferCreate, H_bufferContents, H_deviceAllocatedSize, H_textureCreate, H_textureView, H_bufferTexture, H_samplerCreate;
-    private static MethodHandle H_libraryCreate, H_libraryFunction, H_libraryFunctionBool, H_pipelineCreate, H_depthStateCreate;
+    private static MethodHandle H_libraryCreate, H_libraryFunction, H_libraryFunctionBool, H_pipelineCreate, H_depthStateCreate, H_depthStencilStateCreate;
     // Copies.
-    private static MethodHandle H_copyBuffer, H_copyBufferEarly, H_copyBufferToTexture, H_copyTextureToBuffer, H_copyTextureToTexture, H_clearTexture;
+    private static MethodHandle H_copyBuffer, H_copyBufferEarly, H_copyBufferToTexture, H_copyTextureToBuffer, H_copyTextureToTexture, H_clearTexture, H_clearStencil;
     // Render passes.
-    private static MethodHandle H_passBegin, H_passEnd, H_pushDebugGroup, H_popDebugGroup, H_passSetPipeline, H_passSetScissor;
+    private static MethodHandle H_passBegin, H_passEnd, H_pushDebugGroup, H_popDebugGroup, H_passSetPipeline, H_passSetScissor, H_passSetViewport, H_passSetStencilRef;
     private static MethodHandle H_passSetVertexBuffer, H_passSetIndexBuffer, H_passBind, H_passSetBytes;
     private static MethodHandle H_passDraw, H_passDrawIndexed, H_passMultiDrawIndexed, H_passMultiDrawIndexedSeparate;
     private static MethodHandle H_passMultiDraw, H_passMultiDrawSeparate, H_passDrawIndexedIndirect, H_passDrawIndirect;
@@ -79,7 +79,7 @@ public final class MetalNative {
         } catch (NoSuchAlgorithmException e) {
             throw new IOException(Redact.error(e), e);
         }
-        Path dir = FabricLoader.getInstance().getGameDir().resolve(".puremetal");
+        Path dir = ModPlatform.get().gameDir().resolve(".puremetal");
         Files.createDirectories(dir);
         Path target = dir.resolve("libpuremetal-" + hash + ".dylib");
         // Rewritten unless it is byte-for-byte this jar's library, so a changed file in the game folder is never loaded.
@@ -163,6 +163,7 @@ public final class MetalNative {
         H_libraryFunctionBool = fn("pm_library_function_bool", false, L, L, L, I, I);
         H_pipelineCreate = fn("pm_pipeline_create", false, L, L, L, L, L, L, L, I);
         H_depthStateCreate = fn("pm_depth_state_create", false, L, L, I, I, I);
+        H_depthStencilStateCreate = fn("pm_depth_stencil_state_create", false, L, L, I, I, I, I, I, I, I, I, I, I, I, I, I);
 
         H_copyBuffer = fn("pm_copy_buffer", false, null, L, L, L, L, L, L);
         H_copyBufferEarly = fn("pm_copy_buffer_early", false, null, L, L, L, L, L, L);
@@ -170,6 +171,7 @@ public final class MetalNative {
         H_copyTextureToBuffer = fn("pm_copy_texture_to_buffer", false, null, L, L, I, I, I, I, I, I, L, L, I);
         H_copyTextureToTexture = fn("pm_copy_texture_to_texture", false, null, L, L, L, I, I, I, I, I, I, I);
         H_clearTexture = fn("pm_clear_texture", false, null, L, L, F, F, F, F, D);
+        H_clearStencil = fn("pm_clear_stencil", false, null, L, L, I);
 
         H_passBegin = fn("pm_pass_begin", false, I, L, I, L, L, L, L, I, D, I, I, I, I, I, I, L);
         H_passEnd = fn("pm_pass_end", false, null, L);
@@ -177,6 +179,8 @@ public final class MetalNative {
         H_popDebugGroup = fn("pm_pop_debug_group", false, null, L);
         H_passSetPipeline = fn("pm_pass_set_pipeline", false, null, L, L, L, I, I, F, F);
         H_passSetScissor = fn("pm_pass_set_scissor", false, null, L, I, I, I, I);
+        H_passSetViewport = fn("pm_pass_set_viewport", false, null, L, I, I, I, I);
+        H_passSetStencilRef = fn("pm_pass_set_stencil_ref", false, null, L, I);
         H_passSetVertexBuffer = fn("pm_pass_set_vertex_buffer", false, null, L, I, L, L);
         H_passSetIndexBuffer = fn("pm_pass_set_index_buffer", false, null, L, L, I);
         H_passBind = fn("pm_pass_bind", false, null, L, I, L, L, L, L);
@@ -1051,6 +1055,48 @@ public final class MetalNative {
     static void queryReadRange(final long pool, final int index, final int count, final long out) {
         try {
             H_queryReadRange.invokeExact(pool, index, count, out);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static long depthStencilStateCreate(
+        final long device, final int enabled, final int compare, final int write,
+        final int frontFail, final int frontDepthFail, final int frontPass, final int frontCompare,
+        final int backFail, final int backDepthFail, final int backPass, final int backCompare,
+        final int readMask, final int writeMask
+    ) {
+        try {
+            return (long)H_depthStencilStateCreate.invokeExact(
+                device, enabled, compare, write,
+                frontFail, frontDepthFail, frontPass, frontCompare,
+                backFail, backDepthFail, backPass, backCompare,
+                readMask, writeMask
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void passSetStencilRef(final long device, final int ref) {
+        try {
+            H_passSetStencilRef.invokeExact(device, ref);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void clearStencil(final long device, final long texture, final int stencil) {
+        try {
+            H_clearStencil.invokeExact(device, texture, stencil);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    static void passSetViewport(final long device, final int x, final int y, final int width, final int height) {
+        try {
+            H_passSetViewport.invokeExact(device, x, y, width, height);
         } catch (Throwable t) {
             throw rethrow(t);
         }

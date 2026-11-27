@@ -8,12 +8,12 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 - Optional Render Scale with temporal upscaling and an Auto mode
 - Faster World Generation limits FPS while nearby chunks are missing (optional, singleplayer)
 - Battery Saver caps FPS at 60 (30 FPS while your Mac is hot) to save power and heat (optional)
-- HDR Highlights make the sun, bright sky, lava and glowing blocks brighter on Mac screens with HDR headroom, without boosting menus or the HUD (optional)
+- HDR Highlights make the sun, bright sky, lava and glowing blocks brighter on Mac screens with HDR headroom, without boosting menus or the HUD; toggles live without restarting (optional)
 - Smooth Frame Pacing with VSync shows frames at an even pace (optional)
 - Experimental Metal 4 mode (macOS 26+)
 - With VSync off, Minecraft can render at a higher FPS without screen tearing by default
-- Distant Horizons support, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
-- A Pure Metal line on the F3 screen for bug reports, including the Fast Terrain status
+- Distant Horizons support on Fabric, on by default (tested on DH 3.3.4, other 3.3.x run as untested when the key classes match 3.3.4)
+- A Pure Metal line on the F3 screen for bug reports, including Fast Terrain status and native F3 GPU % timing
 
 ![Pure Metal vs OpenGL with Sodium: 216 vs 111 FPS](docs/gallery/1-sodium.webp)
 
@@ -64,13 +64,13 @@ A native Metal renderer for Minecraft on Apple Silicon Macs. Same visuals as van
 ## Requirements
 
 - macOS 14 or newer on Apple Silicon (tested on M2). Fast Terrain needs macOS 15. The optional Metal 4 mode needs macOS 26.
-- Minecraft 26.3 with Fabric Loader 0.19+
+- Minecraft 26.3 with Fabric or NeoForge
 - Java 25 (ARM64 / Apple Silicon build, not Intel/Rosetta)
 - Sodium (optional)
 
 ## Install
 
-Download the jar from the [releases page](https://github.com/imCinq/Pure-Metal/releases) and put it in your `mods` folder. Leave Graphics API on Default. Find Pure Metal settings in Video Settings or on its page in Sodium.
+Download the Fabric or NeoForge jar from the [releases page](https://github.com/imCinq/Pure-Metal/releases) and put it in your `mods` folder. Leave Graphics API on Default. Find Pure Metal settings in Video Settings or on its page in Sodium.
 
 ## Fast Terrain
 
@@ -108,7 +108,7 @@ Optional, off by default. Draws the 3D world at fewer pixels and scales it up. M
 Miscellaneous:
 - **Faster World Generation** (singleplayer): caps FPS while nearby chunks are still loading, so they build faster.
 - **Battery Saver:** caps FPS at 60, or 30 while your Mac is hot.
-- **HDR Highlights:** makes the sun, bright sky, lava and glowing blocks brighter than normal white on screens with HDR headroom, without boosting menus or the HUD. Turns itself off on screens without HDR and while Battery Saver is on.
+- **HDR Highlights:** makes the sun, bright sky, lava and glowing blocks brighter than normal white on screens with HDR headroom, without boosting menus or the HUD. Toggles live without restarting, and turns itself off on screens without HDR and while Battery Saver is on.
 - **Smooth Frame Pacing** (needs VSync): shows frames at an even pace.
 
 Experimental:
@@ -117,9 +117,9 @@ Experimental:
 
 ## Distant Horizons
 
-**Distant Horizons** support is on by default. DH **3.3.4** has been visually tested and 3.3.3 was checked in Loom. Other 3.3.x versions whose key classes match 3.3.4 also run, with an "untested version" note in F3 and a log warning. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate.
+**Distant Horizons** support is on by default on **Fabric**. DH **3.3.4** has been visually tested and 3.3.3 was checked in Loom. Other 3.3.x versions whose key classes match 3.3.4 also run, with an "untested version" note in F3 and a log warning. Keep DH's rendering engine on **AUTO**. Distant terrain may take time to generate.
 
-With an unsupported DH version, including 3.3.x versions whose checked classes differ (or 3.2, 3.4, 4.x and so on), Pure Metal falls back to the normal backend and doesn't use Metal while DH is installed. To turn the support off, see [JVM options](#jvm-options).
+On NeoForge, or with an unsupported DH version (including 3.3.x versions whose checked classes differ, or 3.2, 3.4, 4.x and so on), Pure Metal falls back to the normal backend and doesn't use Metal while DH is installed. To turn the support off, see [JVM options](#jvm-options).
 
 ![Distant Horizons](docs/gallery/3-distant-horizons.webp)
 
@@ -150,7 +150,7 @@ With Distant Horizons support off, the game runs without Metal while DH stays in
 ./gradlew build
 ```
 
-Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is built with the system `clang` against the macOS 26 SDK; the result still runs on macOS 14+) and a Java 25 toolchain. The jar ends up in `build/libs`.
+Needs Xcode 26 or newer, or its command line tools (the Objective-C bridge is built with the system `clang` against the macOS 26 SDK; the result still runs on macOS 14+) and a Java 25 toolchain. The Fabric jar ends up in `build/libs` and the NeoForge jar in `neoforge/build/libs`.
 
 Developer benchmarks (`tools/bench.py`) and building the benchmark JAR (`./gradlew benchmarkJar`) are in [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 

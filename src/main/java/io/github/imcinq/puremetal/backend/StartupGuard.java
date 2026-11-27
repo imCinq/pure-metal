@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal.backend;
 
+import io.github.imcinq.puremetal.ModPlatform;
 import io.github.imcinq.puremetal.Redact;
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,7 +17,6 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Properties;
 import java.util.UUID;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.PreferredGraphicsApi;
 import org.jspecify.annotations.Nullable;
@@ -37,7 +37,7 @@ import org.slf4j.LoggerFactory;
  */
 public final class StartupGuard {
     private static final Logger LOGGER = LoggerFactory.getLogger("Pure Metal");
-    private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("puremetal-startup.properties");
+    private static final Path FILE = ModPlatform.get().configDir().resolve("puremetal-startup.properties");
     private static final Path LOCK_FILE = FILE.resolveSibling("puremetal-startup.lock");
     private static final String FORCED = "FORCED";
     private static final String VERSION = "2";
@@ -188,7 +188,7 @@ public final class StartupGuard {
     }
 
     private static boolean launchArgumentForced() {
-        for (String argument : FabricLoader.getInstance().getLaunchArguments(true)) {
+        for (String argument : ModPlatform.get().launchArguments()) {
             if (argument.startsWith("-") && argument.replaceFirst("^-+", "").startsWith("graphicsBackend")) {
                 return true;
             }

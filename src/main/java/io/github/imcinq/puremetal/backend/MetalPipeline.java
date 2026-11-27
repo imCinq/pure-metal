@@ -86,6 +86,10 @@ final class MetalPipeline implements BackendRenderPipeline {
         return thread;
     });
     private final long depthState;
+    /** Depth-disabled state for stencil-only S8_UINT passes (keeps stencil ops when present). */
+    private final long stencilOnlyDepthState;
+    /** Stencil reference value (0..255) when the pipeline defines a stencil test, or -1 otherwise. */
+    final int stencilRef;
     private final int[] descriptor;
     /** Pipeline state per depth format code + 1 (index 0 = no depth attachment); 0 = not built yet. */
     private final long[][] states = new long[3][MetalConst.FORMAT_NAMES.size() + 1];
@@ -188,10 +192,15 @@ final class MetalPipeline implements BackendRenderPipeline {
         this.cull = info.cull();
         this.wireframe = info.polygonMode() == PolygonMode.WIREFRAME;
         this.descriptor = buildDescriptor(info);
+        io.github.imcinq.puremetal.ModPlatform.StencilState stencil = depth == null ? null : io.github.imcinq.puremetal.ModPlatform.get().stencilState(depth);
+        this.stencilRef = stencil == null ? -1 : stencil.referenceValue() & 0xFF;
         // Acquire native ownership last, after all fallible Java descriptor preparation.
         this.depthState = depth == null
             ? device.acquireDepthState(0, 0, 0)
-            : device.acquireDepthState(1, MetalConst.compare(depth.depthTest()), depth.writeDepth() ? 1 : 0);
+            : device.acquireDepthState(1, MetalConst.compare(depth.depthTest()), depth.writeDepth() ? 1 : 0, stencil);
+        this.stencilOnlyDepthState = depth == null
+            ? 0L
+            : device.acquireDepthState(0, 0, 0, stencil);
     }
 
     /** Compiles everything on the calling (worker) thread. Returns null, with a logged reason, if it can't. */
@@ -517,8 +526,8 @@ final class MetalPipeline implements BackendRenderPipeline {
         return this.bindings;
     }
 
-    long depthState() {
-        return this.depthState;
+    long depthState(final boolean hasDepth) {
+        return !hasDepth && this.stencilOnlyDepthState != 0L ? this.stencilOnlyDepthState : this.depthState;
     }
 
     String name() {
@@ -566,6 +575,9 @@ final class MetalPipeline implements BackendRenderPipeline {
             }
         }
         this.device.releaseDepthState(this.depthState);
+        if (this.stencilOnlyDepthState != 0L) {
+            this.device.releaseDepthState(this.stencilOnlyDepthState);
+        }
         this.device.releaseFunction(this.vertexFunction);
         this.device.releaseFunction(this.fragmentFunction);
         this.device.releaseFunction(this.fragmentFunctionOff);

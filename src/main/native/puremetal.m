@@ -2857,13 +2857,24 @@ PM_EXPORT void pm_set_label(void *obj, const char *label) {
     }
 }
 
+static BOOL has_depth_aspect(MTLPixelFormat f) {
+    return f == MTLPixelFormatDepth32Float || f == MTLPixelFormatDepth16Unorm || f == MTLPixelFormatDepth32Float_Stencil8;
+}
+
+static BOOL is_stencil_format(MTLPixelFormat f) {
+    return f == MTLPixelFormatDepth32Float_Stencil8 || f == MTLPixelFormatStencil8;
+}
+
 // Depth/stencil store actions are left Unknown when a pass begins and decided here, when the pass ends.
 static void set_depth_store(PMDevice *d, id<MTLRenderCommandEncoder> e, void *depth, MTLStoreAction action) {
     if (!depth) return;
     id<MTLTexture> t = PM_OBJ(id<MTLTexture>, depth);
-    [e setDepthStoreAction:action];
-    if (t.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) [e setStencilStoreAction:action];
-    if (action == MTLStoreActionDontCare) d->stats[5] -= t.allocatedSize;
+    BOOL hasDepth = has_depth_aspect(t.pixelFormat);
+    BOOL hasStencil = is_stencil_format(t.pixelFormat);
+    if (hasDepth) [e setDepthStoreAction:action];
+    // Never discard stencil when only depth is disposable (e.g. upscale/present); preserve stencil independently.
+    if (hasStencil) [e setStencilStoreAction:MTLStoreActionStore];
+    if (action == MTLStoreActionDontCare && hasDepth && !hasStencil) d->stats[5] -= t.allocatedSize;
 }
 
 static void set_color_store(PMDevice *d, id<MTLRenderCommandEncoder> e, void **colors, uint32_t discard) {
@@ -3011,7 +3022,8 @@ static void encode_clear(PMDevice *d, id<MTLTexture> t, NSUInteger level, NSUInt
             rp.stencilAttachment.texture = t;
             rp.stencilAttachment.level = level;
             rp.stencilAttachment.slice = slice;
-            rp.stencilAttachment.loadAction = MTLLoadActionClear;
+            // Preserve stencil when clearing depth (matches Vulkan's VK_IMAGE_ASPECT_DEPTH_BIT).
+            rp.stencilAttachment.loadAction = MTLLoadActionLoad;
             rp.stencilAttachment.storeAction = MTLStoreActionStore;
         }
     } else {
@@ -4047,8 +4059,8 @@ PM_EXPORT void *pm_pipeline_create(PMDevice *d, void *vertexFn, void *fragmentFn
         p.inputPrimitiveTopology = topology_class(desc[0]);
         if (desc[1] >= 0) {
             MTLPixelFormat df = pixel_format(desc[1]);
-            p.depthAttachmentPixelFormat = df;
-            if (df == MTLPixelFormatDepth32Float_Stencil8) p.stencilAttachmentPixelFormat = df;
+            if (has_depth_aspect(df)) p.depthAttachmentPixelFormat = df;
+            if (is_stencil_format(df)) p.stencilAttachmentPixelFormat = df;
         }
         if (label) p.label = [NSString stringWithUTF8String:label];
         int vbCount = desc[2], attrCount = desc[3], colorCount = desc[4];
@@ -4106,11 +4118,48 @@ PM_EXPORT void *pm_pipeline_create(PMDevice *d, void *vertexFn, void *fragmentFn
     }
 }
 
+static MTLStencilOperation stencil_op(int code) {
+    static const MTLStencilOperation ops[] = {
+        MTLStencilOperationKeep, MTLStencilOperationZero, MTLStencilOperationReplace,
+        MTLStencilOperationIncrementClamp, MTLStencilOperationDecrementClamp, MTLStencilOperationInvert,
+        MTLStencilOperationIncrementWrap, MTLStencilOperationDecrementWrap,
+    };
+    return (code >= 0 && code < 8) ? ops[code] : MTLStencilOperationKeep;
+}
+
 PM_EXPORT void *pm_depth_state_create(PMDevice *d, int enabled, int compare, int write) {
     @autoreleasepool {
         MTLDepthStencilDescriptor *desc = [MTLDepthStencilDescriptor new];
         desc.depthCompareFunction = enabled ? compare_fn(compare) : MTLCompareFunctionAlways;
         desc.depthWriteEnabled = enabled && write;
+        return pm_retain([DEV_MTL(d) newDepthStencilStateWithDescriptor:desc]);
+    }
+}
+
+PM_EXPORT void *pm_depth_stencil_state_create(PMDevice *d, int enabled, int compare, int write,
+                                              int frontFail, int frontDepthFail, int frontPass, int frontCompare,
+                                              int backFail, int backDepthFail, int backPass, int backCompare,
+                                              int readMask, int writeMask) {
+    @autoreleasepool {
+        MTLDepthStencilDescriptor *desc = [MTLDepthStencilDescriptor new];
+        desc.depthCompareFunction = enabled ? compare_fn(compare) : MTLCompareFunctionAlways;
+        desc.depthWriteEnabled = enabled && write;
+        MTLStencilDescriptor *front = [MTLStencilDescriptor new];
+        front.stencilFailureOperation = stencil_op(frontFail);
+        front.depthFailureOperation = stencil_op(frontDepthFail);
+        front.depthStencilPassOperation = stencil_op(frontPass);
+        front.stencilCompareFunction = compare_fn(frontCompare);
+        front.readMask = (uint32_t)(readMask & 0xFF);
+        front.writeMask = (uint32_t)(writeMask & 0xFF);
+        desc.frontFaceStencil = front;
+        MTLStencilDescriptor *back = [MTLStencilDescriptor new];
+        back.stencilFailureOperation = stencil_op(backFail);
+        back.depthFailureOperation = stencil_op(backDepthFail);
+        back.depthStencilPassOperation = stencil_op(backPass);
+        back.stencilCompareFunction = compare_fn(backCompare);
+        back.readMask = (uint32_t)(readMask & 0xFF);
+        back.writeMask = (uint32_t)(writeMask & 0xFF);
+        desc.backFaceStencil = back;
         return pm_retain([DEV_MTL(d) newDepthStencilStateWithDescriptor:desc]);
     }
 }
@@ -4375,6 +4424,42 @@ PM_EXPORT void pm_clear_texture(PMDevice *d, void *texture, float r, float g, fl
         for (NSUInteger level = 0; level < t.mipmapLevelCount; level++) {
             for (NSUInteger slice = 0; slice < slices; slice++) {
                 encode_clear(d, t, level, slice, color, depth);
+            }
+        }
+    }
+}
+
+// NeoForge RenderPearl extension: clears the stencil aspect of a depth-stencil texture across every mip and slice.
+PM_EXPORT void pm_clear_stencil(PMDevice *d, void *texture, int stencil) {
+    PM_ENC_SCOPE(PM_ENC_PASS);
+    @autoreleasepool {
+        end_blit(d);
+        id<MTLTexture> t = PM_OBJ(id<MTLTexture>, texture);
+        if (!t || (t.pixelFormat != MTLPixelFormatDepth32Float_Stencil8 && t.pixelFormat != MTLPixelFormatStencil8)) return;
+        NSUInteger slices = t.textureType == MTLTextureTypeCube ? 6 : (t.arrayLength > 0 ? t.arrayLength : 1);
+        id<MTLCommandBuffer> cb = current_cb(d);
+        if (!cb) return;
+        for (NSUInteger level = 0; level < t.mipmapLevelCount; level++) {
+            for (NSUInteger slice = 0; slice < slices; slice++) {
+                MTLRenderPassDescriptor *rp = new_pass_descriptor(d);
+                if (t.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+                    rp.depthAttachment.texture = t;
+                    rp.depthAttachment.level = level;
+                    rp.depthAttachment.slice = slice;
+                    rp.depthAttachment.loadAction = MTLLoadActionLoad;
+                    rp.depthAttachment.storeAction = MTLStoreActionStore;
+                }
+                rp.stencilAttachment.texture = t;
+                rp.stencilAttachment.level = level;
+                rp.stencilAttachment.slice = slice;
+                rp.stencilAttachment.loadAction = MTLLoadActionClear;
+                rp.stencilAttachment.storeAction = MTLStoreActionStore;
+                rp.stencilAttachment.clearStencil = (uint32_t)(stencil & 0xFF);
+                id<MTLRenderCommandEncoder> encoder = new_render_encoder_kind(d, cb, rp, 1, "clearStencil", -1);
+                if (encoder) {
+                    PM_ENC_COUNT(PM_ENC_ENCODERS, 1);
+                    [encoder endEncoding];
+                }
             }
         }
     }
@@ -4677,8 +4762,10 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
             }
         }
         // Only depth may clear; same full-sized views, no intervening work and no pending observable clears.
-        // Depth/stencil formats intentionally fall back: a folded texture clear also clears stencil.
-        bool onlyDepthClear = depth && (depthLoad == 1 || foldDepth);
+        // Depth/stencil and stencil-only formats intentionally fall back so stencil state is never touched.
+        bool onlyDepthClear = depth && (depthLoad == 1 || foldDepth)
+                && has_depth_aspect(PM_OBJ(id<MTLTexture>, depth).pixelFormat)
+                && !is_stencil_format(PM_OBJ(id<MTLTexture>, depth).pixelFormat);
         for (int i = 0; i < colorCount && i < PM_MAX_COLOR; i++)
             if (usedColors[i] && (colorLoad[i] == 1 || foldColor[i])) onlyDepthClear = false;
         if (d->parked && !d->passTiming && onlyDepthClear && d->clearCount == 0 && depth == d->parkedDepth
@@ -4722,9 +4809,10 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
             }
         }
         // The open pass's depth is about to be cleared by this one with nothing in between, so storing it is wasted.
-        // (Stencil is only cleared along with a folded clear; otherwise it is loaded and must be kept.)
-        bool depthDiscard = d->parked && depth && depth == d->parkedDepth && (foldDepth
-                || (depthLoad == 1 && PM_OBJ(id<MTLTexture>, depth).pixelFormat != MTLPixelFormatDepth32Float_Stencil8));
+        // Depth/stencil and stencil-only formats keep their store action so stencil contents are never discarded by a depth clear.
+        bool depthDiscard = d->parked && depth && depth == d->parkedDepth && (foldDepth || depthLoad == 1)
+                && has_depth_aspect(PM_OBJ(id<MTLTexture>, depth).pixelFormat)
+                && !is_stencil_format(PM_OBJ(id<MTLTexture>, depth).pixelFormat);
         if (colorDiscard || depthDiscard) {
             end_parked_actions(d, depthDiscard ? MTLStoreActionDontCare : MTLStoreActionStore, colorDiscard);
         }
@@ -4746,15 +4834,17 @@ PM_EXPORT int pm_pass_begin(PMDevice *d, int colorCount, void **colors, const in
         }
         if (depth) {
             id<MTLTexture> dt = PM_OBJ(id<MTLTexture>, depth);
-            rp.depthAttachment.texture = dt;
-            rp.depthAttachment.loadAction = (depthLoad == 1 || foldDepth) ? MTLLoadActionClear : MTLLoadActionLoad;
-            rp.depthAttachment.storeAction = MTLStoreActionUnknown;
-            // Metal requires a finite clear depth in [0, 1], even with a Load action. NaN clears to the far plane.
-            double descriptorDepth = foldDepth ? foldDepthValue : clearDepth;
-            rp.depthAttachment.clearDepth = isfinite(descriptorDepth) ? fmin(fmax(descriptorDepth, 0.0), 1.0) : 1.0;
-            if (dt.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+            if (has_depth_aspect(dt.pixelFormat)) {
+                rp.depthAttachment.texture = dt;
+                rp.depthAttachment.loadAction = (depthLoad == 1 || foldDepth) ? MTLLoadActionClear : MTLLoadActionLoad;
+                rp.depthAttachment.storeAction = MTLStoreActionUnknown;
+                // Metal requires a finite clear depth in [0, 1], even with a Load action. NaN clears to the far plane.
+                double descriptorDepth = foldDepth ? foldDepthValue : clearDepth;
+                rp.depthAttachment.clearDepth = isfinite(descriptorDepth) ? fmin(fmax(descriptorDepth, 0.0), 1.0) : 1.0;
+            }
+            if (is_stencil_format(dt.pixelFormat)) {
                 rp.stencilAttachment.texture = dt;
-                rp.stencilAttachment.loadAction = foldDepth ? MTLLoadActionClear : MTLLoadActionLoad;
+                rp.stencilAttachment.loadAction = MTLLoadActionLoad;
                 rp.stencilAttachment.storeAction = MTLStoreActionUnknown;
             }
         }
@@ -4891,6 +4981,22 @@ PM_EXPORT void pm_pass_set_scissor(PMDevice *d, int x, int y, int w, int h) {
     PM_ENC_SCOPE(PM_ENC_PASS);
     @autoreleasepool {
         [REN(d) setScissorRect:(MTLScissorRect){ (NSUInteger)x, (NSUInteger)y, (NSUInteger)w, (NSUInteger)h }];
+    }
+}
+
+PM_EXPORT void pm_pass_set_viewport(PMDevice *d, int x, int y, int w, int h) {
+    PM_ENC_SCOPE(PM_ENC_PASS);
+    @autoreleasepool {
+        if (!d->render || w <= 0 || h <= 0) return;
+        [REN(d) setViewport:(MTLViewport){ (double)x, (double)y, (double)w, (double)h, 0.0, 1.0 }];
+    }
+}
+
+PM_EXPORT void pm_pass_set_stencil_ref(PMDevice *d, int ref) {
+    PM_ENC_SCOPE(PM_ENC_PASS);
+    @autoreleasepool {
+        if (!d->render) return;
+        [REN(d) setStencilReferenceValue:(uint32_t)(ref & 0xFF)];
     }
 }
 
@@ -5320,6 +5426,7 @@ typedef struct PMSurface {
     _Atomic uint64_t refreshNs;       // display refresh interval, 0 if unknown
     uint64_t anchorNs;                // presentedTime of the last frame shown, in ns of CACurrentMediaTime() (guarded by cfgLock)
     uint64_t anchorSeq;               // that frame's present sequence number (guarded by cfgLock)
+    uint64_t pacingGen;               // incremented on refresh/pacing config changes so late callbacks are ignored (guarded by cfgLock)
     _Atomic uint64_t lastShownNs;     // presentedTime of the previous shown frame, for stats[7..8]
     uint64_t presentSeq;              // present dispatch queue only
 } PMSurface;
@@ -6906,9 +7013,16 @@ static double pacing_target(PMSurface *s, uint64_t seq) {
     return pacing_target_at(s, seq, CACurrentMediaTime());
 }
 
-static void pacing_record_anchor(PMSurface *s, uint64_t seq, uint64_t shownNs) {
+static uint64_t pacing_current_gen(PMSurface *s) {
     pthread_mutex_lock(&s->cfgLock);
-    if (seq > s->anchorSeq) {
+    uint64_t gen = s->pacingGen;
+    pthread_mutex_unlock(&s->cfgLock);
+    return gen;
+}
+
+static void pacing_record_anchor(PMSurface *s, uint64_t gen, uint64_t seq, uint64_t shownNs) {
+    pthread_mutex_lock(&s->cfgLock);
+    if (gen == s->pacingGen && seq > s->anchorSeq) {
         s->anchorSeq = seq;
         s->anchorNs = shownNs;
     }
@@ -7003,6 +7117,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
         [e endEncoding];
         double submitted = s->slotTime[slot];
         uint64_t seq = ++s->presentSeq;
+        uint64_t pGen = pacing_current_gen(s);
         double presentAt = pacing_target(s, seq);
         PMShownContext *shownContext = s->shownContext;
         if (shownContext) atomic_fetch_add(&shownContext->refs, 1);
@@ -7020,7 +7135,7 @@ static void draw_and_present(PMSurface *s, int slot, PMPresentLease lease) {
                 trace_ev(9, (int64_t)pm_sec_ns(done.presentedTime), 0, 0);
                 if (done.presentedTime > 0) {
                     uint64_t shownNs = (uint64_t)(done.presentedTime * 1e9);
-                    pacing_record_anchor(s, seq, shownNs);
+                    pacing_record_anchor(s, pGen, seq, shownNs);
                     uint64_t previous = atomic_exchange(&s->lastShownNs, shownNs);
                     uint64_t refresh = atomic_load(&s->refreshNs);
                     if (atomic_load(&s->statsEnabled) && refresh && previous && shownNs > previous && shownNs - previous < 250000000ULL) {
@@ -7217,7 +7332,9 @@ PM_EXPORT void pm_surface_set_pacing(PMSurface *s, uint64_t refreshNs, int pacin
     int displaySync = surface_display_sync(s);
     pthread_mutex_lock(&s->cfgLock);
     if (prevRefresh != refreshNs || prevPacing != wantPacing) {
-        // Drop any anchor captured under a different refresh rate or before pacing turned on.
+        // Drop any anchor captured under a different refresh rate or before pacing turned on,
+        // and advance pacingGen so in-flight callbacks from the previous configuration are ignored.
+        s->pacingGen++;
         s->anchorNs = 0;
         s->anchorSeq = 0;
     }

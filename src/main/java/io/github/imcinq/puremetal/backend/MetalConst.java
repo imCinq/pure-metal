@@ -23,6 +23,7 @@ final class MetalConst {
         "RGB10A2_UNORM", "RGB10A2_UINT", "RG11B10_FLOAT",
         "D32_FLOAT", "D32_FLOAT_S8_UINT", "D24_UNORM_S8_UINT", "D16_UNORM", "S8_UINT"
     );
+    static final int FORMAT_S8_UINT = FORMAT_NAMES.indexOf("S8_UINT");
     private static final int[] FORMAT_CODES = new int[GpuFormat.values().length];
 
     static {

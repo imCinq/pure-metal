@@ -20,16 +20,24 @@ public final class SodiumSettingsFingerprint {
     private SodiumSettingsFingerprint() { }
 
     public static boolean matches(Function<String, Optional<Path>> findPath) {
+        return matchesBytes(entry -> {
+            var path = findPath.apply(entry);
+            if (path.isEmpty() || !Files.isRegularFile(path.get())) return Optional.empty();
+            try (InputStream in = Files.newInputStream(path.get())) {
+                byte[] bytes = in.readNBytes(MAX_BYTES + 1);
+                return bytes.length <= MAX_BYTES ? Optional.of(bytes) : Optional.empty();
+            } catch (Exception unavailable) {
+                return Optional.empty();
+            }
+        });
+    }
+
+    public static boolean matchesBytes(Function<String, Optional<byte[]>> readEntry) {
         try {
             for (var entry : CLASSES.entrySet()) {
-                var path = findPath.apply(entry.getKey());
-                if (path.isEmpty() || !Files.isRegularFile(path.get())) return false;
-                byte[] bytes;
-                try (InputStream in = Files.newInputStream(path.get())) {
-                    bytes = in.readNBytes(MAX_BYTES + 1);
-                }
-                if (bytes.length > MAX_BYTES || !entry.getValue().equals(
-                    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))) return false;
+                var bytes = readEntry.apply(entry.getKey());
+                if (bytes.isEmpty() || bytes.get().length > MAX_BYTES || !entry.getValue().equals(
+                    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.get())))) return false;
             }
             return true;
         } catch (Exception unavailable) {

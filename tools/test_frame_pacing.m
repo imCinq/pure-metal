@@ -27,7 +27,8 @@ int main(void) {
         assert(pacing_target_at(&s, 1, 100.0) == 0.0);
 
         // 2. On-time 60 Hz cadence: frame 1 shown at t=100.000s, frame 2 submitted at t=100.002s -> target = 100 + 0.75 * interval.
-        pacing_record_anchor(&s, 1, 100000000000ULL);
+        uint64_t gen60 = pacing_current_gen(&s);
+        pacing_record_anchor(&s, gen60, 1, 100000000000ULL);
         double t2 = pacing_target_at(&s, 2, 100.002);
         require_near(t2, 100.0 + 0.75 * (r60 / 1e9), 1e-6, "frame 2 target");
         // Queued frame 3 while frame 2 is still unshown -> target = 100 + 1.75 * interval.
@@ -42,16 +43,19 @@ int main(void) {
         assert(pacing_target_at(&s, 6, 100.002) == 0.0);
 
         // 4. Monotonic anchor: out-of-order older presented callback must NOT rewind anchorSeq/anchorNs.
-        pacing_record_anchor(&s, 5, 100066666668ULL);
-        pacing_record_anchor(&s, 4, 100050000000ULL); // delayed callback for frame 4
+        pacing_record_anchor(&s, gen60, 5, 100066666668ULL);
+        pacing_record_anchor(&s, gen60, 4, 100050000000ULL); // delayed callback for frame 4
         pthread_mutex_lock(&s.cfgLock);
         assert(s.anchorSeq == 5 && s.anchorNs == 100066666668ULL);
         pthread_mutex_unlock(&s.cfgLock);
 
-        // 5. Refresh rate change (60 Hz -> 120 Hz) resets stale anchor so first frame on new display presents cleanly.
+        // 5. Refresh rate change (60 Hz -> 120 Hz) resets stale anchor and rejects late callbacks from previous gen.
         pm_surface_set_pacing(&s, r120, 1, 0);
-        assert(pacing_target_at(&s, 6, 100.068) == 0.0);
-        pacing_record_anchor(&s, 6, 100075000000ULL);
+        uint64_t gen120 = pacing_current_gen(&s);
+        assert(gen120 != gen60);
+        pacing_record_anchor(&s, gen60, 6, 100070000000ULL); // late callback from 60 Hz display must be ignored
+        assert(pacing_target_at(&s, 7, 100.071) == 0.0);
+        pacing_record_anchor(&s, gen120, 6, 100075000000ULL);
         double t7 = pacing_target_at(&s, 7, 100.076);
         require_near(t7, 100.075 + 0.75 * (r120 / 1e9), 1e-6, "120Hz frame 7 target");
 
@@ -62,6 +66,7 @@ int main(void) {
         assert(pacing_target_at(&s, 7, 100.076) == 0.0);
 
         // 7. Concurrent anchor writer + pacing_target reader: no torn (anchorSeq, anchorNs) pair ever observed.
+        uint64_t genConcurrent = pacing_current_gen(&s);
         atomic_int stop = 0;
         PMSurface *sp = &s;
         atomic_int *stopPtr = &stop;
@@ -69,7 +74,7 @@ int main(void) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             for (uint64_t k = 10; k < 20000; k++) {
                 // Invariant: anchorNs == k * 10000000ULL (10ms per seq).
-                pacing_record_anchor(sp, k, k * 10000000ULL);
+                pacing_record_anchor(sp, genConcurrent, k, k * 10000000ULL);
             }
             atomic_store(stopPtr, 1);
             dispatch_semaphore_signal(writerDone);

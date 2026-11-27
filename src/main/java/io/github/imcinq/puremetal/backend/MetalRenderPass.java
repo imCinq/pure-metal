@@ -125,9 +125,13 @@ final class MetalRenderPass implements RenderPassBackend {
         }
         this.bindingsDirty = true;
         MetalNative.passSetPipeline(
-            this.device, state, metalPipeline.depthState(), metalPipeline.cull ? 1 : 0, metalPipeline.wireframe ? 1 : 0,
+            this.device, state, metalPipeline.depthState(this.depthFormat != MetalConst.FORMAT_S8_UINT),
+            metalPipeline.cull ? 1 : 0, metalPipeline.wireframe ? 1 : 0,
             metalPipeline.depthBiasConstant, metalPipeline.depthBiasSlope
         );
+        if (metalPipeline.stencilRef >= 0) {
+            MetalNative.passSetStencilRef(this.device, metalPipeline.stencilRef);
+        }
     }
 
     @Override
@@ -163,6 +167,14 @@ final class MetalRenderPass implements RenderPassBackend {
     @Override
     public void disableScissor() {
         this.enableScissor(this.renderArea.x(), this.renderArea.y(), this.renderArea.width(), this.renderArea.height());
+    }
+
+    /** NeoForge RenderPearl extension: overrides the active render pass viewport. */
+    public void setViewport(final int x, final int y, final int width, final int height) {
+        if (this.closed) {
+            throw new IllegalStateException("Cannot setViewport on a closed render pass");
+        }
+        MetalNative.passSetViewport(this.device, x, y, width, height);
     }
 
     @Override

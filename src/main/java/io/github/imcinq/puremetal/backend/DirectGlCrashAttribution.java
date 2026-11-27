@@ -1,5 +1,6 @@
 package io.github.imcinq.puremetal.backend;
 
+import io.github.imcinq.puremetal.ModPlatform;
 import io.github.imcinq.puremetal.Redact;
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,8 +24,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import net.fabricmc.loader.api.FabricLoader;
-import net.fabricmc.loader.api.ModContainer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,7 +79,7 @@ public final class DirectGlCrashAttribution {
     );
 
     private static final Set<String> BUILTIN_MODS = Set.of(
-        "minecraft", "java", "fabricloader", "mixinextras", "puremetal"
+        "minecraft", "java", "fabricloader", "neoforge", "fml", "mixinextras", "puremetal"
     );
 
     private static volatile @Nullable Attribution lastAttribution;
@@ -170,12 +169,12 @@ public final class DirectGlCrashAttribution {
      */
     public static void checkPreviousCrash(final long previousMetalPid) {
         try {
-            FabricLoader loader = FabricLoader.getInstance();
-            Path gameDir = loader.getGameDir().toAbsolutePath().normalize();
+            ModPlatform platform = ModPlatform.get();
+            Path gameDir = platform.gameDir().toAbsolutePath().normalize();
             Path cwd = Path.of("").toAbsolutePath().normalize();
             List<Path> dirs = cwd.equals(gameDir) ? List.of(gameDir) : List.of(gameDir, cwd);
-            Path markerFile = loader.getConfigDir().resolve("puremetal-last-gl-crash.txt");
-            Attribution found = checkDirectories(dirs, markerFile, previousMetalPid, System.currentTimeMillis(), DirectGlCrashAttribution::resolveFabricMod);
+            Path markerFile = platform.configDir().resolve("puremetal-last-gl-crash.txt");
+            Attribution found = checkDirectories(dirs, markerFile, previousMetalPid, System.currentTimeMillis(), DirectGlCrashAttribution::resolveLoadedMod);
             if (found != null) {
                 lastAttribution = found;
                 LOGGER.warn("{}", found.summary());
@@ -572,13 +571,13 @@ public final class DirectGlCrashAttribution {
         return m.find() ? m.group(1) : null;
     }
 
-    private static @Nullable ModRef resolveFabricMod(final String className, final @Nullable String methodName) {
-        FabricLoader loader = FabricLoader.getInstance();
+    private static @Nullable ModRef resolveLoadedMod(final String className, final @Nullable String methodName) {
+        ModPlatform platform = ModPlatform.get();
         String mixinModId = extractMixinModId(methodName);
         if (mixinModId != null) {
-            Optional<ModContainer> mod = loader.getModContainer(mixinModId);
+            Optional<ModPlatform.ModMeta> mod = platform.mod(mixinModId);
             if (mod.isPresent()) {
-                return new ModRef(mod.get().getMetadata().getId(), mod.get().getMetadata().getName());
+                return new ModRef(mod.get().id(), mod.get().name());
             }
         }
         String normalized = normalizeClassName(className);
@@ -586,21 +585,9 @@ public final class DirectGlCrashAttribution {
             return null;
         }
         String entry = normalized.replace('.', '/') + ".class";
-        ModRef unique = null;
-        for (ModContainer mod : loader.getAllMods()) {
-            String id = mod.getMetadata().getId();
-            if (BUILTIN_MODS.contains(id)) {
-                continue;
-            }
-            if (mod.findPath(entry).isPresent()) {
-                if (unique != null) {
-                    // Class appears in multiple mods (e.g. shaded library): stay conservative instead of guessing.
-                    return null;
-                }
-                unique = new ModRef(id, mod.getMetadata().getName());
-            }
-        }
-        return unique;
+        return platform.findUniqueModForClass(entry, BUILTIN_MODS)
+            .map(m -> new ModRef(m.id(), m.name()))
+            .orElse(null);
     }
 
     private static String formatModLabel(final String safeId, final @Nullable String modName) {

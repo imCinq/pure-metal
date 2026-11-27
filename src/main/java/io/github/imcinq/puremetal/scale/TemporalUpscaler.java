@@ -5,7 +5,7 @@ import com.mojang.renderpearl.api.textures.GpuTextureView;
 import io.github.imcinq.puremetal.backend.MetalUpscaler;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
-import net.fabricmc.loader.api.FabricLoader;
+import io.github.imcinq.puremetal.ModPlatform;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
@@ -124,7 +124,7 @@ public final class TemporalUpscaler {
     public static boolean shaderPackActive() {
         if (!irisLookedUp) {
             irisLookedUp = true;
-            irisLoaded = FabricLoader.getInstance().isModLoaded("iris");
+            irisLoaded = ModPlatform.get().isModLoaded("iris");
             if (irisLoaded) {
                 try {
                     Class<?> api = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
