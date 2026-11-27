@@ -244,7 +244,7 @@ static void measure_temporal_jitter_shimmer(PMDevice *d, uint64_t *seq, id<MTLRe
         rp.depthAttachment.loadAction = MTLLoadActionClear;
         rp.depthAttachment.clearDepth = 0.0;
         rp.depthAttachment.storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> re = new_render_encoder(d, cb, rp, "temporal jitter test");
+        id<MTLRenderCommandEncoder> re = new_render_encoder(d, cb, rp, "temporal jitter test", -1);
         assert(re);
         [re setViewport:(MTLViewport){ 0.0, 0.0, (double)inW, (double)inH, 0.0, 1.0 }];
         [re setRenderPipelineState:rps];

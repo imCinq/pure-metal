@@ -86,7 +86,7 @@ static void test(PMDevice *d) {
         id<MTLCommandBuffer> cb=current_cb(d);MTLRenderPassDescriptor *rp=new_pass_descriptor(d);
         rp.depthAttachment.texture=depth;rp.depthAttachment.loadAction=MTLLoadActionClear;rp.depthAttachment.clearDepth=.75;rp.depthAttachment.storeAction=MTLStoreActionStore;
         if(f==1){rp.stencilAttachment.texture=depth;rp.stencilAttachment.loadAction=MTLLoadActionClear;rp.stencilAttachment.clearStencil=73;rp.stencilAttachment.storeAction=MTLStoreActionStore;}
-        id<MTLRenderCommandEncoder> enc=new_render_encoder_kind(d,cb,rp,1,"test seed");assert(enc);[enc endEncoding];
+        id<MTLRenderCommandEncoder> enc=new_render_encoder_kind(d,cb,rp,1,"test seed",-1);assert(enc);[enc endEncoding];
         assert(pm_pass_begin(d,0,NULL,NULL,NULL,dp,1,.25,4,2,1,0,2,1,NULL));pm_pass_end(d);
         int bpp=f==2?2:4;pm_copy_texture_to_buffer(d,dp,0,0,0,0,4,2,buf,0,4*bpp);
         if(f==1){id<MTLBlitCommandEncoder> blit=blit_encoder(d,2);assert(blit);PM_IF_M4(d) m4_blit_deps(d,&d->blitHaz,(id<MTL4ComputeCommandEncoder>)blit,tex_key_ptr(dp),buf,true);
